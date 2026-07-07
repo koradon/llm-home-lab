@@ -1,0 +1,10 @@
+sync:
+  closed_issues:
+    policy: archive
+    archive_dir: .plan/archive/issues
+  github:
+    default_assignees: []
+    default_labels: []
+  behavior:
+    dry_run: false
+    verbosity: compact
