@@ -8,10 +8,10 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from orchestrator.api.models import ChatCompletionRequest
-from orchestrator.backends.base import BackendTimeoutError, ChatBackend
+from llm_home_lab.api.models import ChatCompletionRequest
+from llm_home_lab.backends.base import BackendTimeoutError, ChatBackend
 
-access_logger = logging.getLogger("orchestrator.access")
+access_logger = logging.getLogger("llm_home_lab.access")
 
 
 def _error_response(status_code: int, message: str, error_type: str, code: str) -> JSONResponse:

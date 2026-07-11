@@ -1,0 +1,15 @@
+services:
+  llm-home-lab:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # LM Studio runs natively on the host, not in this container.
+      # host.docker.internal resolves to the host from inside the container
+      # (works on macOS/Windows Docker Desktop and on Linux via extra_hosts below).
+      LMSTUDIO_BASE_URL: "http://host.docker.internal:1234"
+      LMSTUDIO_TIMEOUT: "30"
+      LMSTUDIO_MAX_RETRIES: "2"
+      ORCHESTRATOR_PORT: "8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -4,8 +4,8 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from orchestrator.api.models import ChatCompletionRequest
-from orchestrator.backends.base import (
+from llm_home_lab.api.models import ChatCompletionRequest
+from llm_home_lab.backends.base import (
     BackendChunk,
     BackendConnectionError,
     BackendHealth,

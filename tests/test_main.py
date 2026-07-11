@@ -1,5 +1,5 @@
-from orchestrator.backends.lmstudio import LMStudioBackend
-from orchestrator.main import create_default_app
+from llm_home_lab.backends.lmstudio import LMStudioBackend
+from llm_home_lab.main import create_default_app
 
 
 def test_default_app_wires_lmstudio_backend_with_default_config(monkeypatch):

@@ -1,13 +1,13 @@
 import httpx
 import pytest
 
-from orchestrator.api.models import ChatCompletionRequest, Message
-from orchestrator.backends.base import (
+from llm_home_lab.api.models import ChatCompletionRequest, Message
+from llm_home_lab.backends.base import (
     BackendConnectionError,
     BackendResponseError,
     BackendTimeoutError,
 )
-from orchestrator.backends.lmstudio import LMStudioBackend
+from llm_home_lab.backends.lmstudio import LMStudioBackend
 
 
 def _request():

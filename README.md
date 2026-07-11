@@ -40,6 +40,31 @@ LM Studio   LM Studio   LM Studio
 MacBook     Windows     Linux
 ```
 
+## Running
+
+Deployment model isn't fully decided yet (see
+[docs/ideas/deployment-model.md](docs/ideas/deployment-model.md)) — both paths below work
+today.
+
+**As an installed package (uv):**
+
+```bash
+uv sync
+LMSTUDIO_BASE_URL=http://localhost:1234 uv run llm-home-lab
+```
+
+**As a container:**
+
+```bash
+docker compose up --build
+```
+
+The default `docker-compose.yml` points `LMSTUDIO_BASE_URL` at `host.docker.internal`, since
+LM Studio runs natively on the host, not in a container.
+
+Either way, the gateway listens on `:8080` (`ORCHESTRATOR_PORT` to override) with
+`/v1/chat/completions`, `/health/live`, and `/health/ready`.
+
 ## Roadmap
 
 Roadmap is managed in `.plan` and synced to GitHub issues/milestones via

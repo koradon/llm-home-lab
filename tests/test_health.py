@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from orchestrator.api.app import create_app
-from orchestrator.backends.base import BackendHealth, BackendResponse
+from llm_home_lab.api.app import create_app
+from llm_home_lab.backends.base import BackendHealth, BackendResponse
 
 
 class FakeBackend:
@@ -68,7 +68,7 @@ def test_every_request_produces_one_structured_log_line(caplog):
         response = client.get("/health/live")
 
     assert response.status_code == 200
-    lines = [record.message for record in caplog.records if record.name == "orchestrator.access"]
+    lines = [record.message for record in caplog.records if record.name == "llm_home_lab.access"]
     assert len(lines) == 1
     assert "request_id=" in lines[0]
     assert "method=GET" in lines[0]
@@ -84,7 +84,7 @@ def test_inbound_request_id_is_reused(caplog):
 
     assert response.headers["X-Request-ID"] == "req-abc-123"
     access_lines = [
-        record.message for record in caplog.records if record.name == "orchestrator.access"
+        record.message for record in caplog.records if record.name == "llm_home_lab.access"
     ]
     assert "request_id=req-abc-123" in access_lines[0]
 
