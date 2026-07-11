@@ -41,7 +41,17 @@ class BackendChunk:
     finish_reason: str | None
 
 
+@dataclass
+class BackendHealth:
+    healthy: bool
+    detail: str
+
+
 class ChatBackend(Protocol):
+    backend_id: str
+
     async def complete(self, request: ChatCompletionRequest) -> BackendResponse: ...
 
     def stream(self, request: ChatCompletionRequest) -> AsyncIterator[BackendChunk]: ...
+
+    async def check_health(self) -> BackendHealth: ...

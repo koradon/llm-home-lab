@@ -14,6 +14,9 @@ dependencies = [
     "pydantic>=2.10",
 ]
 
+[project.scripts]
+orchestrator = "orchestrator.main:run"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
