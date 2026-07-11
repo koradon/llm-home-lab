@@ -2,8 +2,8 @@ import os
 
 from fastapi import FastAPI
 
-from orchestrator.api.app import create_app
-from orchestrator.backends.lmstudio import LMStudioBackend
+from llm_home_lab.api.app import create_app
+from llm_home_lab.backends.lmstudio import LMStudioBackend
 
 
 def create_default_app() -> FastAPI:

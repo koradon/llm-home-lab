@@ -2,8 +2,8 @@ import json
 
 from fastapi.testclient import TestClient
 
-from orchestrator.api.app import create_app
-from orchestrator.backends.base import BackendChunk, BackendResponse, BackendTimeoutError
+from llm_home_lab.api.app import create_app
+from llm_home_lab.backends.base import BackendChunk, BackendResponse, BackendTimeoutError
 
 
 class FakeBackend:

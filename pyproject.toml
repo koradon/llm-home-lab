@@ -1,5 +1,5 @@
 [project]
-name = "orchestrator"
+name = "llm-home-lab"
 version = "0.1.0"
 description = "Local LLM orchestrator: one OpenAI-compatible API gateway, many local model backends."
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-orchestrator = "orchestrator.main:run"
+llm-home-lab = "llm_home_lab.main:run"
 
 [dependency-groups]
 dev = [
@@ -43,7 +43,7 @@ target-version = "py312"
 select = ["E", "W", "F", "I", "B", "C4", "UP"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["orchestrator"]
+known-first-party = ["llm_home_lab"]
 combine-as-imports = true
 split-on-trailing-comma = true
 

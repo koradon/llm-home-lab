@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
-from orchestrator.api.models import ChatCompletionRequest
+from llm_home_lab.api.models import ChatCompletionRequest
 
 
 class BackendError(Exception):
