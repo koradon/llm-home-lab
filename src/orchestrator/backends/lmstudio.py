@@ -8,6 +8,7 @@ from orchestrator.api.models import ChatCompletionRequest
 from orchestrator.backends.base import (
     BackendChunk,
     BackendConnectionError,
+    BackendHealth,
     BackendResponse,
     BackendResponseError,
     BackendTimeoutError,
@@ -24,9 +25,21 @@ class LMStudioBackend:
         max_retries: int = 2,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._base_url = base_url
+        self.backend_id = base_url
         self._max_retries = max_retries
         self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=transport)
+
+    async def check_health(self) -> BackendHealth:
+        try:
+            response = await self._client.get("/v1/models")
+        except httpx.TransportError as exc:
+            return BackendHealth(healthy=False, detail=str(exc))
+
+        if response.status_code // 100 != 2:
+            return BackendHealth(
+                healthy=False, detail=f"status {response.status_code}: {response.text}"
+            )
+        return BackendHealth(healthy=True, detail="ok")
 
     async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
         response = await self._request_with_retry(request)
@@ -76,11 +89,11 @@ class LMStudioBackend:
                 last_error = exc
 
         if isinstance(last_error, httpx.TimeoutException):
-            logger.error("backend %s timed out after %d attempts", self._base_url, attempts)
+            logger.error("backend %s timed out after %d attempts", self.backend_id, attempts)
             raise BackendTimeoutError(str(last_error)) from last_error
 
         logger.error(
-            "backend %s unreachable after %d attempts: %s", self._base_url, attempts, last_error
+            "backend %s unreachable after %d attempts: %s", self.backend_id, attempts, last_error
         )
         raise BackendConnectionError(str(last_error)) from last_error
 

@@ -1,14 +1,17 @@
 import json
+import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from orchestrator.api.models import ChatCompletionRequest
 from orchestrator.backends.base import BackendTimeoutError, ChatBackend
+
+access_logger = logging.getLogger("orchestrator.access")
 
 
 def _error_response(status_code: int, message: str, error_type: str, code: str) -> JSONResponse:
@@ -20,6 +23,28 @@ def _error_response(status_code: int, message: str, error_type: str, code: str) 
 
 def create_app(backend: ChatBackend) -> FastAPI:
     app = FastAPI()
+    app.state.backend = backend
+
+    @app.middleware("http")
+    async def log_requests(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+        start = time.perf_counter()
+
+        response = await call_next(request)
+
+        latency_ms = (time.perf_counter() - start) * 1000
+        response.headers["X-Request-ID"] = request_id
+        access_logger.info(
+            "request_id=%s method=%s path=%s status=%d latency_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            latency_ms,
+        )
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def on_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -28,6 +53,27 @@ def create_app(backend: ChatBackend) -> FastAPI:
     @app.exception_handler(BackendTimeoutError)
     async def on_backend_timeout(request: Request, exc: BackendTimeoutError) -> JSONResponse:
         return _error_response(504, str(exc), "backend_error", "backend_timeout")
+
+    @app.get("/health/live")
+    async def health_live() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/health/ready")
+    async def health_ready() -> JSONResponse:
+        health = await backend.check_health()
+        return JSONResponse(
+            status_code=200 if health.healthy else 503,
+            content={
+                "status": "ok" if health.healthy else "unavailable",
+                "backends": [
+                    {
+                        "id": backend.backend_id,
+                        "healthy": health.healthy,
+                        "detail": health.detail,
+                    }
+                ],
+            },
+        )
 
     @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(

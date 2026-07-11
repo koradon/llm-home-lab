@@ -173,3 +173,39 @@ async def test_classified_failure_is_logged_with_backend_host(caplog):
 
     assert "http://lmstudio.local:1234" in caplog.text
     assert "timed out" in caplog.text.lower()
+
+
+def test_backend_id_reflects_configured_host():
+    backend = LMStudioBackend(base_url="http://lmstudio.local:1234", timeout=5.0)
+
+    assert backend.backend_id == "http://lmstudio.local:1234"
+
+
+async def test_check_health_reports_healthy_when_models_endpoint_succeeds():
+    def handler(request):
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200, json={"data": []})
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=5.0, transport=transport
+    )
+
+    health = await backend.check_health()
+
+    assert health.healthy is True
+
+
+async def test_check_health_reports_unhealthy_when_backend_is_unreachable():
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=5.0, max_retries=0, transport=transport
+    )
+
+    health = await backend.check_health()
+
+    assert health.healthy is False
+    assert "connection refused" in health.detail.lower()
