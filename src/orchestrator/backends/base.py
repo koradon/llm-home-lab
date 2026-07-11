@@ -13,6 +13,19 @@ class BackendTimeoutError(BackendError):
     """The backend did not respond within its configured timeout."""
 
 
+class BackendConnectionError(BackendError):
+    """The backend could not be reached."""
+
+
+class BackendResponseError(BackendError):
+    """The backend responded with a non-2xx status."""
+
+    def __init__(self, status_code: int, body: str) -> None:
+        super().__init__(f"backend responded with status {status_code}: {body}")
+        self.status_code = status_code
+        self.body = body
+
+
 @dataclass
 class BackendResponse:
     model: str
