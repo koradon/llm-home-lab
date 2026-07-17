@@ -19,8 +19,12 @@ from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import NoAvailableBackendError, RoutingCandidate
 from llm_home_lab.scheduling.queue import SchedulingQueue
+from llm_home_lab.security.key_store import ApiKeyStore
 
 access_logger = logging.getLogger("llm_home_lab.access")
+audit_logger = logging.getLogger("llm_home_lab.audit")
+
+AUTH_EXEMPT_PATHS = {"/health/live", "/health/ready"}
 
 
 class NodeRegistrationRequest(BaseModel):
@@ -44,15 +48,21 @@ def create_app(
     health_monitor: HealthMonitor,
     scheduling_queue: SchedulingQueue,
     backend_factories: Mapping[str, Callable[[HostCapabilities], ChatBackend]],
+    key_store: ApiKeyStore | None = None,
+    auth_enabled: bool = True,
     heartbeat_ttl: timedelta = timedelta(seconds=60),
     dispatch_wait_timeout: float = 30.0,
     dispatch_poll_interval: float = 0.1,
 ) -> FastAPI:
+    if auth_enabled and key_store is None:
+        raise ValueError("key_store is required when auth_enabled is True")
+
     app = FastAPI()
     app.state.registry = registry
     app.state.router = router
     app.state.health_monitor = health_monitor
     app.state.scheduling_queue = scheduling_queue
+    app.state.auth_enabled = auth_enabled
     backends_by_id: dict[str, ChatBackend] = {}
 
     def _backend_for(host_id: str, capabilities: HostCapabilities) -> ChatBackend:
@@ -106,6 +116,62 @@ def create_app(
             latency_ms,
         )
         return response
+
+    @app.middleware("http")
+    async def enforce_auth(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if not auth_enabled:
+            return await call_next(request)
+        assert key_store is not None  # enforced by the create_app entry check above
+
+        path = request.url.path
+        if path in AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+
+        auth_header = request.headers.get("authorization", "")
+        token = auth_header.removeprefix("Bearer ") if auth_header.startswith("Bearer ") else None
+        identity = key_store.authenticate(token, datetime.now(UTC)) if token else None
+
+        if identity is None:
+            reason = "missing_token" if token is None else "invalid_token"
+            audit_logger.info(
+                "client_id=%s method=%s path=%s outcome=%s reason=%s",
+                "unknown",
+                request.method,
+                path,
+                "blocked",
+                reason,
+            )
+            return _error_response(
+                401, "missing or invalid API key", "invalid_request_error", reason
+            )
+
+        if not key_store.is_authorized(identity, path):
+            audit_logger.info(
+                "client_id=%s method=%s path=%s outcome=%s reason=%s",
+                identity.client_id,
+                request.method,
+                path,
+                "blocked",
+                "path_not_allowed",
+            )
+            return _error_response(
+                403,
+                "client is not authorized for this path",
+                "invalid_request_error",
+                "path_not_allowed",
+            )
+
+        audit_logger.info(
+            "client_id=%s method=%s path=%s outcome=%s reason=%s",
+            identity.client_id,
+            request.method,
+            path,
+            "allowed",
+            "ok",
+        )
+        return await call_next(request)
 
     @app.exception_handler(RequestValidationError)
     async def on_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

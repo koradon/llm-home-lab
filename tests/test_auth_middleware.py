@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
 from llm_home_lab.api.app import create_app
@@ -42,7 +43,7 @@ def _key_store(clients=None) -> ApiKeyStore:
     )
 
 
-def _app(key_store=None):
+def _app(key_store=None, auth_enabled=True):
     registry = HostRegistry()
     backend = FakeBackend()
     registry.register(
@@ -58,7 +59,8 @@ def _app(key_store=None):
         health_monitor=HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
         backend_factories={"fake": lambda caps: backend},
-        key_store=key_store or _key_store(),
+        key_store=key_store if key_store is not None else (_key_store() if auth_enabled else None),
+        auth_enabled=auth_enabled,
     )
 
 
@@ -109,3 +111,27 @@ def test_health_probes_bypass_authentication():
 
     assert live.status_code == 200
     assert ready.status_code in (200, 503)
+
+
+def test_auth_disabled_allows_a_request_with_no_authorization_header():
+    client = TestClient(_app(auth_enabled=False))
+
+    response = client.post("/v1/chat/completions", json=PAYLOAD)
+
+    assert response.status_code == 200
+
+
+def test_create_app_requires_a_key_store_when_auth_is_enabled():
+    registry = HostRegistry()
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+
+    with pytest.raises(ValueError):
+        create_app(
+            registry=registry,
+            router=RoutingEngine(policy),
+            health_monitor=HealthMonitor(),
+            scheduling_queue=SchedulingQueue(),
+            backend_factories={},
+            key_store=None,
+            auth_enabled=True,
+        )

@@ -1,10 +1,13 @@
 import asyncio
+import logging
 import os
 from datetime import UTC, datetime
 
 from llm_home_lab.state.models import FilesystemInvocation, TerminalInvocation, TerminalState
 from llm_home_lab.state.session_manager import DEFAULT_SESSION_STORE_PATH
 from llm_home_lab.state.tool_state_store import ToolStateStore
+
+audit_logger = logging.getLogger("llm_home_lab.audit")
 
 
 def _now() -> str:
@@ -21,6 +24,7 @@ class ToolStateManager:
 
     async def record_terminal_invocation(
         self,
+        client_id: str,
         session_id: str,
         command: str,
         cwd: str,
@@ -40,6 +44,13 @@ class ToolStateManager:
             running_processes or [],
             _now(),
         )
+        audit_logger.info(
+            "client_id=%s session_id=%s tool_id=%s action=%s",
+            client_id,
+            session_id,
+            "terminal",
+            "recorded",
+        )
 
     async def read_terminal_history(self, session_id: str) -> list[TerminalInvocation]:
         return await asyncio.to_thread(self._store.read_terminal_history, session_id)
@@ -48,10 +59,17 @@ class ToolStateManager:
         return await asyncio.to_thread(self._store.read_terminal_state, session_id)
 
     async def record_filesystem_invocation(
-        self, session_id: str, operation: str, path: str, result: str
+        self, client_id: str, session_id: str, operation: str, path: str, result: str
     ) -> None:
         await asyncio.to_thread(
             self._store.record_filesystem, session_id, operation, path, result, _now()
+        )
+        audit_logger.info(
+            "client_id=%s session_id=%s tool_id=%s action=%s",
+            client_id,
+            session_id,
+            "filesystem",
+            "recorded",
         )
 
     async def read_filesystem_history(self, session_id: str) -> list[FilesystemInvocation]:
