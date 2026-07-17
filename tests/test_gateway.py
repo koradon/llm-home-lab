@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendChunk, BackendResponse, BackendTimeoutError
+from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import PolicyRule, RoutingCandidate, RoutingPolicy
 
@@ -11,7 +12,9 @@ from llm_home_lab.routing.models import PolicyRule, RoutingCandidate, RoutingPol
 def _app_for(backend):
     candidates = [RoutingCandidate(backend=backend, latency_ms=0.0, context_window=8192)]
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
-    return create_app(candidates=candidates, router=RoutingEngine(policy))
+    return create_app(
+        candidates=candidates, router=RoutingEngine(policy), health_monitor=HealthMonitor()
+    )
 
 
 class FakeBackend:
