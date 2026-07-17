@@ -2,6 +2,17 @@ from fastapi.testclient import TestClient
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendHealth, BackendResponse
+from llm_home_lab.routing.engine import RoutingEngine
+from llm_home_lab.routing.models import PolicyRule, RoutingCandidate, RoutingPolicy
+
+
+def _app_for(*backends):
+    candidates = [
+        RoutingCandidate(backend=backend, latency_ms=0.0, context_window=8192)
+        for backend in backends
+    ]
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    return create_app(candidates=candidates, router=RoutingEngine(policy))
 
 
 class FakeBackend:
@@ -29,7 +40,7 @@ class FakeBackend:
 
 
 def test_liveness_always_returns_ok():
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
 
     response = client.get("/health/live")
 
@@ -38,7 +49,7 @@ def test_liveness_always_returns_ok():
 
 
 def test_readiness_reports_healthy_backend():
-    client = TestClient(create_app(backend=FakeBackend(healthy=True)))
+    client = TestClient(_app_for(FakeBackend(healthy=True)))
 
     response = client.get("/health/ready")
 
@@ -49,7 +60,7 @@ def test_readiness_reports_healthy_backend():
 
 
 def test_readiness_reports_unhealthy_backend():
-    client = TestClient(create_app(backend=FakeBackend(healthy=False, detail="connection refused")))
+    client = TestClient(_app_for(FakeBackend(healthy=False, detail="connection refused")))
 
     response = client.get("/health/ready")
 
@@ -62,7 +73,7 @@ def test_readiness_reports_unhealthy_backend():
 
 
 def test_every_request_produces_one_structured_log_line(caplog):
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
 
     with caplog.at_level("INFO"):
         response = client.get("/health/live")
@@ -77,7 +88,7 @@ def test_every_request_produces_one_structured_log_line(caplog):
 
 
 def test_inbound_request_id_is_reused(caplog):
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
 
     with caplog.at_level("INFO"):
         response = client.get("/health/live", headers={"X-Request-ID": "req-abc-123"})
@@ -90,7 +101,7 @@ def test_inbound_request_id_is_reused(caplog):
 
 
 def test_request_id_is_generated_when_absent():
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
 
     response = client.get("/health/live")
 

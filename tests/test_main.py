@@ -9,7 +9,7 @@ def test_default_app_wires_lmstudio_backend_with_default_config(monkeypatch):
 
     app = create_default_app()
 
-    backend = app.state.backend
+    backend = app.state.candidates[0].backend
     assert isinstance(backend, LMStudioBackend)
     assert backend.backend_id == "http://localhost:1234"
 
@@ -21,7 +21,7 @@ def test_default_app_respects_lmstudio_env_overrides(monkeypatch):
 
     app = create_default_app()
 
-    backend = app.state.backend
+    backend = app.state.candidates[0].backend
     assert backend.backend_id == "http://gpu-box.home:1234"
 
 
