@@ -62,3 +62,32 @@ class WorkspaceSnapshot:
     open_files_truncated: bool
     test_status: RunStatus | None
     created_at: str
+
+
+@dataclass
+class TerminalInvocation:
+    seq: int
+    command: str
+    cwd: str
+    exit_code: int
+    output: str
+    env: dict[str, str]
+    running_processes: list[str]
+    created_at: str
+
+
+@dataclass
+class FilesystemInvocation:
+    seq: int
+    operation: str
+    path: str
+    result: str
+    created_at: str
+
+
+@dataclass
+class TerminalState:
+    cwd: str
+    env: dict[str, str]
+    running_processes: list[str]
+    as_of_seq: int
