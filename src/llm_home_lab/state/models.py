@@ -42,3 +42,23 @@ class Session:
     session_id: str
     messages: list[StoredMessage]
     summary: Summary | None = None
+
+
+@dataclass
+class RunStatus:
+    passed: int
+    failed: int
+    total: int
+    summary: str | None = None
+
+
+@dataclass
+class WorkspaceSnapshot:
+    session_id: str
+    branch: str
+    git_diff: str
+    diff_truncated: bool
+    open_files: list[str]
+    open_files_truncated: bool
+    test_status: RunStatus | None
+    created_at: str

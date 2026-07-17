@@ -1,21 +1,15 @@
-import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
-
 from llm_home_lab.state.models import (
     InvalidSummaryError,
     Session,
-    SessionNotFoundError,
     StoredMessage,
     Summary,
 )
+from llm_home_lab.state.schema import SESSIONS_TABLE_SCHEMA
+from llm_home_lab.state.sqlite_base import SqliteStore
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL
-);
+_SCHEMA = (
+    SESSIONS_TABLE_SCHEMA
+    + """
 CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
@@ -31,29 +25,12 @@ CREATE TABLE IF NOT EXISTS summaries (
     created_at TEXT NOT NULL
 );
 """
+)
 
 
-class SessionStore:
+class SessionStore(SqliteStore):
     def __init__(self, db_path: str) -> None:
-        self._db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as conn:
-            conn.executescript(_SCHEMA)
-
-    @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
-
-    def _require_session(self, conn: sqlite3.Connection, session_id: str) -> None:
-        row = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        if row is None:
-            raise SessionNotFoundError(session_id)
+        super().__init__(db_path, _SCHEMA)
 
     def create_session(self, session_id: str, created_at: str) -> None:
         with self._connection() as conn:
