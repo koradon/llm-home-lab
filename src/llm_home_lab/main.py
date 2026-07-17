@@ -4,6 +4,7 @@ from fastapi import FastAPI
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.lmstudio import LMStudioBackend
+from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import PolicyRule, RoutingCandidate, RoutingPolicy
 
@@ -25,7 +26,8 @@ def create_default_app() -> FastAPI:
         rules=[PolicyRule(name="prefer-lower-latency", score_fn=lambda c, ctx: -c.latency_ms)]
     )
     router = RoutingEngine(policy)
-    return create_app(candidates=candidates, router=router)
+    health_monitor = HealthMonitor()
+    return create_app(candidates=candidates, router=router, health_monitor=health_monitor)
 
 
 app = create_default_app()

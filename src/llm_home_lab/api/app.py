@@ -3,6 +3,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -10,8 +11,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import BackendTimeoutError, ChatBackend
+from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.routing.engine import RoutingEngine
-from llm_home_lab.routing.models import RoutingCandidate
+from llm_home_lab.routing.models import NoAvailableBackendError, RoutingCandidate
 
 access_logger = logging.getLogger("llm_home_lab.access")
 
@@ -23,10 +25,13 @@ def _error_response(status_code: int, message: str, error_type: str, code: str) 
     )
 
 
-def create_app(candidates: Sequence[RoutingCandidate], router: RoutingEngine) -> FastAPI:
+def create_app(
+    candidates: Sequence[RoutingCandidate], router: RoutingEngine, health_monitor: HealthMonitor
+) -> FastAPI:
     app = FastAPI()
     app.state.candidates = candidates
     app.state.router = router
+    app.state.health_monitor = health_monitor
     backends_by_id: dict[str, ChatBackend] = {c.backend.backend_id: c.backend for c in candidates}
 
     @app.middleware("http")
@@ -58,6 +63,12 @@ def create_app(candidates: Sequence[RoutingCandidate], router: RoutingEngine) ->
     async def on_backend_timeout(request: Request, exc: BackendTimeoutError) -> JSONResponse:
         return _error_response(504, str(exc), "backend_error", "backend_timeout")
 
+    @app.exception_handler(NoAvailableBackendError)
+    async def on_no_available_backend(
+        request: Request, exc: NoAvailableBackendError
+    ) -> JSONResponse:
+        return _error_response(503, str(exc), "backend_error", "no_available_backend")
+
     @app.get("/health/live")
     async def health_live() -> dict[str, str]:
         return {"status": "ok"}
@@ -67,6 +78,9 @@ def create_app(candidates: Sequence[RoutingCandidate], router: RoutingEngine) ->
         reports = []
         for candidate in candidates:
             health = await candidate.backend.check_health()
+            health_monitor.record_probe(
+                candidate.backend.backend_id, health.healthy, datetime.now(UTC)
+            )
             reports.append(
                 {
                     "id": candidate.backend.backend_id,
@@ -87,7 +101,11 @@ def create_app(candidates: Sequence[RoutingCandidate], router: RoutingEngine) ->
     async def chat_completions(
         request: ChatCompletionRequest,
     ) -> StreamingResponse | dict[str, object]:
-        decision = router.select_backend(request, candidates, session_id=request.session_id)
+        now = datetime.now(UTC)
+        healthy_candidates = [
+            c for c in candidates if health_monitor.is_healthy(c.backend.backend_id, now)
+        ]
+        decision = router.select_backend(request, healthy_candidates, session_id=request.session_id)
         backend = backends_by_id[decision.backend_id]
 
         if request.stream:
