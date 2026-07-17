@@ -10,6 +10,22 @@ from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import PolicyRule, RoutingPolicy
 from llm_home_lab.scheduling.queue import SchedulingQueue
+from llm_home_lab.security.key_store import ApiKeyStore
+from llm_home_lab.security.models import ApiKey, ClientConfig
+
+AUTH_HEADERS = {"Authorization": "Bearer test-key"}
+
+
+def _permissive_key_store() -> ApiKeyStore:
+    return ApiKeyStore(
+        [
+            ClientConfig(
+                client_id="test-client",
+                allowed_path_prefixes=["/"],
+                keys=[ApiKey(key="test-key", expires_at=None)],
+            )
+        ]
+    )
 
 
 class FakeBackend:
@@ -58,13 +74,14 @@ def _app_for(*backends, failure_threshold=1):
         health_monitor=health_monitor,
         scheduling_queue=SchedulingQueue(),
         backend_factories=factories,
+        key_store=_permissive_key_store(),
     )
 
 
 def test_a_degraded_backend_is_excluded_and_requests_reroute_to_the_healthy_one():
     primary = FakeBackend("primary", healthy=True)
     secondary = FakeBackend("secondary", healthy=True)
-    client = TestClient(_app_for(primary, secondary))
+    client = TestClient(_app_for(primary, secondary), headers=AUTH_HEADERS)
     payload = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
 
     assert (
@@ -83,7 +100,7 @@ def test_a_degraded_backend_is_excluded_and_requests_reroute_to_the_healthy_one(
 
 def test_no_healthy_backends_returns_a_service_unavailable_gateway_error():
     only_backend = FakeBackend("primary", healthy=True)
-    client = TestClient(_app_for(only_backend))
+    client = TestClient(_app_for(only_backend), headers=AUTH_HEADERS)
     payload = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
 
     only_backend.healthy = False

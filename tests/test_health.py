@@ -10,6 +10,20 @@ from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import PolicyRule, RoutingPolicy
 from llm_home_lab.scheduling.queue import SchedulingQueue
+from llm_home_lab.security.key_store import ApiKeyStore
+from llm_home_lab.security.models import ApiKey, ClientConfig
+
+
+def _permissive_key_store() -> ApiKeyStore:
+    return ApiKeyStore(
+        [
+            ClientConfig(
+                client_id="test-client",
+                allowed_path_prefixes=["/"],
+                keys=[ApiKey(key="test-key", expires_at=None)],
+            )
+        ]
+    )
 
 
 def _app_for(*backends):
@@ -32,6 +46,7 @@ def _app_for(*backends):
         health_monitor=HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
         backend_factories=factories,
+        key_store=_permissive_key_store(),
     )
 
 

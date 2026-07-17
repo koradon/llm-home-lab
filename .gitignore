@@ -29,3 +29,6 @@ htmlcov/
 
 # Local session state
 data/
+
+# Secrets — never commit API keys (see docs/security-baseline.md)
+config/api_keys.json

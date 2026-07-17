@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 llm-home-lab = "llm_home_lab.main:run"
+llm-home-lab-rotate-key = "llm_home_lab.security.rotate_keys:main"
 
 [dependency-groups]
 dev = [

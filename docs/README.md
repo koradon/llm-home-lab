@@ -12,6 +12,7 @@ This repository uses a docs-as-code layout bootstrapped by [adrlane](https://git
 | `docs/ideas/` | Early concepts that may be promoted to specs |
 | `docs/roadmap/` | Now / Next / Later horizons for future initiatives |
 | `docs/llm/` | Agent-facing documentation contract and templates |
+| `docs/security-baseline.md` | Auth/authorization/secrets-management reference for contributors |
 
 ## How this documentation grows
 

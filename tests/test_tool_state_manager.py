@@ -10,13 +10,32 @@ def db_path(tmp_path):
     return str(tmp_path / "sessions.db")
 
 
+async def test_recording_a_terminal_invocation_logs_an_audit_entry_with_the_client_id(
+    db_path, caplog
+):
+    sessions = SessionManager(db_path)
+    session_id = await sessions.create_session()
+    tools = ToolStateManager(db_path)
+
+    with caplog.at_level("INFO"):
+        await tools.record_terminal_invocation(
+            "agent-a", session_id, command="npm test", cwd="/repo", exit_code=0, output="ok"
+        )
+
+    audit_lines = [r.message for r in caplog.records if r.name == "llm_home_lab.audit"]
+    assert len(audit_lines) == 1
+    assert "client_id=agent-a" in audit_lines[0]
+    assert f"session_id={session_id}" in audit_lines[0]
+    assert "tool_id=terminal" in audit_lines[0]
+
+
 async def test_recording_and_reading_terminal_history_round_trips(db_path):
     sessions = SessionManager(db_path)
     session_id = await sessions.create_session()
     tools = ToolStateManager(db_path)
 
     await tools.record_terminal_invocation(
-        session_id, command="npm test", cwd="/repo", exit_code=0, output="ok"
+        "agent-a", session_id, command="npm test", cwd="/repo", exit_code=0, output="ok"
     )
     history = await tools.read_terminal_history(session_id)
 
@@ -33,7 +52,7 @@ async def test_recording_and_reading_filesystem_history_round_trips(db_path):
     tools = ToolStateManager(db_path)
 
     await tools.record_filesystem_invocation(
-        session_id, operation="write", path="app.py", result="ok"
+        "agent-a", session_id, operation="write", path="app.py", result="ok"
     )
     history = await tools.read_filesystem_history(session_id)
 
@@ -48,13 +67,13 @@ async def test_terminal_and_filesystem_invocations_share_one_chronological_seque
     session_id = await sessions.create_session()
     tools = ToolStateManager(db_path)
     await tools.record_terminal_invocation(
-        session_id, command="git status", cwd="/repo", exit_code=0, output="clean"
+        "agent-a", session_id, command="git status", cwd="/repo", exit_code=0, output="clean"
     )
     await tools.record_filesystem_invocation(
-        session_id, operation="write", path="app.py", result="ok"
+        "agent-a", session_id, operation="write", path="app.py", result="ok"
     )
     await tools.record_terminal_invocation(
-        session_id, command="npm test", cwd="/repo", exit_code=0, output="ok"
+        "agent-a", session_id, command="npm test", cwd="/repo", exit_code=0, output="ok"
     )
 
     terminal_history = await tools.read_terminal_history(session_id)
@@ -71,10 +90,10 @@ async def test_terminal_state_reflects_the_most_recent_invocation(db_path):
     session_id = await sessions.create_session()
     tools = ToolStateManager(db_path)
     await tools.record_terminal_invocation(
-        session_id, command="cd a", cwd="/repo/a", exit_code=0, output="", env={"X": "1"}
+        "agent-a", session_id, command="cd a", cwd="/repo/a", exit_code=0, output="", env={"X": "1"}
     )
     await tools.record_terminal_invocation(
-        session_id, command="cd b", cwd="/repo/b", exit_code=0, output="", env={"X": "2"}
+        "agent-a", session_id, command="cd b", cwd="/repo/b", exit_code=0, output="", env={"X": "2"}
     )
 
     state = await tools.read_terminal_state(session_id)
@@ -112,7 +131,7 @@ async def test_from_env_uses_session_store_path(tmp_path, monkeypatch):
     tools = ToolStateManager.from_env()
 
     await tools.record_terminal_invocation(
-        session_id, command="ls", cwd="/", exit_code=0, output=""
+        "agent-a", session_id, command="ls", cwd="/", exit_code=0, output=""
     )
 
     assert env_path.exists()
@@ -123,7 +142,7 @@ async def test_recording_terminal_invocation_for_unknown_session_raises(db_path)
 
     with pytest.raises(SessionNotFoundError):
         await tools.record_terminal_invocation(
-            "missing", command="ls", cwd="/", exit_code=0, output=""
+            "agent-a", "missing", command="ls", cwd="/", exit_code=0, output=""
         )
 
 
@@ -131,7 +150,9 @@ async def test_recording_filesystem_invocation_for_unknown_session_raises(db_pat
     tools = ToolStateManager(db_path)
 
     with pytest.raises(SessionNotFoundError):
-        await tools.record_filesystem_invocation("missing", operation="read", path="a", result="")
+        await tools.record_filesystem_invocation(
+            "agent-a", "missing", operation="read", path="a", result=""
+        )
 
 
 async def test_reading_terminal_history_for_unknown_session_raises(db_path):
