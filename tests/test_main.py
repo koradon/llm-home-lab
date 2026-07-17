@@ -1,4 +1,3 @@
-from llm_home_lab.backends.lmstudio import LMStudioBackend
 from llm_home_lab.main import create_default_app
 
 
@@ -9,9 +8,9 @@ def test_default_app_wires_lmstudio_backend_with_default_config(monkeypatch):
 
     app = create_default_app()
 
-    backend = app.state.candidates[0].backend
-    assert isinstance(backend, LMStudioBackend)
-    assert backend.backend_id == "http://localhost:1234"
+    hosts = app.state.registry.hosts()
+    assert [host.host_id for host in hosts] == ["http://localhost:1234"]
+    assert hosts[0].capabilities.backend_type == "lmstudio"
 
 
 def test_default_app_respects_lmstudio_env_overrides(monkeypatch):
@@ -21,8 +20,8 @@ def test_default_app_respects_lmstudio_env_overrides(monkeypatch):
 
     app = create_default_app()
 
-    backend = app.state.candidates[0].backend
-    assert backend.backend_id == "http://gpu-box.home:1234"
+    hosts = app.state.registry.hosts()
+    assert [host.host_id for host in hosts] == ["http://gpu-box.home:1234"]
 
 
 def test_default_app_exposes_gateway_and_health_routes():

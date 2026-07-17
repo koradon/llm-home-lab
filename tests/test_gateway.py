@@ -1,19 +1,33 @@
 import json
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendChunk, BackendResponse, BackendTimeoutError
 from llm_home_lab.health.monitor import HealthMonitor
+from llm_home_lab.registry.models import HostCapabilities, HostCapacity
+from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
-from llm_home_lab.routing.models import PolicyRule, RoutingCandidate, RoutingPolicy
+from llm_home_lab.routing.models import PolicyRule, RoutingPolicy
+from llm_home_lab.scheduling.queue import SchedulingQueue
 
 
 def _app_for(backend):
-    candidates = [RoutingCandidate(backend=backend, latency_ms=0.0, context_window=8192)]
+    registry = HostRegistry()
+    registry.register(
+        backend.backend_id,
+        HostCapabilities(backend_type="fake", context_window=8192, base_url="unused"),
+        HostCapacity(max_concurrent_requests=1000),
+        at=datetime.now(UTC),
+    )
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
     return create_app(
-        candidates=candidates, router=RoutingEngine(policy), health_monitor=HealthMonitor()
+        registry=registry,
+        router=RoutingEngine(policy),
+        health_monitor=HealthMonitor(),
+        scheduling_queue=SchedulingQueue(),
+        backend_factories={"fake": lambda caps, b=backend: b},
     )
 
 
