@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from llm_home_lab.api.models import ChatCompletionRequest
-from llm_home_lab.backends.base import BackendTimeoutError, ChatBackend
+from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBackend
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity, HostNotRegisteredError
 from llm_home_lab.registry.registry import HostRegistry
@@ -180,6 +180,10 @@ def create_app(
     @app.exception_handler(BackendTimeoutError)
     async def on_backend_timeout(request: Request, exc: BackendTimeoutError) -> JSONResponse:
         return _error_response(504, str(exc), "backend_error", "backend_timeout")
+
+    @app.exception_handler(BackendError)
+    async def on_backend_error(request: Request, exc: BackendError) -> JSONResponse:
+        return _error_response(503, str(exc), "backend_error", "backend_unavailable")
 
     @app.exception_handler(NoAvailableBackendError)
     async def on_no_available_backend(

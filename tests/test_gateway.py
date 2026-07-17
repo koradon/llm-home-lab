@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 from llm_home_lab.api.app import create_app
-from llm_home_lab.backends.base import BackendChunk, BackendResponse, BackendTimeoutError
+from llm_home_lab.backends.base import (
+    BackendChunk,
+    BackendConnectionError,
+    BackendResponse,
+    BackendResponseError,
+    BackendTimeoutError,
+)
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
 from llm_home_lab.registry.registry import HostRegistry
@@ -140,6 +146,42 @@ def test_backend_timeout_is_surfaced_as_gateway_error():
     response = client.post("/v1/chat/completions", json=payload)
 
     assert response.status_code == 504
+    body = response.json()
+    assert body["error"]["type"] == "backend_error"
+    assert "message" in body["error"]
+
+
+def test_backend_connection_failure_is_surfaced_as_service_unavailable():
+    class UnreachableBackend:
+        backend_id = "unreachable-backend"
+
+        async def complete(self, request):
+            raise BackendConnectionError("All connection attempts failed")
+
+    client = TestClient(_app_for(UnreachableBackend()), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]}
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["type"] == "backend_error"
+    assert "message" in body["error"]
+
+
+def test_backend_response_error_is_surfaced_as_service_unavailable():
+    class FailingBackend:
+        backend_id = "failing-backend"
+
+        async def complete(self, request):
+            raise BackendResponseError(500, "internal error from backend")
+
+    client = TestClient(_app_for(FailingBackend()), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]}
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 503
     body = response.json()
     assert body["error"]["type"] == "backend_error"
     assert "message" in body["error"]
