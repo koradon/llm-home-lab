@@ -34,9 +34,12 @@ Resolving the spec's deferred wiring questions for this plan:
   iterates all candidates — add one `registry.expire_stale(now, ttl)` call there rather than
   introducing a background poller/scheduler thread, mirroring the failover plan's choice to avoid
   a poller.
-- **Capacity schema**: minimal — `HostCapabilities(backend_type: str, context_window: int)` and
-  `HostCapacity(max_concurrent_requests: int)`. No richer capability matching (e.g. named model
-  lists) until a routing policy rule actually needs it.
+- **Capacity schema**: minimal — `HostCapabilities(backend_type: str, context_window: int,
+  base_url: str)` and `HostCapacity(max_concurrent_requests: int)`. `base_url` exists so app
+  wiring can construct a live `ChatBackend` for a dynamically-registered host (registration is
+  JSON over HTTP, so it can only hand over connection info, never a Python object) — `HostRegistry`
+  itself stores this field but never constructs a backend from it. No richer capability matching
+  (e.g. named model lists) until a routing policy rule actually needs it.
 
 Out of scope for this plan (per the spec's Open Questions):
 
@@ -64,8 +67,12 @@ Out of scope for this plan (per the spec's Open Questions):
    deque of entries, plus a per-tier round-robin cursor over `session_id`s, so `dispatch` scans
    tiers ascending and, within a tier, cycles session queues from the cursor rather than draining
    one session's backlog first.
-5. **App wiring** (`src/llm_home_lab/api/app.py`) — `create_app` gains `registry: HostRegistry`
-   and `scheduling_queue: SchedulingQueue` parameters. New router: `POST /v1/nodes/register`,
+5. **App wiring** (`src/llm_home_lab/api/app.py`) — `create_app` gains `registry: HostRegistry`,
+   `scheduling_queue: SchedulingQueue`, and a `backend_factories: dict[str, Callable[[HostCapabilities],
+   ChatBackend]]` parameter (defaulting to `{"lmstudio": ...}`) so a `ChatBackend` is constructed
+   from `capabilities.backend_type`/`base_url` at registration time and kept in an internal
+   `dict[str, ChatBackend]` keyed by `host_id`, alongside the registry. New router:
+   `POST /v1/nodes/register`,
    `POST /v1/nodes/{host_id}/heartbeat`, `DELETE /v1/nodes/{host_id}`. `/health/ready` additionally
    calls `registry.expire_stale(now, ttl)`. `chat_completions` builds candidates from
    `registry.hosts()` (converted to `RoutingCandidate`), filtered by `health_monitor.is_healthy`

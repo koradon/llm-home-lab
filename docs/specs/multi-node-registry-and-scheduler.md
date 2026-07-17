@@ -36,9 +36,11 @@ multiple remote model hosts — this spec does not introduce a distributed contr
 
 - Provide a `HostRegistry` with:
   - `register(host_id, capabilities, capacity, at)` — adds or re-registers a host.
-    `capabilities` describes what the host can serve (e.g. backend type, supported models,
-    context window); `capacity` describes `max_concurrent_requests`. Re-registering an existing
-    `host_id` replaces its capabilities/capacity and counts as a heartbeat.
+    `capabilities` describes what the host can serve and how to reach it (`backend_type`,
+    `context_window`, `base_url`); `capacity` describes `max_concurrent_requests`. Re-registering
+    an existing `host_id` replaces its capabilities/capacity and counts as a heartbeat.
+    `HostRegistry` itself stays backend-agnostic — it never constructs a `ChatBackend`; app wiring
+    uses `capabilities.backend_type`/`base_url` to build one (see Related).
   - `heartbeat(host_id, at)` — updates the host's last-seen timestamp. Raises if `host_id` is not
     registered (a host must register before it can heartbeat).
   - `deregister(host_id)` — explicit, immediate removal, independent of heartbeat timeout.
@@ -125,7 +127,10 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/multi-node-registry-and-sc
 - Module: [`main.py`](../../src/llm_home_lab/main.py) — current hardcoded `candidates` construction
   this spec replaces.
 - Module: [`api/app.py`](../../src/llm_home_lab/api/app.py) — wires `candidates`, `router`, and
-  `health_monitor` together today; will also wire the registry and scheduling queue.
+  `health_monitor` together today; will also wire the registry and scheduling queue, and builds a
+  `ChatBackend` from each registered host's `capabilities.backend_type`/`base_url` via a small
+  `backend_type -> factory` map (only `"lmstudio"` supported initially, matching
+  [`main.py`](../../src/llm_home_lab/main.py)'s current single-backend setup).
 - Plan: (to be written) `docs/plans/multi-node-registry-and-scheduler.md`
 - Plan: [orchestrator-program](../plans/orchestrator-program.md) (M4 — multi-node registry and
   scheduler)
