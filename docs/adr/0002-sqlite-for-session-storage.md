@@ -37,7 +37,14 @@ layer grows through workspace state (#5) and tool state (#7).
 - Good, because no additional runtime dependency or service is introduced — `sqlite3` is stdlib.
 - Bad, because the on-disk format is not human-readable for casual debugging, unlike JSON files.
 - Bad, because schema changes need explicit migration handling as the state layer grows, whereas
-  JSON files could add fields without any migration step.
-- Mitigation: keep the schema minimal and additive for now (see the session manager core spec's
-  deferred `decisions`/`constraints` fields); revisit if a later milestone needs a networked or
-  multi-process store, which SQLite does not support well.
+  JSON files could add fields without any migration step. Mitigation: keep the schema additive
+  (`CREATE TABLE IF NOT EXISTS`, no destructive `ALTER`) for as long as possible; if a genuine
+  breaking schema change is ever needed, prefer a lightweight `PRAGMA user_version` + in-code
+  migration functions over pulling in a full migration framework (e.g. Alembic, which in
+  practice also pulls in SQLAlchemy) — not worth the dependency weight for this project's scale.
+- Bad, because SQLite does not support networked or multi-process access well, which this
+  decision explicitly does not solve for.
+- **Revisit trigger**: M4 (multi-node registry and scheduler) is expected to need a shared state
+  store across nodes, which SQLite cannot provide. Re-evaluate this ADR at that point — the
+  leading alternative would be PostgreSQL. Do not preemptively switch before M4 makes it
+  necessary.
