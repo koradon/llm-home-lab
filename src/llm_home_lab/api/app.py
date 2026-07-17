@@ -1,21 +1,34 @@
+import asyncio
 import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import BackendTimeoutError, ChatBackend
 from llm_home_lab.health.monitor import HealthMonitor
+from llm_home_lab.registry.models import HostCapabilities, HostCapacity, HostNotRegisteredError
+from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import NoAvailableBackendError, RoutingCandidate
+from llm_home_lab.scheduling.queue import SchedulingQueue
 
 access_logger = logging.getLogger("llm_home_lab.access")
+
+
+class NodeRegistrationRequest(BaseModel):
+    host_id: str
+    backend_type: str
+    context_window: int
+    base_url: str
+    max_concurrent_requests: int
 
 
 def _error_response(status_code: int, message: str, error_type: str, code: str) -> JSONResponse:
@@ -26,13 +39,52 @@ def _error_response(status_code: int, message: str, error_type: str, code: str) 
 
 
 def create_app(
-    candidates: Sequence[RoutingCandidate], router: RoutingEngine, health_monitor: HealthMonitor
+    registry: HostRegistry,
+    router: RoutingEngine,
+    health_monitor: HealthMonitor,
+    scheduling_queue: SchedulingQueue,
+    backend_factories: Mapping[str, Callable[[HostCapabilities], ChatBackend]],
+    heartbeat_ttl: timedelta = timedelta(seconds=60),
+    dispatch_wait_timeout: float = 30.0,
+    dispatch_poll_interval: float = 0.1,
 ) -> FastAPI:
     app = FastAPI()
-    app.state.candidates = candidates
+    app.state.registry = registry
     app.state.router = router
     app.state.health_monitor = health_monitor
-    backends_by_id: dict[str, ChatBackend] = {c.backend.backend_id: c.backend for c in candidates}
+    app.state.scheduling_queue = scheduling_queue
+    backends_by_id: dict[str, ChatBackend] = {}
+
+    def _backend_for(host_id: str, capabilities: HostCapabilities) -> ChatBackend:
+        backend = backends_by_id.get(host_id)
+        if backend is None:
+            backend = backend_factories[capabilities.backend_type](capabilities)
+            # The registry's host_id, not whatever the factory assigned, is the identifier
+            # routing/health/scheduling key on everywhere else.
+            backend.backend_id = host_id
+            backends_by_id[host_id] = backend
+        return backend
+
+    def _prune_backend_cache() -> None:
+        live_ids = {host.host_id for host in registry.hosts()}
+        for stale_id in set(backends_by_id) - live_ids:
+            del backends_by_id[stale_id]
+
+    def _eligible_candidates(at: datetime) -> list[RoutingCandidate]:
+        candidates = []
+        for host in registry.hosts():
+            if not health_monitor.is_healthy(host.host_id, at):
+                continue
+            if host.in_flight >= host.capacity.max_concurrent_requests:
+                continue
+            candidates.append(
+                RoutingCandidate(
+                    backend=_backend_for(host.host_id, host.capabilities),
+                    latency_ms=0.0,
+                    context_window=host.capabilities.context_window,
+                )
+            )
+        return candidates
 
     @app.middleware("http")
     async def log_requests(
@@ -69,25 +121,66 @@ def create_app(
     ) -> JSONResponse:
         return _error_response(503, str(exc), "backend_error", "no_available_backend")
 
+    @app.exception_handler(HostNotRegisteredError)
+    async def on_host_not_registered(request: Request, exc: HostNotRegisteredError) -> JSONResponse:
+        return _error_response(404, str(exc), "invalid_request_error", "host_not_registered")
+
+    @app.post("/v1/nodes/register")
+    async def register_node(payload: NodeRegistrationRequest) -> dict[str, str]:
+        registry.register(
+            payload.host_id,
+            HostCapabilities(
+                backend_type=payload.backend_type,
+                context_window=payload.context_window,
+                base_url=payload.base_url,
+            ),
+            HostCapacity(max_concurrent_requests=payload.max_concurrent_requests),
+            at=datetime.now(UTC),
+        )
+        return {"status": "registered"}
+
+    @app.post("/v1/nodes/{host_id}/heartbeat")
+    async def heartbeat_node(host_id: str) -> dict[str, str]:
+        registry.heartbeat(host_id, at=datetime.now(UTC))
+        return {"status": "ok"}
+
+    @app.delete("/v1/nodes/{host_id}")
+    async def deregister_node(host_id: str) -> dict[str, str]:
+        registry.deregister(host_id)
+        _prune_backend_cache()
+        return {"status": "deregistered"}
+
+    @app.get("/v1/nodes")
+    async def list_nodes() -> dict[str, list[dict[str, object]]]:
+        return {
+            "nodes": [
+                {
+                    "host_id": host.host_id,
+                    "backend_type": host.capabilities.backend_type,
+                    "context_window": host.capabilities.context_window,
+                    "base_url": host.capabilities.base_url,
+                    "max_concurrent_requests": host.capacity.max_concurrent_requests,
+                    "in_flight": host.in_flight,
+                    "last_seen": host.last_seen.isoformat(),
+                }
+                for host in registry.hosts()
+            ]
+        }
+
     @app.get("/health/live")
     async def health_live() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/health/ready")
     async def health_ready() -> JSONResponse:
+        registry.expire_stale(datetime.now(UTC), heartbeat_ttl)
+        _prune_backend_cache()
         reports = []
-        for candidate in candidates:
-            health = await candidate.backend.check_health()
-            health_monitor.record_probe(
-                candidate.backend.backend_id, health.healthy, datetime.now(UTC)
-            )
-            reports.append(
-                {
-                    "id": candidate.backend.backend_id,
-                    "healthy": health.healthy,
-                    "detail": health.detail,
-                }
-            )
+        for host in registry.hosts():
+            backend = _backend_for(host.host_id, host.capabilities)
+            health = await backend.check_health()
+            health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
+            reports.append({"id": host.host_id, "healthy": health.healthy, "detail": health.detail})
         all_healthy = all(report["healthy"] for report in reports)
         return JSONResponse(
             status_code=200 if all_healthy else 503,
@@ -102,19 +195,46 @@ def create_app(
         request: ChatCompletionRequest,
     ) -> StreamingResponse | dict[str, object]:
         now = datetime.now(UTC)
-        healthy_candidates = [
-            c for c in candidates if health_monitor.is_healthy(c.backend.backend_id, now)
-        ]
-        decision = router.select_backend(request, healthy_candidates, session_id=request.session_id)
+        candidates = _eligible_candidates(now)
+
+        if not candidates:
+            request_id = uuid.uuid4().hex
+            scheduling_queue.enqueue(
+                request_id, session_id=request.session_id or request_id, priority=0, at=now
+            )
+            waited = 0.0
+            admitted = False
+            while waited < dispatch_wait_timeout:
+                await asyncio.sleep(dispatch_poll_interval)
+                waited += dispatch_poll_interval
+                if scheduling_queue.dispatch(registry, datetime.now(UTC)) == request_id:
+                    admitted = True
+                    break
+            if not admitted:
+                raise NoAvailableBackendError(
+                    "no host became available before the dispatch timeout"
+                )
+            candidates = _eligible_candidates(datetime.now(UTC))
+
+        decision = router.select_backend(request, candidates, session_id=request.session_id)
         backend = backends_by_id[decision.backend_id]
+        registry.acquire_slot(decision.backend_id)
 
         if request.stream:
-            return StreamingResponse(
-                _stream_chunks(backend, request),
-                media_type="text/event-stream",
-            )
 
-        result = await backend.complete(request)
+            async def _chunks() -> AsyncIterator[str]:
+                try:
+                    async for chunk in _stream_chunks(backend, request):
+                        yield chunk
+                finally:
+                    registry.release_slot(decision.backend_id)
+
+            return StreamingResponse(_chunks(), media_type="text/event-stream")
+
+        try:
+            result = await backend.complete(request)
+        finally:
+            registry.release_slot(decision.backend_id)
 
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex}",
