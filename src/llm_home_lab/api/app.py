@@ -2,7 +2,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import BackendTimeoutError, ChatBackend
+from llm_home_lab.routing.engine import RoutingEngine
+from llm_home_lab.routing.models import RoutingCandidate
 
 access_logger = logging.getLogger("llm_home_lab.access")
 
@@ -21,9 +23,11 @@ def _error_response(status_code: int, message: str, error_type: str, code: str) 
     )
 
 
-def create_app(backend: ChatBackend) -> FastAPI:
+def create_app(candidates: Sequence[RoutingCandidate], router: RoutingEngine) -> FastAPI:
     app = FastAPI()
-    app.state.backend = backend
+    app.state.candidates = candidates
+    app.state.router = router
+    backends_by_id: dict[str, ChatBackend] = {c.backend.backend_id: c.backend for c in candidates}
 
     @app.middleware("http")
     async def log_requests(
@@ -60,18 +64,22 @@ def create_app(backend: ChatBackend) -> FastAPI:
 
     @app.get("/health/ready")
     async def health_ready() -> JSONResponse:
-        health = await backend.check_health()
+        reports = []
+        for candidate in candidates:
+            health = await candidate.backend.check_health()
+            reports.append(
+                {
+                    "id": candidate.backend.backend_id,
+                    "healthy": health.healthy,
+                    "detail": health.detail,
+                }
+            )
+        all_healthy = all(report["healthy"] for report in reports)
         return JSONResponse(
-            status_code=200 if health.healthy else 503,
+            status_code=200 if all_healthy else 503,
             content={
-                "status": "ok" if health.healthy else "unavailable",
-                "backends": [
-                    {
-                        "id": backend.backend_id,
-                        "healthy": health.healthy,
-                        "detail": health.detail,
-                    }
-                ],
+                "status": "ok" if all_healthy else "unavailable",
+                "backends": reports,
             },
         )
 
@@ -79,6 +87,9 @@ def create_app(backend: ChatBackend) -> FastAPI:
     async def chat_completions(
         request: ChatCompletionRequest,
     ) -> StreamingResponse | dict[str, object]:
+        decision = router.select_backend(request, candidates, session_id=request.session_id)
+        backend = backends_by_id[decision.backend_id]
+
         if request.stream:
             return StreamingResponse(
                 _stream_chunks(backend, request),

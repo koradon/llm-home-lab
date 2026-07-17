@@ -4,9 +4,19 @@ from fastapi.testclient import TestClient
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendChunk, BackendResponse, BackendTimeoutError
+from llm_home_lab.routing.engine import RoutingEngine
+from llm_home_lab.routing.models import PolicyRule, RoutingCandidate, RoutingPolicy
+
+
+def _app_for(backend):
+    candidates = [RoutingCandidate(backend=backend, latency_ms=0.0, context_window=8192)]
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    return create_app(candidates=candidates, router=RoutingEngine(policy))
 
 
 class FakeBackend:
+    backend_id = "fake-backend"
+
     async def complete(self, request):
         return BackendResponse(
             model=request.model,
@@ -23,7 +33,7 @@ class FakeBackend:
 
 
 def test_valid_non_streaming_request_returns_openai_shaped_response():
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
     payload = {
         "model": "test-model",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -48,7 +58,7 @@ def test_valid_non_streaming_request_returns_openai_shaped_response():
 
 
 def test_missing_messages_field_is_rejected_with_error_envelope():
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
     payload = {"model": "test-model", "stream": False}
 
     response = client.post("/v1/chat/completions", json=payload)
@@ -61,7 +71,7 @@ def test_missing_messages_field_is_rejected_with_error_envelope():
 
 
 def test_empty_messages_array_is_rejected():
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
     payload = {"model": "test-model", "messages": [], "stream": False}
 
     response = client.post("/v1/chat/completions", json=payload)
@@ -71,7 +81,7 @@ def test_empty_messages_array_is_rejected():
 
 
 def test_unrecognized_top_level_field_is_tolerated():
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
     payload = {
         "model": "test-model",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -85,10 +95,12 @@ def test_unrecognized_top_level_field_is_tolerated():
 
 def test_backend_timeout_is_surfaced_as_gateway_error():
     class TimingOutBackend:
+        backend_id = "timing-out-backend"
+
         async def complete(self, request):
             raise BackendTimeoutError("backend did not respond in time")
 
-    client = TestClient(create_app(backend=TimingOutBackend()))
+    client = TestClient(_app_for(TimingOutBackend()))
     payload = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]}
 
     response = client.post("/v1/chat/completions", json=payload)
@@ -100,7 +112,7 @@ def test_backend_timeout_is_surfaced_as_gateway_error():
 
 
 def test_malformed_json_body_is_rejected():
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
 
     response = client.post(
         "/v1/chat/completions",
@@ -113,7 +125,7 @@ def test_malformed_json_body_is_rejected():
 
 
 def test_streaming_request_returns_sse_chunks_ending_in_done():
-    client = TestClient(create_app(backend=FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()))
     payload = {
         "model": "test-model",
         "messages": [{"role": "user", "content": "Hi"}],

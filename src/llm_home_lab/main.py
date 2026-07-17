@@ -4,6 +4,8 @@ from fastapi import FastAPI
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.lmstudio import LMStudioBackend
+from llm_home_lab.routing.engine import RoutingEngine
+from llm_home_lab.routing.models import PolicyRule, RoutingCandidate, RoutingPolicy
 
 
 def create_default_app() -> FastAPI:
@@ -12,7 +14,18 @@ def create_default_app() -> FastAPI:
         timeout=float(os.environ.get("LMSTUDIO_TIMEOUT", "30")),
         max_retries=int(os.environ.get("LMSTUDIO_MAX_RETRIES", "2")),
     )
-    return create_app(backend=backend)
+    candidates = [
+        RoutingCandidate(
+            backend=backend,
+            latency_ms=0.0,
+            context_window=int(os.environ.get("LMSTUDIO_CONTEXT_WINDOW", "8192")),
+        )
+    ]
+    policy = RoutingPolicy(
+        rules=[PolicyRule(name="prefer-lower-latency", score_fn=lambda c, ctx: -c.latency_ms)]
+    )
+    router = RoutingEngine(policy)
+    return create_app(candidates=candidates, router=router)
 
 
 app = create_default_app()
