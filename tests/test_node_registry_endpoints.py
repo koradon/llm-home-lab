@@ -125,6 +125,16 @@ def test_heartbeat_on_a_registered_host_succeeds():
     assert response.status_code == 200
 
 
+def test_heartbeat_on_a_host_id_containing_slashes_succeeds():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    host_id = "http://localhost:1234"
+    client.post("/v1/nodes/register", json=_register_payload(host_id))
+
+    response = client.post(f"/v1/nodes/{host_id}/heartbeat")
+
+    assert response.status_code == 200
+
+
 def test_deregistering_a_host_removes_it_from_the_node_list():
     client = TestClient(_app(), headers=AUTH_HEADERS)
     client.post("/v1/nodes/register", json=_register_payload())
@@ -144,6 +154,17 @@ def test_deregistering_a_host_prunes_its_cached_backend_without_error():
 
     assert response.status_code == 200
     assert client.get("/health/ready").json() == {"status": "ok", "backends": []}
+
+
+def test_deregistering_a_host_id_containing_slashes_removes_it_from_the_node_list():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    host_id = "http://localhost:1234"
+    client.post("/v1/nodes/register", json=_register_payload(host_id))
+
+    response = client.delete(f"/v1/nodes/{host_id}")
+
+    assert response.status_code == 200
+    assert client.get("/v1/nodes").json()["nodes"] == []
 
 
 def test_reregistering_a_host_with_a_different_base_url_reconstructs_the_cached_backend():
