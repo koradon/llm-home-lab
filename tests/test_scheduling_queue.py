@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+from registry_test_helpers import new_registry_db_path
+
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.scheduling.queue import SchedulingQueue
@@ -8,7 +10,7 @@ T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _registry_with_host(host_id: str = "host-a", max_concurrent_requests: int = 1) -> HostRegistry:
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     registry.register(
         host_id,
         HostCapabilities(

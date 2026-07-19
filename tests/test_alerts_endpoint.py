@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendHealth
@@ -39,7 +40,7 @@ def _permissive_key_store() -> ApiKeyStore:
 
 
 def _app_for(alert_evaluator=None, registry=None):
-    registry = registry or HostRegistry()
+    registry = registry or HostRegistry(new_registry_db_path())
     if not registry.hosts():
         registry.register(
             "host-a",
@@ -96,7 +97,7 @@ def test_alerts_endpoint_lists_currently_firing_alerts():
 
 
 def test_health_ready_triggers_alert_evaluation():
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     registry.register(
         "host-a",
         HostCapabilities(backend_type="fake", context_window=8192, base_url="unused"),

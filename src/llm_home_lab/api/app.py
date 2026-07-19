@@ -4,7 +4,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -70,7 +70,6 @@ def create_app(
     alert_evaluator: AlertEvaluator,
     key_store: ApiKeyStore | None = None,
     auth_enabled: bool = True,
-    heartbeat_ttl: timedelta = timedelta(seconds=60),
     dispatch_wait_timeout: float = 30.0,
     dispatch_poll_interval: float = 0.1,
 ) -> FastAPI:
@@ -352,7 +351,6 @@ def create_app(
 
     @app.get("/health/ready")
     async def health_ready() -> JSONResponse:
-        registry.expire_stale(datetime.now(UTC), heartbeat_ttl)
         _prune_backend_cache()
         reports = []
         for host in registry.hosts():

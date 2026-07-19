@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendResponse
@@ -51,7 +52,7 @@ def _app(
     memory_budget_gb=None,
     model_sizes_gb=None,
 ):
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     registry.register(
         backend.backend_id,
         HostCapabilities(

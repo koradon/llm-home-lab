@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendChunk, BackendConnectionError, BackendResponse
@@ -52,7 +53,7 @@ def _app_for(
     health_monitor=None,
     extra_hosts=(),
 ):
-    registry = registry or HostRegistry()
+    registry = registry or HostRegistry(new_registry_db_path())
     registry.register(
         "host-a",
         HostCapabilities(backend_type="fake", context_window=8192, base_url="unused"),
@@ -263,7 +264,7 @@ class StubBackend:
 
 
 def test_a_dispatch_timeout_with_an_unhealthy_candidate_records_failover_failure():
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     for host_id in ("host-a", "host-b"):
         registry.register(
             host_id,

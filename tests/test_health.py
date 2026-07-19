@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendHealth, BackendResponse
@@ -29,7 +30,7 @@ def _permissive_key_store() -> ApiKeyStore:
 
 
 def _app_for(*backends):
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     factories = {}
     for backend in backends:
         registry.register(
