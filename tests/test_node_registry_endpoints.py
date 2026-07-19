@@ -69,6 +69,39 @@ def test_registering_a_host_makes_it_appear_in_the_node_list():
     assert [n["host_id"] for n in nodes] == ["host-a"]
 
 
+def test_registering_a_host_with_allowed_models_threads_them_into_node_metadata():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    payload = _register_payload()
+    payload["allowed_models"] = ["qwen2.5-coder-14b-instruct-mlx"]
+
+    client.post("/v1/nodes/register", json=payload)
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["allowed_models"] == ["qwen2.5-coder-14b-instruct-mlx"]
+
+
+def test_registering_a_host_with_a_memory_budget_threads_it_into_node_metadata():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    payload = _register_payload()
+    payload["memory_budget_gb"] = 24.0
+    payload["model_sizes_gb"] = {"qwen2.5-coder-14b-instruct-mlx": 8.5}
+
+    client.post("/v1/nodes/register", json=payload)
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["memory_budget_gb"] == 24.0
+    assert nodes[0]["model_sizes_gb"] == {"qwen2.5-coder-14b-instruct-mlx": 8.5}
+
+
+def test_registering_a_host_without_allowed_models_defaults_to_none():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["allowed_models"] is None
+
+
 def test_heartbeat_on_an_unregistered_host_returns_404():
     client = TestClient(_app(), headers=AUTH_HEADERS)
 

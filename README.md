@@ -80,7 +80,9 @@ curl http://localhost:8080/v1/chat/completions \
 
 If you get `401`, check your `Authorization` header and that `config/api_keys.json` exists and
 matches `ORCHESTRATOR_API_KEYS_FILE` (see below). If you get `503`, LM Studio's server isn't
-reachable at `LMSTUDIO_BASE_URL` — check step 1.
+reachable at `LMSTUDIO_BASE_URL` — check step 1. If you get `400 model_not_available`, the model
+you named isn't currently loaded in LM Studio — see the note on `allowed_models` below for why the
+orchestrator won't just load it for you.
 
 ## Adding more model hosts
 
@@ -103,6 +105,39 @@ curl -X POST http://localhost:8080/v1/nodes/register \
 The orchestrator then routes and load-balances across every registered, healthy host. See
 `GET /v1/nodes` to list registered hosts, `POST /v1/nodes/{host_id}/heartbeat` to keep one alive,
 and `DELETE /v1/nodes/{host_id}` to remove one.
+
+**Avoiding surprise model loads**: LM Studio will just-in-time load any model in its catalog the
+moment it's requested — even one you never intended to run, which can silently eat all your RAM
+if a client sends an unexpected `model` value. Without an explicit `allowed_models` list, the
+orchestrator asks LM Studio which models are *currently loaded* and only routes to those,
+rejecting anything else with `400`. Pin it down further (or skip that extra check per-request)
+by registering with a fixed list:
+
+```json
+{ "host_id": "gpu-box", "...": "...", "allowed_models": ["qwen2.5-coder-14b-instruct-mlx"] }
+```
+
+If you actually *want* on-demand loading (rather than requiring everything pre-loaded), declare a
+memory budget instead — LM Studio has no API to report model size or host memory usage, so you
+provide rough estimates yourself. A not-loaded model is only let through if it (plus whatever's
+already loaded) fits the budget; anything with an unknown size is rejected rather than risked:
+
+```json
+{
+  "host_id": "gpu-box",
+  "...": "...",
+  "memory_budget_gb": 32,
+  "model_sizes_gb": {
+    "qwen2.5-coder-14b-instruct-mlx": 8.5,
+    "google/gemma-4-e4b": 8.0
+  }
+}
+```
+
+There's no forced eviction — LM Studio has no unload API either, so this is a ceiling on what the
+orchestrator will *trigger*, not an active memory manager. Over budget → `503
+model_capacity_exceeded` (distinct from the flat `400` above — this one might work later if you
+free something up manually).
 
 ## Configuration reference
 
