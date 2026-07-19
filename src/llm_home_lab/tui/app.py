@@ -48,6 +48,14 @@ def _styled_severity(severity: object) -> Text:
     return Text(str(severity), style=style)
 
 
+_NODE_STATUS_STYLES = {"online": "bold green", "offline": "bold red", "unknown": "bold yellow"}
+
+
+def _styled_node_status(status: object) -> Text:
+    style = _NODE_STATUS_STYLES.get(str(status), "")
+    return Text(str(status), style=style)
+
+
 class DiagnosticsClient(Protocol):
     async def list_nodes(self) -> dict[str, object]: ...
     async def list_alerts(self) -> dict[str, object]: ...
@@ -99,7 +107,7 @@ class DashboardApp(App[None]):
 
     def on_mount(self) -> None:
         nodes_table = self.query_one("#nodes-table", DataTable)
-        nodes_table.add_columns("host_id", "backend_type", "in_flight/max", "last_seen")
+        nodes_table.add_columns("host_id", "status", "backend_type", "in_flight/max", "last_seen")
         nodes_table.border_title = "Nodes"
 
         alerts_table = self.query_one("#alerts-table", DataTable)
@@ -147,6 +155,7 @@ class DashboardApp(App[None]):
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             table.add_row(
                 host["host_id"],
+                _styled_node_status(host["status"]),
                 host["backend_type"],
                 f"{host['in_flight']}/{host['max_concurrent_requests']}",
                 host["last_seen"],

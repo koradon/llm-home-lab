@@ -225,6 +225,10 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-multi-no
   "explicit deregistration is the only removal path" design depends on this being fixed.
 - Exact schema for the persisted registry table(s) and which SQLite file it lives in (shared with
   session state vs. a new file) — left to the implementation issue for ADR-0004.
-- Exact shape of the online/offline field on `GET /v1/nodes` (a boolean, or a richer
-  `"online"/"offline"/"unknown"` enum for a never-yet-probed host) — left to the implementation
-  issue.
+- ~~Exact shape of the online/offline field on `GET /v1/nodes`~~ — resolved: a `status` string field
+  per host, one of `"online"`, `"offline"`, or `"unknown"`. Sourced from a new
+  `HealthMonitor.has_probe_history(backend_id) -> bool` (added alongside `is_healthy`, not
+  replacing it) combined with the existing `is_healthy(host_id, at)`: no recorded probe yet →
+  `"unknown"`; otherwise `"online"`/`"offline"` per `is_healthy`. The TUI Nodes panel
+  (`src/llm_home_lab/tui/app.py`) renders it as a colored `status` column, matching the
+  severity-coloring pattern used for Alerts.

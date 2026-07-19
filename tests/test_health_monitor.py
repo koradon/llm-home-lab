@@ -26,6 +26,20 @@ def test_a_backend_with_no_probes_is_healthy_by_default():
     assert monitor.is_healthy("backend-a", T0) is True
 
 
+def test_a_backend_with_no_probes_has_no_probe_history():
+    monitor = HealthMonitor()
+
+    assert monitor.has_probe_history("backend-a") is False
+
+
+def test_a_backend_with_a_recorded_probe_has_probe_history():
+    monitor = HealthMonitor()
+
+    monitor.record_probe("backend-a", healthy=True, at=T0)
+
+    assert monitor.has_probe_history("backend-a") is True
+
+
 def test_fewer_than_failure_threshold_stays_healthy():
     monitor = HealthMonitor(failure_threshold=3)
 

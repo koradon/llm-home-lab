@@ -220,3 +220,40 @@ def test_health_ready_does_not_remove_a_host_regardless_of_time_elapsed():
     client.get("/health/ready")
 
     assert [n["host_id"] for n in client.get("/v1/nodes").json()["nodes"]] == ["host-a"]
+
+
+def test_a_freshly_registered_never_probed_host_reports_unknown_status():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["status"] == "unknown"
+
+
+def test_a_host_that_passes_its_health_probe_reports_online_status():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    client.get("/health/ready")
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["status"] == "online"
+
+
+def test_a_host_that_fails_its_health_probe_reports_offline_status_and_stays_listed():
+    class FailingBackend(FakeBackend):
+        async def check_health(self):
+            from llm_home_lab.backends.base import BackendHealth
+
+            return BackendHealth(healthy=False, detail="down")
+
+    client = TestClient(_app(backend_factory=lambda caps: FailingBackend()), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    for _ in range(3):
+        client.get("/health/ready")
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["host_id"] == "host-a"
+    assert nodes[0]["status"] == "offline"

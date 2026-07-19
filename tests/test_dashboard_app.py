@@ -41,6 +41,7 @@ async def test_successful_poll_populates_all_three_panels():
                     "in_flight": 1,
                     "max_concurrent_requests": 4,
                     "last_seen": "2026-07-19T00:00:00+00:00",
+                    "status": "online",
                 }
             ]
         },
@@ -119,6 +120,7 @@ async def test_missing_metric_renders_unavailable_without_affecting_other_panels
                     "in_flight": 0,
                     "max_concurrent_requests": 4,
                     "last_seen": "2026-07-19T00:00:00+00:00",
+                    "status": "online",
                 }
             ]
         },
@@ -190,13 +192,14 @@ async def test_first_poll_shows_no_token_rate_yet():
         assert ["tokens/s[host-a]", "-"] in rows
 
 
-def _node(host_id, in_flight, max_concurrent_requests=4):
+def _node(host_id, in_flight, max_concurrent_requests=4, status="online"):
     return {
         "host_id": host_id,
         "backend_type": "lmstudio",
         "in_flight": in_flight,
         "max_concurrent_requests": max_concurrent_requests,
         "last_seen": "2026-07-19T00:00:00+00:00",
+        "status": status,
     }
 
 
@@ -236,6 +239,50 @@ async def test_a_node_that_disappears_has_its_sparkline_removed():
         await app.poll()
 
         assert len(app.query(Sparkline)) == 0
+
+
+async def test_an_offline_node_status_is_styled_red_and_stays_listed():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, status="offline")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[1].key
+        status_cell = table.get_cell(row_key, column_key)
+        assert table.row_count == 1
+        assert "red" in status_cell.style
+
+
+async def test_an_unknown_node_status_is_styled_distinctly_from_online():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, status="unknown")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[1].key
+        status_cell = table.get_cell(row_key, column_key)
+        assert "yellow" in status_cell.style
+
+
+async def test_an_online_node_status_has_no_alarming_style():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, status="online")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[1].key
+        status_cell = table.get_cell(row_key, column_key)
+        assert "red" not in status_cell.style
+        assert "yellow" not in status_cell.style
 
 
 async def test_second_poll_shows_token_rate_since_the_first():

@@ -67,3 +67,19 @@ Feature: Multi-node registry and scheduler
     Given a host has no allowed_models configured and its backend does not support reporting loaded models
     When a request names any model
     Then the request is not rejected on model-availability grounds
+
+  Scenario: A freshly registered, never-probed host reports unknown status
+    Given a host has just registered and has never had a health probe recorded
+    When the registry's host list is queried
+    Then that host's status is "unknown"
+
+  Scenario: A host that passes its health probe reports online status
+    Given a registered host whose health probe succeeds
+    When the registry's host list is queried
+    Then that host's status is "online"
+
+  Scenario: A host that fails its health probe reports offline status and stays listed
+    Given a registered host whose health probe fails enough times to be marked unhealthy
+    When the registry's host list is queried
+    Then that host's status is "offline"
+    And that host still appears in the registry's host list
