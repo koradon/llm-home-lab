@@ -51,7 +51,7 @@ class SlowBackend:
         )
 
 
-def _app(backend, max_concurrent_requests=1, dispatch_wait_timeout=30.0):
+def _app(backend, max_concurrent_requests=1, dispatch_wait_timeout=30.0, scheduling_queue=None):
     registry = HostRegistry()
     registry.register(
         backend.backend_id,
@@ -64,7 +64,7 @@ def _app(backend, max_concurrent_requests=1, dispatch_wait_timeout=30.0):
         registry=registry,
         router=RoutingEngine(policy),
         health_monitor=HealthMonitor(),
-        scheduling_queue=SchedulingQueue(),
+        scheduling_queue=scheduling_queue or SchedulingQueue(),
         backend_factories={"slow": lambda caps: backend},
         metrics_registry=MetricsRegistry(),
         alert_evaluator=AlertEvaluator([]),
@@ -111,3 +111,25 @@ async def test_a_request_that_never_gets_a_free_slot_times_out_as_service_unavai
     assert response.json()["error"]["type"] == "backend_error"
     backend.release_event.set()
     await first
+
+
+async def test_a_timed_out_request_is_removed_from_the_queue_not_left_stuck():
+    backend = SlowBackend()
+    scheduling_queue = SchedulingQueue()
+    transport = httpx.ASGITransport(
+        app=_app(backend, dispatch_wait_timeout=0.05, scheduling_queue=scheduling_queue)
+    )
+
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        first = asyncio.create_task(client.post("/v1/chat/completions", json=PAYLOAD))
+        await backend.started_event.wait()
+
+        response = await client.post("/v1/chat/completions", json=PAYLOAD)
+
+        assert response.status_code == 503
+        assert scheduling_queue.depth() == 0
+
+        backend.release_event.set()
+        await first

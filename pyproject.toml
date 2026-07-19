@@ -14,9 +14,13 @@ dependencies = [
     "pydantic>=2.10",
 ]
 
+[project.optional-dependencies]
+tui = ["textual>=0.60"]
+
 [project.scripts]
 llm-home-lab = "llm_home_lab.main:run"
 llm-home-lab-rotate-key = "llm_home_lab.security.rotate_keys:main"
+llm-home-lab-tui = "llm_home_lab.tui.app:run"
 
 [dependency-groups]
 dev = [

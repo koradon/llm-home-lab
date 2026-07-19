@@ -14,21 +14,21 @@ def _request():
     return ChatCompletionRequest(model="test-model", messages=[Message(role="user", content="Hi")])
 
 
+def _sse_response(*lines: str) -> httpx.Response:
+    body = "".join(f"data: {line}\n\n" for line in lines) + "data: [DONE]\n\n"
+    return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+
+
+SUCCESSFUL_SSE_LINES = (
+    '{"choices": [{"delta": {"content": "Hello!"}, "finish_reason": null}]}',
+    '{"choices": [{"delta": {}, "finish_reason": "stop"}]}',
+    '{"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 2}}',
+)
+
+
 async def test_successful_completion_returns_backend_response():
     def handler(request):
-        return httpx.Response(
-            200,
-            json={
-                "model": "test-model",
-                "choices": [
-                    {
-                        "message": {"role": "assistant", "content": "Hello!"},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
-            },
-        )
+        return _sse_response(*SUCCESSFUL_SSE_LINES)
 
     transport = httpx.MockTransport(handler)
     backend = LMStudioBackend(
@@ -42,6 +42,22 @@ async def test_successful_completion_returns_backend_response():
     assert result.finish_reason == "stop"
     assert result.prompt_tokens == 5
     assert result.completion_tokens == 2
+
+
+async def test_completion_falls_back_to_zero_usage_when_backend_omits_it():
+    def handler(request):
+        return _sse_response('{"choices": [{"delta": {"content": "Hi"}, "finish_reason": "stop"}]}')
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=5.0, transport=transport
+    )
+
+    result = await backend.complete(_request())
+
+    assert result.content == "Hi"
+    assert result.prompt_tokens == 0
+    assert result.completion_tokens == 0
 
 
 async def test_non_2xx_response_raises_immediately_without_retry():
@@ -64,7 +80,7 @@ async def test_non_2xx_response_raises_immediately_without_retry():
     assert call_count == 1
 
 
-async def test_timeout_exhausts_retries_and_raises_backend_timeout_error():
+async def test_read_timeout_raises_backend_timeout_error_immediately_without_retry():
     call_count = 0
 
     def handler(request):
@@ -80,7 +96,7 @@ async def test_timeout_exhausts_retries_and_raises_backend_timeout_error():
     with pytest.raises(BackendTimeoutError):
         await backend.complete(_request())
 
-    assert call_count == 3
+    assert call_count == 1
 
 
 async def test_connection_failure_exhausts_retries_and_raises_backend_connection_error():
@@ -102,27 +118,15 @@ async def test_connection_failure_exhausts_retries_and_raises_backend_connection
     assert call_count == 3
 
 
-async def test_transient_failure_recovers_within_retry_budget():
+async def test_transient_connection_failure_recovers_within_retry_budget():
     call_count = 0
 
     def handler(request):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise httpx.ReadTimeout("timed out", request=request)
-        return httpx.Response(
-            200,
-            json={
-                "model": "test-model",
-                "choices": [
-                    {
-                        "message": {"role": "assistant", "content": "Hello!"},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
-            },
-        )
+            raise httpx.ConnectError("connection refused", request=request)
+        return _sse_response(*SUCCESSFUL_SSE_LINES)
 
     transport = httpx.MockTransport(handler)
     backend = LMStudioBackend(
@@ -133,6 +137,34 @@ async def test_transient_failure_recovers_within_retry_budget():
 
     assert result.content == "Hello!"
     assert call_count == 2
+
+
+class _FlakyMidStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'data: {"choices": [{"delta": {"content": "Hi"}, "finish_reason": null}]}\n\n'
+        raise httpx.ReadError("connection dropped mid-stream")
+
+
+async def test_connection_failure_after_a_chunk_arrived_is_not_retried():
+    call_count = 0
+
+    def handler(request):
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(
+            200, stream=_FlakyMidStream(), headers={"content-type": "text/event-stream"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=5.0, max_retries=2, transport=transport
+    )
+
+    with pytest.raises(BackendConnectionError):
+        async for _ in backend.stream(_request()):
+            pass
+
+    assert call_count == 1
 
 
 async def test_stream_yields_backend_chunk_per_upstream_chunk():

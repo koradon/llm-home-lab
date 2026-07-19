@@ -52,7 +52,7 @@ def _load_alert_evaluator() -> AlertEvaluator:
 BACKEND_FACTORIES = {
     "lmstudio": lambda caps: LMStudioBackend(
         base_url=caps.base_url,
-        timeout=float(os.environ.get("LMSTUDIO_TIMEOUT", "30")),
+        timeout=float(os.environ.get("LMSTUDIO_TIMEOUT", "120")),
         max_retries=int(os.environ.get("LMSTUDIO_MAX_RETRIES", "2")),
     ),
 }
@@ -94,6 +94,7 @@ def create_default_app() -> FastAPI:
         alert_evaluator=_load_alert_evaluator(),
         key_store=_load_key_store() if auth_enabled else None,
         auth_enabled=auth_enabled,
+        dispatch_wait_timeout=float(os.environ.get("ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S", "120")),
     )
 
 
