@@ -27,6 +27,9 @@ htmlcov/
 # OS
 .DS_Store
 
+# Planhub files
+.plan/
+
 # Local session state
 data/
 
