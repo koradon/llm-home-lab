@@ -24,6 +24,22 @@ def test_default_app_respects_lmstudio_env_overrides(monkeypatch):
     assert [host.host_id for host in hosts] == ["http://gpu-box.home:1234"]
 
 
+def test_default_app_uses_a_120_second_dispatch_wait_timeout_by_default(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S", raising=False)
+
+    app = create_default_app()
+
+    assert app.state.dispatch_wait_timeout == 120.0
+
+
+def test_default_app_respects_dispatch_wait_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S", "90")
+
+    app = create_default_app()
+
+    assert app.state.dispatch_wait_timeout == 90.0
+
+
 def test_default_app_has_auth_enabled_by_default(monkeypatch):
     monkeypatch.delenv("ORCHESTRATOR_AUTH_ENABLED", raising=False)
 

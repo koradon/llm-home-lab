@@ -121,3 +121,45 @@ def test_draining_one_session_fully_then_enqueueing_a_new_session_dispatches_the
     dispatched = queue.dispatch(registry, at=T0)
 
     assert dispatched == "session-2-req-a"
+
+
+def test_cancel_removes_an_abandoned_entry_so_it_no_longer_counts_toward_depth():
+    queue = SchedulingQueue()
+    queue.enqueue("req-a", session_id="session-1", priority=0, at=T0)
+
+    queue.cancel("req-a", session_id="session-1", priority=0)
+
+    assert queue.depth() == 0
+
+
+def test_cancel_of_one_entry_leaves_other_queued_entries_dispatchable():
+    queue = SchedulingQueue()
+    registry = _registry_with_host()
+    queue.enqueue("req-a", session_id="session-1", priority=0, at=T0)
+    queue.enqueue("req-b", session_id="session-2", priority=0, at=T0)
+
+    queue.cancel("req-a", session_id="session-1", priority=0)
+
+    assert queue.depth() == 1
+    assert queue.dispatch(registry, at=T0) == "req-b"
+
+
+def test_cancel_of_one_of_two_entries_in_the_same_session_keeps_the_other():
+    queue = SchedulingQueue()
+    registry = _registry_with_host()
+    queue.enqueue("req-a", session_id="session-1", priority=0, at=T0)
+    queue.enqueue("req-b", session_id="session-1", priority=0, at=T0)
+
+    queue.cancel("req-a", session_id="session-1", priority=0)
+
+    assert queue.depth() == 1
+    assert queue.dispatch(registry, at=T0) == "req-b"
+
+
+def test_cancel_of_an_unknown_request_id_is_a_no_op():
+    queue = SchedulingQueue()
+    queue.enqueue("req-a", session_id="session-1", priority=0, at=T0)
+
+    queue.cancel("does-not-exist", session_id="session-1", priority=0)
+
+    assert queue.depth() == 1

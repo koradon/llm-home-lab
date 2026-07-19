@@ -28,6 +28,25 @@ class SchedulingQueue:
             len(session_queue) for tier in self._tiers.values() for session_queue in tier.values()
         )
 
+    def cancel(self, request_id: str, session_id: str, priority: int) -> None:
+        tier = self._tiers.get(priority)
+        if tier is None or session_id not in tier:
+            return
+
+        session_queue = tier[session_id]
+        remaining = deque(entry for entry in session_queue if entry.request_id != request_id)
+        if len(remaining) == len(session_queue):
+            return
+
+        if remaining:
+            tier[session_id] = remaining
+            return
+
+        del tier[session_id]
+        rotation = self._rotations.get(priority)
+        if rotation is not None and session_id in rotation:
+            rotation.remove(session_id)
+
     def dispatch(self, registry: HostRegistry, at: datetime) -> str | None:
         if not _has_free_capacity(registry):
             return None

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 from llm_home_lab.api.app import create_app
-from llm_home_lab.backends.base import BackendConnectionError, BackendResponse
+from llm_home_lab.backends.base import BackendChunk, BackendConnectionError, BackendResponse
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.metrics import MetricsRegistry
@@ -113,6 +113,33 @@ def test_a_successful_chat_completion_records_token_usage():
         "model": "test-model",
         "messages": [{"role": "user", "content": "Hi"}],
         "stream": False,
+    }
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.get("/metrics")
+
+    assert 'llm_home_lab_token_usage_total{host_id="host-a"} 15' in response.text
+
+
+class StreamingFakeBackendWithUsage:
+    backend_id = "host-a"
+
+    async def stream(self, request):
+        yield BackendChunk(
+            content="Hi", finish_reason="stop", usage={"prompt_tokens": 10, "completion_tokens": 5}
+        )
+
+
+def test_a_streaming_chat_completion_records_token_usage_when_the_backend_reports_it():
+    metrics_registry = MetricsRegistry()
+    client = TestClient(
+        _app_for(metrics_registry=metrics_registry, backend=StreamingFakeBackendWithUsage()),
+        headers=AUTH_HEADERS,
+    )
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": True,
     }
 
     client.post("/v1/chat/completions", json=payload)

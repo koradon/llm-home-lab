@@ -148,10 +148,27 @@ free something up manually).
 | `ORCHESTRATOR_API_KEYS_FILE` | `./config/api_keys.json` | Client/key/authorization config |
 | `ORCHESTRATOR_AUTH_ENABLED` | `true` | Set `false` to disable auth entirely (local testing only) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Default LM Studio host registered at startup |
-| `LMSTUDIO_TIMEOUT` | `30` | Request timeout (seconds) |
-| `LMSTUDIO_MAX_RETRIES` | `2` | Backend retry count |
+| `LMSTUDIO_TIMEOUT` | `120` | Per-chunk read timeout to LM Studio (seconds) — see note below |
+| `LMSTUDIO_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives — see note below |
 | `LMSTUDIO_CONTEXT_WINDOW` | `8192` | Context window advertised for routing |
 | `LMSTUDIO_MAX_CONCURRENT_REQUESTS` | `4` | Capacity used by the scheduling queue |
+| `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` | `120` | How long a queued request waits for a free host slot before failing with `503` |
+
+**Long-running generations**: the orchestrator always talks to LM Studio via its streaming
+protocol internally, even for a non-streaming caller — so `LMSTUDIO_TIMEOUT` is a *gap* timeout
+(max silence between tokens), not a cap on total generation time. A response that's just slow to
+produce (not stuck) is never retried: once the backend has started responding, a timeout means
+"still generating," not "transient failure," and resending the same prompt would only compound
+the wait. `LMSTUDIO_MAX_RETRIES` only covers a connection failure before any output has arrived at
+all (e.g. LM Studio not running yet). If you still regularly see `504 backend_timeout` for very
+long-form output, raise `LMSTUDIO_TIMEOUT` further — it only needs to cover the longest gap
+between two tokens, not the whole response.
+
+For genuinely long responses, also prefer **streaming** (`"stream": true` in the request body):
+the client gets tokens as they're generated instead of waiting in silence for the whole response.
+Note that the concurrency slot is held for a request's entire duration either way (streaming or
+not) — a long generation still occupies one of `LMSTUDIO_MAX_CONCURRENT_REQUESTS` for as long as
+it runs; register more hosts if you need to run many long generations at once.
 
 ## API surface
 
@@ -159,6 +176,30 @@ free something up manually).
 - `POST /v1/nodes/register`, `POST /v1/nodes/{host_id}/heartbeat`, `DELETE /v1/nodes/{host_id}`,
   `GET /v1/nodes` — manage model hosts.
 - `GET /health/live`, `GET /health/ready` — liveness/readiness (no auth required).
+
+## Terminal dashboard (TUI)
+
+An optional terminal dashboard shows live node health, firing alerts, and queue/token usage —
+comparable to `docker stats`. It's a separate, read-only client; it doesn't need to run on the
+same machine as the orchestrator.
+
+```bash
+uv sync --extra tui
+uv run llm-home-lab-tui --base-url http://localhost:8080 --api-key sk-dev-changeme
+```
+
+Add a client entry to `config/api_keys.json` scoped to what the dashboard reads:
+
+```json
+{
+  "client_id": "tui-dashboard",
+  "allowed_path_prefixes": ["/v1/nodes", "/v1/alerts"],
+  "keys": [{"key": "sk-dev-changeme", "expires_at": null}]
+}
+```
+
+`--base-url`/`ORCHESTRATOR_BASE_URL` and `--api-key`/`ORCHESTRATOR_API_KEY` are interchangeable
+(flag or env var); `--interval` controls the poll frequency in seconds (default `2`).
 
 ## How it works
 

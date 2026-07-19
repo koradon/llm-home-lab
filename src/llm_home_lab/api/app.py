@@ -83,6 +83,7 @@ def create_app(
     app.state.health_monitor = health_monitor
     app.state.scheduling_queue = scheduling_queue
     app.state.auth_enabled = auth_enabled
+    app.state.dispatch_wait_timeout = dispatch_wait_timeout
     backends_by_id: dict[str, ChatBackend] = {}
 
     def _backend_for(host_id: str, capabilities: HostCapabilities) -> ChatBackend:
@@ -390,9 +391,8 @@ def create_app(
 
         if not candidates:
             request_id = uuid.uuid4().hex
-            scheduling_queue.enqueue(
-                request_id, session_id=request.session_id or request_id, priority=0, at=now
-            )
+            queue_session_id = request.session_id or request_id
+            scheduling_queue.enqueue(request_id, session_id=queue_session_id, priority=0, at=now)
             waited = 0.0
             admitted = False
             while waited < dispatch_wait_timeout:
@@ -402,6 +402,7 @@ def create_app(
                     admitted = True
                     break
             if not admitted:
+                scheduling_queue.cancel(request_id, session_id=queue_session_id, priority=0)
                 if failover_in_play:
                     metrics_registry.record_failover_outcome(False, datetime.now(UTC))
                 raise NoAvailableBackendError(
@@ -419,7 +420,9 @@ def create_app(
 
             async def _chunks() -> AsyncIterator[str]:
                 try:
-                    async for chunk in _stream_chunks(backend, request):
+                    async for chunk in _stream_chunks(
+                        backend, request, metrics_registry, decision.backend_id
+                    ):
                         yield chunk
                 finally:
                     registry.release_slot(decision.backend_id)
@@ -464,12 +467,23 @@ def create_app(
 
 
 async def _stream_chunks(
-    backend: ChatBackend, request: ChatCompletionRequest
+    backend: ChatBackend,
+    request: ChatCompletionRequest,
+    metrics_registry: MetricsRegistry,
+    backend_id: str,
 ) -> AsyncIterator[str]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
+    usage: dict[str, int] | None = None
 
     async for chunk in backend.stream(request):
+        if chunk.usage is not None:
+            usage = chunk.usage
+        if not chunk.content and chunk.finish_reason is None:
+            # A usage-only accounting chunk (no content, no finish_reason) — consumed for
+            # metrics below, not forwarded as a delta to the external client.
+            continue
+
         payload = {
             "id": completion_id,
             "object": "chat.completion.chunk",
@@ -484,5 +498,10 @@ async def _stream_chunks(
             ],
         }
         yield f"data: {json.dumps(payload)}\n\n"
+
+    if usage is not None:
+        metrics_registry.record_token_usage(
+            backend_id, usage["prompt_tokens"], usage["completion_tokens"], datetime.now(UTC)
+        )
 
     yield "data: [DONE]\n\n"

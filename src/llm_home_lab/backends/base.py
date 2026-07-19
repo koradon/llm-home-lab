@@ -39,6 +39,7 @@ class BackendResponse:
 class BackendChunk:
     content: str
     finish_reason: str | None
+    usage: dict[str, int] | None = None
 
 
 @dataclass
