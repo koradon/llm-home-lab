@@ -4,13 +4,35 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 from llm_home_lab.api.app import create_app
-from llm_home_lab.backends.base import BackendChunk, BackendResponse, BackendTimeoutError
+from llm_home_lab.backends.base import (
+    BackendChunk,
+    BackendConnectionError,
+    BackendResponse,
+    BackendResponseError,
+    BackendTimeoutError,
+)
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import PolicyRule, RoutingPolicy
 from llm_home_lab.scheduling.queue import SchedulingQueue
+from llm_home_lab.security.key_store import ApiKeyStore
+from llm_home_lab.security.models import ApiKey, ClientConfig
+
+AUTH_HEADERS = {"Authorization": "Bearer test-key"}
+
+
+def _permissive_key_store() -> ApiKeyStore:
+    return ApiKeyStore(
+        [
+            ClientConfig(
+                client_id="test-client",
+                allowed_path_prefixes=["/"],
+                keys=[ApiKey(key="test-key", expires_at=None)],
+            )
+        ]
+    )
 
 
 def _app_for(backend):
@@ -28,6 +50,7 @@ def _app_for(backend):
         health_monitor=HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
         backend_factories={"fake": lambda caps, b=backend: b},
+        key_store=_permissive_key_store(),
     )
 
 
@@ -50,7 +73,7 @@ class FakeBackend:
 
 
 def test_valid_non_streaming_request_returns_openai_shaped_response():
-    client = TestClient(_app_for(FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()), headers=AUTH_HEADERS)
     payload = {
         "model": "test-model",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -75,7 +98,7 @@ def test_valid_non_streaming_request_returns_openai_shaped_response():
 
 
 def test_missing_messages_field_is_rejected_with_error_envelope():
-    client = TestClient(_app_for(FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()), headers=AUTH_HEADERS)
     payload = {"model": "test-model", "stream": False}
 
     response = client.post("/v1/chat/completions", json=payload)
@@ -88,7 +111,7 @@ def test_missing_messages_field_is_rejected_with_error_envelope():
 
 
 def test_empty_messages_array_is_rejected():
-    client = TestClient(_app_for(FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()), headers=AUTH_HEADERS)
     payload = {"model": "test-model", "messages": [], "stream": False}
 
     response = client.post("/v1/chat/completions", json=payload)
@@ -98,7 +121,7 @@ def test_empty_messages_array_is_rejected():
 
 
 def test_unrecognized_top_level_field_is_tolerated():
-    client = TestClient(_app_for(FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()), headers=AUTH_HEADERS)
     payload = {
         "model": "test-model",
         "messages": [{"role": "user", "content": "Hi"}],
@@ -117,7 +140,7 @@ def test_backend_timeout_is_surfaced_as_gateway_error():
         async def complete(self, request):
             raise BackendTimeoutError("backend did not respond in time")
 
-    client = TestClient(_app_for(TimingOutBackend()))
+    client = TestClient(_app_for(TimingOutBackend()), headers=AUTH_HEADERS)
     payload = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]}
 
     response = client.post("/v1/chat/completions", json=payload)
@@ -128,8 +151,44 @@ def test_backend_timeout_is_surfaced_as_gateway_error():
     assert "message" in body["error"]
 
 
+def test_backend_connection_failure_is_surfaced_as_service_unavailable():
+    class UnreachableBackend:
+        backend_id = "unreachable-backend"
+
+        async def complete(self, request):
+            raise BackendConnectionError("All connection attempts failed")
+
+    client = TestClient(_app_for(UnreachableBackend()), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]}
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["type"] == "backend_error"
+    assert "message" in body["error"]
+
+
+def test_backend_response_error_is_surfaced_as_service_unavailable():
+    class FailingBackend:
+        backend_id = "failing-backend"
+
+        async def complete(self, request):
+            raise BackendResponseError(500, "internal error from backend")
+
+    client = TestClient(_app_for(FailingBackend()), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]}
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["type"] == "backend_error"
+    assert "message" in body["error"]
+
+
 def test_malformed_json_body_is_rejected():
-    client = TestClient(_app_for(FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()), headers=AUTH_HEADERS)
 
     response = client.post(
         "/v1/chat/completions",
@@ -142,7 +201,7 @@ def test_malformed_json_body_is_rejected():
 
 
 def test_streaming_request_returns_sse_chunks_ending_in_done():
-    client = TestClient(_app_for(FakeBackend()))
+    client = TestClient(_app_for(FakeBackend()), headers=AUTH_HEADERS)
     payload = {
         "model": "test-model",
         "messages": [{"role": "user", "content": "Hi"}],

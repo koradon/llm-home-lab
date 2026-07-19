@@ -7,6 +7,9 @@ class HostCapabilities:
     backend_type: str
     context_window: int
     base_url: str
+    allowed_models: list[str] | None = None
+    memory_budget_gb: float | None = None
+    model_sizes_gb: dict[str, float] | None = None
 
 
 @dataclass

@@ -1,99 +1,175 @@
 # llm-home-lab
 
-Local LLM orchestrator that exposes a single OpenAI-compatible API endpoint
-for agents and routes requests across multiple local model hosts.
-
-## Project Vision
-
-This project aims to build a local control plane for home-lab LLM
-infrastructure:
-
-- one stable API for agents (`/v1` OpenAI-compatible),
-- many local backends (for example LM Studio on multiple machines),
-- stateless model workers,
-- stateful orchestration layer that owns memory, tools, and routing decisions.
-
-In short: "Kubernetes for home LLMs", but focused on agent workflows.
-
-## Core Concepts
-
-- **Session Manager**: persists conversation state, summaries, and decisions.
-- **Workspace State**: tracks repository and runtime context for coding tasks.
-- **Tool State**: keeps terminal/filesystem/tool continuity independent of model.
-- **Routing Engine**: chooses the best model based on availability, load, and
-  context constraints.
-
-## High-Level Architecture
+A local LLM orchestrator: one OpenAI-compatible API endpoint (`/v1/chat/completions`) that
+routes requests across one or more local model backends (LM Studio, with more backends possible
+later). Point your agent/tool at the orchestrator instead of directly at a model server, and it
+handles routing, failover, capacity limits, and auth for you.
 
 ```text
-Agent (OpenCode / other)
-        |
-        v
-http://llm.home:8080/v1
-        |
-        v
-Local LLM Orchestrator
-        |
-  +-----+-----+-----+
-  |           |     |
-LM Studio   LM Studio   LM Studio
-MacBook     Windows     Linux
+Agent (OpenCode / other)  --Bearer key-->  Orchestrator  -->  LM Studio (one or more hosts)
 ```
 
-## Running
+## Quickstart
 
-Deployment model isn't fully decided yet (see
-[docs/ideas/deployment-model.md](docs/ideas/deployment-model.md)) — both paths below work
-today.
+### 1. Set up LM Studio (the model backend)
 
-**As an installed package (uv):**
+1. Open LM Studio, load a model.
+2. Go to the **Local Server** tab (the `<->` icon in the left sidebar) and click **Start Server**.
+3. Note the port shown — it defaults to `1234`. LM Studio now serves an OpenAI-compatible API at
+   `http://localhost:1234/v1`.
+
+### 2. Create an API key for the orchestrator
+
+The orchestrator requires a Bearer token on every request except the health endpoints. Create
+`config/api_keys.json`:
+
+```json
+{
+  "clients": [
+    {
+      "client_id": "my-agent",
+      "allowed_path_prefixes": ["/v1/chat/completions"],
+      "keys": [{"key": "sk-dev-changeme", "expires_at": null}]
+    }
+  ]
+}
+```
+
+Pick your own key value (e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`).
+See [docs/security-baseline.md](docs/security-baseline.md) for the full format, how to add more
+clients, and how to rotate a key later.
+
+**Just testing locally and don't want to deal with keys yet?** Set `ORCHESTRATOR_AUTH_ENABLED=false`
+and skip this step entirely — every request is admitted with no key required. Don't do this
+outside your own machine.
+
+### 3. Start the orchestrator
+
+Both of these are equally supported — pick whichever fits your setup.
+
+**Option A — uv (runs natively on your machine):**
 
 ```bash
 uv sync
 LMSTUDIO_BASE_URL=http://localhost:1234 uv run llm-home-lab
 ```
 
-**As a container:**
+**Option B — Docker:**
 
 ```bash
 docker compose up --build
 ```
 
-The default `docker-compose.yml` points `LMSTUDIO_BASE_URL` at `host.docker.internal`, since
-LM Studio runs natively on the host, not in a container.
+`docker-compose.yml` points `LMSTUDIO_BASE_URL` at `host.docker.internal` by default, since LM
+Studio runs on your host machine, not inside the container. Adjust it if LM Studio runs
+elsewhere on your network.
 
-Either way, the gateway listens on `:8080` (`ORCHESTRATOR_PORT` to override) with
-`/v1/chat/completions`, `/health/live`, and `/health/ready`.
+Either way, the orchestrator listens on `:8080` (override with `ORCHESTRATOR_PORT`).
 
-## Roadmap
-
-Roadmap is managed in `.plan` and synced to GitHub issues/milestones via
-Planhub.
-
-Current milestones:
-
-1. Core Orchestrator Foundation
-2. Stateful Session and Tool Context
-3. Intelligent Routing and Reliability
-4. Production Hardening and Multi-Node Operations
-
-## Planning and GitHub Sync
-
-- Planning source of truth: `.plan/`
-- Sync command:
+### 4. Send a request
 
 ```bash
-planhub sync
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-dev-changeme" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "any-model-name",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
 ```
 
-- Safe validation before writing:
+If you get `401`, check your `Authorization` header and that `config/api_keys.json` exists and
+matches `ORCHESTRATOR_API_KEYS_FILE` (see below). If you get `503`, LM Studio's server isn't
+reachable at `LMSTUDIO_BASE_URL` — check step 1. If you get `400 model_not_available`, the model
+you named isn't currently loaded in LM Studio — see the note on `allowed_models` below for why the
+orchestrator won't just load it for you.
+
+## Adding more model hosts
+
+Once the orchestrator is running, register additional LM Studio instances (other machines on
+your network) without restarting it:
 
 ```bash
-planhub sync --dry-run --compact
+curl -X POST http://localhost:8080/v1/nodes/register \
+  -H "Authorization: Bearer <a key allowed on /v1/nodes>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host_id": "gpu-box",
+    "backend_type": "lmstudio",
+    "base_url": "http://gpu-box.home:1234",
+    "context_window": 8192,
+    "max_concurrent_requests": 4
+  }'
 ```
 
-## Current Status
+The orchestrator then routes and load-balances across every registered, healthy host. See
+`GET /v1/nodes` to list registered hosts, `POST /v1/nodes/{host_id}/heartbeat` to keep one alive,
+and `DELETE /v1/nodes/{host_id}` to remove one.
 
-This repository currently contains project concept and planning artifacts.
-Implementation code is expected to be added incrementally following milestone
-issues in `.plan/`.
+**Avoiding surprise model loads**: LM Studio will just-in-time load any model in its catalog the
+moment it's requested — even one you never intended to run, which can silently eat all your RAM
+if a client sends an unexpected `model` value. Without an explicit `allowed_models` list, the
+orchestrator asks LM Studio which models are *currently loaded* and only routes to those,
+rejecting anything else with `400`. Pin it down further (or skip that extra check per-request)
+by registering with a fixed list:
+
+```json
+{ "host_id": "gpu-box", "...": "...", "allowed_models": ["qwen2.5-coder-14b-instruct-mlx"] }
+```
+
+If you actually *want* on-demand loading (rather than requiring everything pre-loaded), declare a
+memory budget instead — LM Studio has no API to report model size or host memory usage, so you
+provide rough estimates yourself. A not-loaded model is only let through if it (plus whatever's
+already loaded) fits the budget; anything with an unknown size is rejected rather than risked:
+
+```json
+{
+  "host_id": "gpu-box",
+  "...": "...",
+  "memory_budget_gb": 32,
+  "model_sizes_gb": {
+    "qwen2.5-coder-14b-instruct-mlx": 8.5,
+    "google/gemma-4-e4b": 8.0
+  }
+}
+```
+
+There's no forced eviction — LM Studio has no unload API either, so this is a ceiling on what the
+orchestrator will *trigger*, not an active memory manager. Over budget → `503
+model_capacity_exceeded` (distinct from the flat `400` above — this one might work later if you
+free something up manually).
+
+## Configuration reference
+
+| Var | Default | Purpose |
+| --- | --- | --- |
+| `ORCHESTRATOR_HOST` | `0.0.0.0` | Gateway bind address |
+| `ORCHESTRATOR_PORT` | `8080` | Gateway port |
+| `ORCHESTRATOR_API_KEYS_FILE` | `./config/api_keys.json` | Client/key/authorization config |
+| `ORCHESTRATOR_AUTH_ENABLED` | `true` | Set `false` to disable auth entirely (local testing only) |
+| `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Default LM Studio host registered at startup |
+| `LMSTUDIO_TIMEOUT` | `30` | Request timeout (seconds) |
+| `LMSTUDIO_MAX_RETRIES` | `2` | Backend retry count |
+| `LMSTUDIO_CONTEXT_WINDOW` | `8192` | Context window advertised for routing |
+| `LMSTUDIO_MAX_CONCURRENT_REQUESTS` | `4` | Capacity used by the scheduling queue |
+
+## API surface
+
+- `POST /v1/chat/completions` — OpenAI-compatible chat completions (streaming and non-streaming).
+- `POST /v1/nodes/register`, `POST /v1/nodes/{host_id}/heartbeat`, `DELETE /v1/nodes/{host_id}`,
+  `GET /v1/nodes` — manage model hosts.
+- `GET /health/live`, `GET /health/ready` — liveness/readiness (no auth required).
+
+## How it works
+
+- **Routing**: a policy-scored engine picks the best available host per request (e.g. lowest
+  latency), with sticky sessions so a conversation stays on the same host.
+- **Health**: hosts that fail health checks are excluded from routing until they recover.
+- **Capacity**: requests queue (priority + fair scheduling across clients) when every eligible
+  host is already at its concurrency limit, instead of failing outright.
+- **Auth**: every client has its own key(s) and is restricted to the endpoints it needs; every
+  decision is audit-logged.
+
+Design docs and specs for each piece live in `docs/specs/` and `docs/plans/`, and project
+planning/issue tracking lives in `.plan/` (synced to GitHub via Planhub) if you want the deeper
+detail — none of that is needed to just run the thing.

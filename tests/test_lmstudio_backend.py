@@ -196,6 +196,59 @@ async def test_check_health_reports_healthy_when_models_endpoint_succeeds():
     assert health.healthy is True
 
 
+async def test_list_models_returns_only_the_currently_loaded_model_ids():
+    def handler(request):
+        assert request.url.path == "/api/v0/models"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "qwen2.5-coder-14b-instruct-mlx", "state": "loaded"},
+                    {"id": "google/gemma-4-e4b", "state": "loaded"},
+                    {"id": "text-embedding-nomic-embed-text-v1.5", "state": "not-loaded"},
+                ],
+                "object": "list",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=5.0, transport=transport
+    )
+
+    models = await backend.list_models()
+
+    assert models == ["qwen2.5-coder-14b-instruct-mlx", "google/gemma-4-e4b"]
+
+
+async def test_list_models_returns_none_on_a_non_2xx_response():
+    def handler(request):
+        return httpx.Response(500, text="internal error")
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=5.0, transport=transport
+    )
+
+    models = await backend.list_models()
+
+    assert models is None
+
+
+async def test_list_models_returns_none_when_backend_is_unreachable():
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=5.0, max_retries=0, transport=transport
+    )
+
+    models = await backend.list_models()
+
+    assert models is None
+
+
 async def test_check_health_reports_unhealthy_when_backend_is_unreachable():
     def handler(request):
         raise httpx.ConnectError("connection refused", request=request)

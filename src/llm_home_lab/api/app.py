@@ -12,15 +12,32 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from llm_home_lab.api.models import ChatCompletionRequest
-from llm_home_lab.backends.base import BackendTimeoutError, ChatBackend
+from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBackend
 from llm_home_lab.health.monitor import HealthMonitor
-from llm_home_lab.registry.models import HostCapabilities, HostCapacity, HostNotRegisteredError
+from llm_home_lab.registry.models import (
+    HostCapabilities,
+    HostCapacity,
+    HostInfo,
+    HostNotRegisteredError,
+)
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import NoAvailableBackendError, RoutingCandidate
 from llm_home_lab.scheduling.queue import SchedulingQueue
+from llm_home_lab.security.key_store import ApiKeyStore
 
 access_logger = logging.getLogger("llm_home_lab.access")
+audit_logger = logging.getLogger("llm_home_lab.audit")
+
+AUTH_EXEMPT_PATHS = {"/health/live", "/health/ready"}
+
+
+class ModelNotAvailableError(Exception):
+    """No registered host serves the requested model."""
+
+
+class ModelCapacityExceededError(Exception):
+    """A host could serve the model but loading it now would exceed its memory budget."""
 
 
 class NodeRegistrationRequest(BaseModel):
@@ -29,6 +46,9 @@ class NodeRegistrationRequest(BaseModel):
     context_window: int
     base_url: str
     max_concurrent_requests: int
+    allowed_models: list[str] | None = None
+    memory_budget_gb: float | None = None
+    model_sizes_gb: dict[str, float] | None = None
 
 
 def _error_response(status_code: int, message: str, error_type: str, code: str) -> JSONResponse:
@@ -44,15 +64,21 @@ def create_app(
     health_monitor: HealthMonitor,
     scheduling_queue: SchedulingQueue,
     backend_factories: Mapping[str, Callable[[HostCapabilities], ChatBackend]],
+    key_store: ApiKeyStore | None = None,
+    auth_enabled: bool = True,
     heartbeat_ttl: timedelta = timedelta(seconds=60),
     dispatch_wait_timeout: float = 30.0,
     dispatch_poll_interval: float = 0.1,
 ) -> FastAPI:
+    if auth_enabled and key_store is None:
+        raise ValueError("key_store is required when auth_enabled is True")
+
     app = FastAPI()
     app.state.registry = registry
     app.state.router = router
     app.state.health_monitor = health_monitor
     app.state.scheduling_queue = scheduling_queue
+    app.state.auth_enabled = auth_enabled
     backends_by_id: dict[str, ChatBackend] = {}
 
     def _backend_for(host_id: str, capabilities: HostCapabilities) -> ChatBackend:
@@ -70,9 +96,53 @@ def create_app(
         for stale_id in set(backends_by_id) - live_ids:
             del backends_by_id[stale_id]
 
-    def _eligible_candidates(at: datetime) -> list[RoutingCandidate]:
-        candidates = []
+    def _fits_in_budget(host: HostInfo, model: str, loaded: list[str]) -> bool:
+        budget = host.capabilities.memory_budget_gb
+        if budget is None:
+            return False  # no on-demand-loading budget configured: strict default applies
+
+        sizes = host.capabilities.model_sizes_gb or {}
+        requested_size = sizes.get(model)
+        if requested_size is None:
+            return False  # can't verify it fits: fail closed
+
+        current_usage = 0.0
+        for loaded_model in loaded:
+            size = sizes.get(loaded_model)
+            if size is None:
+                return False  # can't verify current headroom: fail closed
+            current_usage += size
+
+        return current_usage + requested_size <= budget
+
+    async def _model_capable_hosts(model: str) -> tuple[list[HostInfo], bool]:
+        capable = []
+        any_budget_blocked = False
         for host in registry.hosts():
+            allowed_models = host.capabilities.allowed_models
+            if allowed_models is not None:
+                if model in allowed_models:
+                    capable.append(host)
+                continue
+
+            backend = _backend_for(host.host_id, host.capabilities)
+            list_models = getattr(backend, "list_models", None)
+            if list_models is None:
+                capable.append(host)
+                continue
+
+            loaded = await list_models()
+            if loaded is None or model in loaded:
+                capable.append(host)
+            elif _fits_in_budget(host, model, loaded):
+                capable.append(host)
+            elif host.capabilities.memory_budget_gb is not None:
+                any_budget_blocked = True
+        return capable, any_budget_blocked
+
+    def _eligible_candidates(hosts: list[HostInfo], at: datetime) -> list[RoutingCandidate]:
+        candidates = []
+        for host in hosts:
             if not health_monitor.is_healthy(host.host_id, at):
                 continue
             if host.in_flight >= host.capacity.max_concurrent_requests:
@@ -107,6 +177,62 @@ def create_app(
         )
         return response
 
+    @app.middleware("http")
+    async def enforce_auth(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if not auth_enabled:
+            return await call_next(request)
+        assert key_store is not None  # enforced by the create_app entry check above
+
+        path = request.url.path
+        if path in AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+
+        auth_header = request.headers.get("authorization", "")
+        token = auth_header.removeprefix("Bearer ") if auth_header.startswith("Bearer ") else None
+        identity = key_store.authenticate(token, datetime.now(UTC)) if token else None
+
+        if identity is None:
+            reason = "missing_token" if token is None else "invalid_token"
+            audit_logger.info(
+                "client_id=%s method=%s path=%s outcome=%s reason=%s",
+                "unknown",
+                request.method,
+                path,
+                "blocked",
+                reason,
+            )
+            return _error_response(
+                401, "missing or invalid API key", "invalid_request_error", reason
+            )
+
+        if not key_store.is_authorized(identity, path):
+            audit_logger.info(
+                "client_id=%s method=%s path=%s outcome=%s reason=%s",
+                identity.client_id,
+                request.method,
+                path,
+                "blocked",
+                "path_not_allowed",
+            )
+            return _error_response(
+                403,
+                "client is not authorized for this path",
+                "invalid_request_error",
+                "path_not_allowed",
+            )
+
+        audit_logger.info(
+            "client_id=%s method=%s path=%s outcome=%s reason=%s",
+            identity.client_id,
+            request.method,
+            path,
+            "allowed",
+            "ok",
+        )
+        return await call_next(request)
+
     @app.exception_handler(RequestValidationError)
     async def on_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         return _error_response(400, str(exc.errors()), "invalid_request_error", "invalid_request")
@@ -114,6 +240,10 @@ def create_app(
     @app.exception_handler(BackendTimeoutError)
     async def on_backend_timeout(request: Request, exc: BackendTimeoutError) -> JSONResponse:
         return _error_response(504, str(exc), "backend_error", "backend_timeout")
+
+    @app.exception_handler(BackendError)
+    async def on_backend_error(request: Request, exc: BackendError) -> JSONResponse:
+        return _error_response(503, str(exc), "backend_error", "backend_unavailable")
 
     @app.exception_handler(NoAvailableBackendError)
     async def on_no_available_backend(
@@ -125,6 +255,16 @@ def create_app(
     async def on_host_not_registered(request: Request, exc: HostNotRegisteredError) -> JSONResponse:
         return _error_response(404, str(exc), "invalid_request_error", "host_not_registered")
 
+    @app.exception_handler(ModelNotAvailableError)
+    async def on_model_not_available(request: Request, exc: ModelNotAvailableError) -> JSONResponse:
+        return _error_response(400, str(exc), "invalid_request_error", "model_not_available")
+
+    @app.exception_handler(ModelCapacityExceededError)
+    async def on_model_capacity_exceeded(
+        request: Request, exc: ModelCapacityExceededError
+    ) -> JSONResponse:
+        return _error_response(503, str(exc), "backend_error", "model_capacity_exceeded")
+
     @app.post("/v1/nodes/register")
     async def register_node(payload: NodeRegistrationRequest) -> dict[str, str]:
         registry.register(
@@ -133,6 +273,9 @@ def create_app(
                 backend_type=payload.backend_type,
                 context_window=payload.context_window,
                 base_url=payload.base_url,
+                allowed_models=payload.allowed_models,
+                memory_budget_gb=payload.memory_budget_gb,
+                model_sizes_gb=payload.model_sizes_gb,
             ),
             HostCapacity(max_concurrent_requests=payload.max_concurrent_requests),
             at=datetime.now(UTC),
@@ -159,6 +302,9 @@ def create_app(
                     "backend_type": host.capabilities.backend_type,
                     "context_window": host.capabilities.context_window,
                     "base_url": host.capabilities.base_url,
+                    "allowed_models": host.capabilities.allowed_models,
+                    "memory_budget_gb": host.capabilities.memory_budget_gb,
+                    "model_sizes_gb": host.capabilities.model_sizes_gb,
                     "max_concurrent_requests": host.capacity.max_concurrent_requests,
                     "in_flight": host.in_flight,
                     "last_seen": host.last_seen.isoformat(),
@@ -195,7 +341,15 @@ def create_app(
         request: ChatCompletionRequest,
     ) -> StreamingResponse | dict[str, object]:
         now = datetime.now(UTC)
-        candidates = _eligible_candidates(now)
+        model_hosts, budget_blocked = await _model_capable_hosts(request.model)
+        if not model_hosts:
+            if budget_blocked:
+                raise ModelCapacityExceededError(
+                    f"model {request.model!r} would exceed a host's memory budget right now"
+                )
+            raise ModelNotAvailableError(f"no registered host serves model {request.model!r}")
+
+        candidates = _eligible_candidates(model_hosts, now)
 
         if not candidates:
             request_id = uuid.uuid4().hex
@@ -214,7 +368,7 @@ def create_app(
                 raise NoAvailableBackendError(
                     "no host became available before the dispatch timeout"
                 )
-            candidates = _eligible_candidates(datetime.now(UTC))
+            candidates = _eligible_candidates(model_hosts, datetime.now(UTC))
 
         decision = router.select_backend(request, candidates, session_id=request.session_id)
         backend = backends_by_id[decision.backend_id]

@@ -41,6 +41,21 @@ class LMStudioBackend:
             )
         return BackendHealth(healthy=True, detail="ok")
 
+    async def list_models(self) -> list[str] | None:
+        # LM Studio's OpenAI-compatible /v1/models lists every downloaded model regardless of
+        # load state (just-in-time loading would still trigger for any of them); the native
+        # /api/v0/models endpoint reports a "loaded"/"not-loaded" state per model, which is the
+        # only reliable signal for "won't trigger a new load."
+        try:
+            response = await self._client.get("/api/v0/models")
+        except httpx.TransportError:
+            return None
+
+        if response.status_code // 100 != 2:
+            return None
+
+        return [entry["id"] for entry in response.json()["data"] if entry.get("state") == "loaded"]
+
     async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
         response = await self._request_with_retry(request)
         if response.status_code // 100 != 2:

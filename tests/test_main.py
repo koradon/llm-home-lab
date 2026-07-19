@@ -24,6 +24,22 @@ def test_default_app_respects_lmstudio_env_overrides(monkeypatch):
     assert [host.host_id for host in hosts] == ["http://gpu-box.home:1234"]
 
 
+def test_default_app_has_auth_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_AUTH_ENABLED", raising=False)
+
+    app = create_default_app()
+
+    assert app.state.auth_enabled is True
+
+
+def test_default_app_disables_auth_when_env_var_is_false(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_AUTH_ENABLED", "false")
+
+    app = create_default_app()
+
+    assert app.state.auth_enabled is False
+
+
 def test_default_app_exposes_gateway_and_health_routes():
     app = create_default_app()
 
