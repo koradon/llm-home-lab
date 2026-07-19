@@ -26,6 +26,9 @@ class HealthMonitor:
     def is_healthy(self, backend_id: str, at: datetime) -> bool:
         return self._states.get(backend_id, BackendHealthState()).is_healthy
 
+    def has_probe_history(self, backend_id: str) -> bool:
+        return backend_id in self._states
+
     def health_score(self, backend_id: str) -> float:
         state = self._states.get(backend_id)
         if state is None or not state.history:

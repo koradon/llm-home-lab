@@ -147,6 +147,11 @@ def create_app(
                 any_budget_blocked = True
         return capable, any_budget_blocked
 
+    def _node_status(host_id: str, at: datetime) -> str:
+        if not health_monitor.has_probe_history(host_id):
+            return "unknown"
+        return "online" if health_monitor.is_healthy(host_id, at) else "offline"
+
     def _eligible_candidates(hosts: list[HostInfo], at: datetime) -> list[RoutingCandidate]:
         candidates = []
         for host in hosts:
@@ -305,6 +310,7 @@ def create_app(
 
     @app.get("/v1/nodes")
     async def list_nodes() -> dict[str, list[dict[str, object]]]:
+        at = datetime.now(UTC)
         return {
             "nodes": [
                 {
@@ -318,6 +324,7 @@ def create_app(
                     "max_concurrent_requests": host.capacity.max_concurrent_requests,
                     "in_flight": host.in_flight,
                     "last_seen": host.last_seen.isoformat(),
+                    "status": _node_status(host.host_id, at),
                 }
                 for host in registry.hosts()
             ]
