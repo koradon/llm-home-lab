@@ -13,6 +13,7 @@ This repository uses a docs-as-code layout bootstrapped by [adrlane](https://git
 | `docs/roadmap/` | Now / Next / Later horizons for future initiatives |
 | `docs/llm/` | Agent-facing documentation contract and templates |
 | `docs/security-baseline.md` | Auth/authorization/secrets-management reference for contributors |
+| `docs/runbooks/` | One doc per alert rule: symptom, likely cause, first mitigation step |
 
 ## How this documentation grows
 

@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendHealth, BackendResponse
 from llm_home_lab.health.monitor import HealthMonitor
+from llm_home_lab.observability.alerts import AlertEvaluator
+from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
@@ -46,6 +48,8 @@ def _app_for(*backends):
         health_monitor=HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
         backend_factories=factories,
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
         key_store=_permissive_key_store(),
     )
 

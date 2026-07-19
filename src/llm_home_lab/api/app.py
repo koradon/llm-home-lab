@@ -14,6 +14,8 @@ from pydantic import BaseModel
 from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBackend
 from llm_home_lab.health.monitor import HealthMonitor
+from llm_home_lab.observability.alerts import AlertEvaluator
+from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.models import (
     HostCapabilities,
     HostCapacity,
@@ -29,7 +31,7 @@ from llm_home_lab.security.key_store import ApiKeyStore
 access_logger = logging.getLogger("llm_home_lab.access")
 audit_logger = logging.getLogger("llm_home_lab.audit")
 
-AUTH_EXEMPT_PATHS = {"/health/live", "/health/ready"}
+AUTH_EXEMPT_PATHS = {"/health/live", "/health/ready", "/metrics"}
 
 
 class ModelNotAvailableError(Exception):
@@ -64,6 +66,8 @@ def create_app(
     health_monitor: HealthMonitor,
     scheduling_queue: SchedulingQueue,
     backend_factories: Mapping[str, Callable[[HostCapabilities], ChatBackend]],
+    metrics_registry: MetricsRegistry,
+    alert_evaluator: AlertEvaluator,
     key_store: ApiKeyStore | None = None,
     auth_enabled: bool = True,
     heartbeat_ttl: timedelta = timedelta(seconds=60),
@@ -174,6 +178,9 @@ def create_app(
             request.url.path,
             response.status_code,
             latency_ms,
+        )
+        metrics_registry.record_request(
+            request.url.path, response.status_code, latency_ms, datetime.now(UTC)
         )
         return response
 
@@ -313,6 +320,28 @@ def create_app(
             ]
         }
 
+    @app.get("/v1/alerts")
+    async def list_alerts() -> dict[str, list[dict[str, object]]]:
+        return {
+            "alerts": [
+                {
+                    "rule_name": event.rule_name,
+                    "severity": event.severity,
+                    "state": event.state,
+                    "value": event.value,
+                    "threshold_value": event.threshold_value,
+                    "runbook_url": event.runbook_url,
+                    "at": event.at.isoformat(),
+                }
+                for event in alert_evaluator.current_state()
+            ]
+        }
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        body = metrics_registry.render_prometheus(datetime.now(UTC), registry, scheduling_queue)
+        return Response(content=body, media_type="text/plain; version=0.0.4")
+
     @app.get("/health/live")
     async def health_live() -> dict[str, str]:
         return {"status": "ok"}
@@ -328,6 +357,10 @@ def create_app(
             health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
             reports.append({"id": host.host_id, "healthy": health.healthy, "detail": health.detail})
         all_healthy = all(report["healthy"] for report in reports)
+        alert_now = datetime.now(UTC)
+        alert_evaluator.evaluate(
+            metrics_registry.snapshot(alert_now, registry, scheduling_queue), alert_now
+        )
         return JSONResponse(
             status_code=200 if all_healthy else 503,
             content={
@@ -349,6 +382,10 @@ def create_app(
                 )
             raise ModelNotAvailableError(f"no registered host serves model {request.model!r}")
 
+        failover_in_play = any(
+            not health_monitor.is_healthy(host.host_id, now) for host in model_hosts
+        )
+
         candidates = _eligible_candidates(model_hosts, now)
 
         if not candidates:
@@ -365,6 +402,8 @@ def create_app(
                     admitted = True
                     break
             if not admitted:
+                if failover_in_play:
+                    metrics_registry.record_failover_outcome(False, datetime.now(UTC))
                 raise NoAvailableBackendError(
                     "no host became available before the dispatch timeout"
                 )
@@ -375,6 +414,8 @@ def create_app(
         registry.acquire_slot(decision.backend_id)
 
         if request.stream:
+            if failover_in_play:
+                metrics_registry.record_failover_outcome(True, datetime.now(UTC))
 
             async def _chunks() -> AsyncIterator[str]:
                 try:
@@ -387,8 +428,18 @@ def create_app(
 
         try:
             result = await backend.complete(request)
+        except BackendError:
+            if failover_in_play:
+                metrics_registry.record_failover_outcome(False, datetime.now(UTC))
+            raise
         finally:
             registry.release_slot(decision.backend_id)
+
+        if failover_in_play:
+            metrics_registry.record_failover_outcome(True, datetime.now(UTC))
+        metrics_registry.record_token_usage(
+            decision.backend_id, result.prompt_tokens, result.completion_tokens, datetime.now(UTC)
+        )
 
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex}",

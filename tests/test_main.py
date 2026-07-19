@@ -1,4 +1,4 @@
-from llm_home_lab.main import create_default_app
+from llm_home_lab.main import _load_alert_evaluator, create_default_app
 
 
 def test_default_app_wires_lmstudio_backend_with_default_config(monkeypatch):
@@ -48,3 +48,30 @@ def test_default_app_exposes_gateway_and_health_routes():
     assert "/v1/chat/completions" in paths
     assert "/health/live" in paths
     assert "/health/ready" in paths
+
+
+def test_default_app_exposes_metrics_and_alerts_routes(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_ALERT_RULES_FILE", raising=False)
+
+    app = create_default_app()
+
+    paths = {route.path for route in app.routes}
+
+    assert "/metrics" in paths
+    assert "/v1/alerts" in paths
+
+
+def test_the_committed_default_alert_rules_file_parses_without_error(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_ALERT_RULES_FILE", raising=False)
+
+    evaluator = _load_alert_evaluator()
+
+    assert evaluator.current_state() == []
+
+
+def test_a_missing_alert_rules_file_yields_an_empty_evaluator_not_a_crash(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORCHESTRATOR_ALERT_RULES_FILE", str(tmp_path / "does-not-exist.json"))
+
+    evaluator = _load_alert_evaluator()
+
+    assert evaluator.current_state() == []

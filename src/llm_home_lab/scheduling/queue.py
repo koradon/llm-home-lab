@@ -23,6 +23,11 @@ class SchedulingQueue:
             QueueEntry(request_id=request_id, session_id=session_id, priority=priority, at=at)
         )
 
+    def depth(self) -> int:
+        return sum(
+            len(session_queue) for tier in self._tiers.values() for session_queue in tier.values()
+        )
+
     def dispatch(self, registry: HostRegistry, at: datetime) -> str | None:
         if not _has_free_capacity(registry):
             return None
