@@ -114,3 +114,24 @@ transport) → `app.py` (Textual test harness) → packaging/docs last.
 - Same as the spec's: whether to add a dedicated JSON diagnostics endpoint for queue
   depth/token usage instead of parsing Prometheus text, and whether the TUI should ever ship
   outside this repo — both deferred pending real usage.
+
+## Addendum: post-ship additions
+
+During dogfooding, real usage surfaced a backend bug and motivated dashboard enhancements beyond
+the original scope:
+
+- **`SchedulingQueue` leak fix**: a request that timed out waiting for a free host slot was never
+  removed from the queue, so `queue_depth` stayed permanently inflated and stale entries could
+  silently consume a future dispatch turn meant for a live request. Added
+  `SchedulingQueue.cancel(request_id, session_id, priority)`, called from `chat_completions` on
+  timeout. See `src/llm_home_lab/scheduling/queue.py` and `tests/test_scheduling_queue.py`.
+- **Configurable dispatch timeout**: `dispatch_wait_timeout` was hardcoded at 30s with no way to
+  tune it without a code change. Added `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` env var in
+  `main.py`.
+- **`diagnostics/metrics_parser.py`** gained `p95_latency_ms` parsing.
+- **New `tui/rates.py`** (`compute_token_rates`) and **`tui/load_history.py`**
+  (`update_load_history`) — pure, tested modules computing client-side tokens/s and a rolling
+  per-host load-ratio history, with no new orchestrator endpoint.
+- **Dashboard visuals**: `Header`/`Footer`, zebra-striped tables, bordered panels with titles, a
+  colored error banner, colored alert severity, and a per-host `Sparkline` (Node Load panel)
+  driven by `load_history`.

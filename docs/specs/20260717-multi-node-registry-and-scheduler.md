@@ -7,8 +7,11 @@ draft
 ## Summary
 
 A `HostRegistry` that replaces the hardcoded backend list currently wired in `main.py` with
-dynamic host registration, capability/capacity metadata, and heartbeat-based liveness — so model
-hosts can join and leave the orchestrator without a restart. A `SchedulingQueue` sits in front of
+dynamic host registration and capability/capacity metadata — so model hosts can join and leave the
+orchestrator without a restart. ~~Heartbeat-based liveness~~ — **superseded by
+[ADR-0004](../adr/0004-persist-node-registry-no-auto-deregistration.md)**: registration no longer
+expires on a TTL; reachability ("online"/"offline") is `HealthMonitor`'s concern alone, surfaced
+via the API and the TUI rather than causing removal from the registry. A `SchedulingQueue` sits in front of
 [`RoutingEngine.select_backend`](../../src/llm_home_lab/routing/engine.py): it admits a request
 immediately if a candidate host has spare capacity, or queues it (priority first, fair within a
 priority) until a slot frees up. The orchestrator itself remains a single process managing
@@ -19,8 +22,10 @@ multiple remote model hosts — this spec does not introduce a distributed contr
 
 - As an operator, I want to add or remove a model host by registering/deregistering it, so that
   capacity changes don't require restarting the orchestrator.
-- As an operator, I want a host that stops sending heartbeats to be automatically dropped from
-  scheduling, so that a crashed or unreachable host doesn't keep receiving requests.
+- As an operator, I want an unreachable host automatically excluded from scheduling, so that a
+  crashed or unreachable host doesn't keep receiving requests — but I want it to stay visible as
+  "offline" rather than silently vanish from the registry (see
+  [ADR-0004](../adr/0004-persist-node-registry-no-auto-deregistration.md)).
 - As the orchestrator, I want to know each host's capabilities and current capacity, so that
   routing only considers hosts that can actually serve a request right now.
 - As a caller, I want a request that arrives when every eligible host is at capacity to queue
@@ -43,11 +48,11 @@ multiple remote model hosts — this spec does not introduce a distributed contr
     uses `capabilities.backend_type`/`base_url` to build one (see Related).
   - `heartbeat(host_id, at)` — updates the host's last-seen timestamp. Raises if `host_id` is not
     registered (a host must register before it can heartbeat).
-  - `deregister(host_id)` — explicit, immediate removal, independent of heartbeat timeout.
-  - `expire_stale(at, ttl)` — removes every host whose last-seen timestamp is older than `ttl` as
-    of `at`. Like `HealthMonitor.record_probe`, the registry never reads the wall clock itself;
-    the caller (a periodic sweep in app wiring) supplies `at`, matching this repo's convention for
-    deterministic, testable time-based state.
+  - `deregister(host_id)` — explicit, immediate removal. This is now the **only** removal path —
+    see [ADR-0004](../adr/0004-persist-node-registry-no-auto-deregistration.md).
+  - ~~`expire_stale(at, ttl)`~~ — **removed per ADR-0004**: a host is never removed from the
+    registry just because it stopped heartbeating; `last_seen` is retained as data, not used to
+    drive removal.
   - `hosts() -> Sequence[HostInfo]` — a queryable snapshot of every currently registered host
     (`host_id`, capabilities, capacity, in-flight count, last-seen) for diagnostics.
   - `in_flight(host_id) -> int` and internal accounting hooks (`acquire_slot`/`release_slot`) the
@@ -143,9 +148,11 @@ restart needed.
 for an already-registered `host_id` updates capabilities/capacity and refreshes its last-seen
 timestamp, but does not reset its current in-flight count.
 
-**A host silent past its TTL is dropped on the next sweep**: `expire_stale(at, ttl)` removes any
-host whose last heartbeat/registration is older than `ttl` relative to `at`; that host then no
-longer appears in `hosts()` or in scheduling candidates until it registers again.
+**A host silent past its TTL is excluded from scheduling, not removed from the registry** (per
+[ADR-0004](../adr/0004-persist-node-registry-no-auto-deregistration.md)): `HealthMonitor` marks it
+unhealthy/offline and `_eligible_candidates` excludes it from routing, but it still appears in
+`hosts()`/`GET /v1/nodes` with its offline status visible, until an operator explicitly
+`deregister`s it.
 
 **Explicit deregistration is immediate**: `deregister(host_id)` removes the host regardless of how
 recently it heartbeat, distinct from timeout-based expiry.
@@ -179,9 +186,15 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-multi-no
 - ADR: [0002-sqlite-for-session-storage](../adr/0002-sqlite-for-session-storage.md) — names this
   milestone as the SQLite-vs-PostgreSQL revisit trigger; confirmed with the user that "multi-node"
   here means one orchestrator process managing multiple remote model hosts, not multiple
-  orchestrator instances, so the revisit does not apply and registry state is in-memory
-  (unpersisted), matching `HealthMonitor`'s pattern rather than the SQLite-backed session/workspace
-  stores.
+  orchestrator instances, so the revisit does not apply. ~~Registry state is in-memory
+  (unpersisted), matching `HealthMonitor`'s pattern~~ — **superseded by
+  [ADR-0004](../adr/0004-persist-node-registry-no-auto-deregistration.md)**: the registry is now
+  SQLite-backed (reusing this same engine choice) so registrations survive a restart;
+  `HealthMonitor`'s own state remains in-memory and unaffected.
+- ADR: [0004-persist-node-registry-no-auto-deregistration](../adr/0004-persist-node-registry-no-auto-deregistration.md)
+  — removes `expire_stale`/TTL-based deregistration, persists the registry, and requires
+  `GET /v1/nodes` to expose online/offline status (real-world multi-node testing surfaced that
+  silent expiry was actively harmful, not just a deferred nicety).
 - Module: [`main.py`](../../src/llm_home_lab/main.py) — current hardcoded `candidates` construction
   this spec replaces.
 - Module: [`api/app.py`](../../src/llm_home_lab/api/app.py) — wires `candidates`, `router`, and
@@ -198,15 +211,20 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-multi-no
 
 ## Open Questions
 
-- How a host actually reaches the registry — does a host call in over a new HTTP endpoint (e.g.
-  `POST /v1/nodes/register`, `POST /v1/nodes/{id}/heartbeat`), or is registration a config/CLI-driven
-  call into `HostRegistry` with heartbeats piggy-backing on the orchestrator's existing outbound
-  `check_health()` probing — is an app-wiring decision left to the plan, matching how
-  [failover-and-health-policy](20260717-failover-and-health-policy.md) deferred "who calls `record_probe`."
-- Who calls `expire_stale` and on what cadence (a background sweep task vs. piggy-backing on each
-  incoming request) is likewise left to the plan.
+- ~~How a host actually reaches the registry~~ — resolved: `POST /v1/nodes/register`,
+  `POST /v1/nodes/{id}/heartbeat`, `DELETE /v1/nodes/{id}`, `GET /v1/nodes`.
+- ~~Who calls `expire_stale` and on what cadence~~ — moot per ADR-0004: `expire_stale` is removed
+  entirely.
 - ~~Whether `capabilities` needs a structured schema (e.g. supported model names)~~ — resolved,
   see "Model availability control" below: `HostCapabilities.allowed_models`.
 - Whether queued-but-undispatchable requests need a max queue depth or timeout (to fail loudly
   instead of queuing forever when no host will ever satisfy them) is deferred — not required by
   this issue's acceptance criteria, but worth flagging before production use.
+- `DELETE /v1/nodes/{host_id}` does not currently work for a `host_id` containing `/` (e.g. a
+  default host registered by base URL) — tracked as its own issue (see `.plan/issues/`); ADR-0004's
+  "explicit deregistration is the only removal path" design depends on this being fixed.
+- Exact schema for the persisted registry table(s) and which SQLite file it lives in (shared with
+  session state vs. a new file) — left to the implementation issue for ADR-0004.
+- Exact shape of the online/offline field on `GET /v1/nodes` (a boolean, or a richer
+  `"online"/"offline"/"unknown"` enum for a never-yet-probed host) — left to the implementation
+  issue.
