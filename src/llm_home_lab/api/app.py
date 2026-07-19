@@ -85,21 +85,24 @@ def create_app(
     app.state.auth_enabled = auth_enabled
     app.state.dispatch_wait_timeout = dispatch_wait_timeout
     backends_by_id: dict[str, ChatBackend] = {}
+    backend_capabilities_by_id: dict[str, HostCapabilities] = {}
 
     def _backend_for(host_id: str, capabilities: HostCapabilities) -> ChatBackend:
         backend = backends_by_id.get(host_id)
-        if backend is None:
+        if backend is None or backend_capabilities_by_id[host_id] != capabilities:
             backend = backend_factories[capabilities.backend_type](capabilities)
             # The registry's host_id, not whatever the factory assigned, is the identifier
             # routing/health/scheduling key on everywhere else.
             backend.backend_id = host_id
             backends_by_id[host_id] = backend
+            backend_capabilities_by_id[host_id] = capabilities
         return backend
 
     def _prune_backend_cache() -> None:
         live_ids = {host.host_id for host in registry.hosts()}
         for stale_id in set(backends_by_id) - live_ids:
             del backends_by_id[stale_id]
+            del backend_capabilities_by_id[stale_id]
 
     def _fits_in_budget(host: HostInfo, model: str, loaded: list[str]) -> bool:
         budget = host.capabilities.memory_budget_gb

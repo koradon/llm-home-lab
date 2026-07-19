@@ -29,23 +29,24 @@ def _permissive_key_store() -> ApiKeyStore:
 
 
 class FakeBackend:
-    def __init__(self, backend_id: str = "fake") -> None:
+    def __init__(self, backend_id: str = "fake", detail: str = "ok") -> None:
         self.backend_id = backend_id
+        self.detail = detail
 
     async def check_health(self):
         from llm_home_lab.backends.base import BackendHealth
 
-        return BackendHealth(healthy=True, detail="ok")
+        return BackendHealth(healthy=True, detail=self.detail)
 
 
-def _app(heartbeat_ttl=timedelta(seconds=60)):
+def _app(heartbeat_ttl=timedelta(seconds=60), backend_factory=None):
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
     return create_app(
         registry=HostRegistry(),
         router=RoutingEngine(policy),
         health_monitor=HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
-        backend_factories={"fake": lambda caps: FakeBackend()},
+        backend_factories={"fake": backend_factory or (lambda caps: FakeBackend())},
         metrics_registry=MetricsRegistry(),
         alert_evaluator=AlertEvaluator([]),
         key_store=_permissive_key_store(),
@@ -143,6 +144,44 @@ def test_deregistering_a_host_prunes_its_cached_backend_without_error():
 
     assert response.status_code == 200
     assert client.get("/health/ready").json() == {"status": "ok", "backends": []}
+
+
+def test_reregistering_a_host_with_a_different_base_url_reconstructs_the_cached_backend():
+    constructed_base_urls: list[str] = []
+
+    def factory(capabilities):
+        constructed_base_urls.append(capabilities.base_url)
+        return FakeBackend(detail=capabilities.base_url)
+
+    client = TestClient(_app(backend_factory=factory), headers=AUTH_HEADERS)
+    payload = _register_payload()
+    payload["base_url"] = "http://old-host:1234"
+    client.post("/v1/nodes/register", json=payload)
+    client.get("/health/ready")
+
+    payload["base_url"] = "http://new-host:1234"
+    client.post("/v1/nodes/register", json=payload)
+    response = client.get("/health/ready")
+
+    assert response.json()["backends"][0]["detail"] == "http://new-host:1234"
+    assert constructed_base_urls == ["http://old-host:1234", "http://new-host:1234"]
+
+
+def test_reregistering_a_host_with_unchanged_capabilities_does_not_reconstruct_the_backend():
+    constructed_base_urls: list[str] = []
+
+    def factory(capabilities):
+        constructed_base_urls.append(capabilities.base_url)
+        return FakeBackend(detail=capabilities.base_url)
+
+    client = TestClient(_app(backend_factory=factory), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+    client.get("/health/ready")
+
+    client.post("/v1/nodes/register", json=_register_payload())
+    client.get("/health/ready")
+
+    assert constructed_base_urls == ["http://localhost:1234"]
 
 
 def test_health_ready_expires_hosts_stale_past_the_heartbeat_ttl():
