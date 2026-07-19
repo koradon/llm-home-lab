@@ -61,25 +61,37 @@ that doesn't currently exist in this project, so it's a materially bigger bet.
 ## No-gos
 
 - No new persistent database engine choice — this does not reopen ADR-0002 (orchestrator stays
-  single-process).
-- No commitment to building the web UI in the near term — only the shared metrics backend and the
-  TUI are in near-term appetite; the web UI stays a later-horizon idea until re-evaluated.
+  single-process). The web UI's own historical-sample store (see its spec) reuses SQLite, the
+  engine ADR-0002 already chose, as a separate process/DB file — it does not touch the
+  orchestrator's storage.
+- ~~No commitment to building the web UI in the near term~~ — superseded: both the TUI and the web
+  UI have been promoted to spec + plan (see Related), sequenced M5 (TUI) then M6 (web UI). Web UI
+  scope stays deliberately small (own process, no new frontend build toolchain, no time-series
+  engine beyond SQLite) to keep the original single-maintainer appetite concern addressed rather
+  than reopened.
 
 ## Related
 
 - Spec: [monitoring-slos-and-alerting](../specs/20260719-monitoring-slos-and-alerting.md) — the
   shared metrics/alerting backend this idea's TUI and web UI would consume, now implemented
 - Plan: [monitoring-slos-and-alerting](../plans/20260719-monitoring-slos-and-alerting.md)
+- Spec: [tui-operator-dashboard](../specs/20260719-tui-operator-dashboard.md) — Option A, promoted
+- Plan: [tui-operator-dashboard](../plans/20260719-tui-operator-dashboard.md)
+- Spec: [web-management-ui](../specs/20260719-web-management-ui.md) — Option B, promoted
+- Plan: [web-management-ui](../plans/20260719-web-management-ui.md)
+- Roadmap: [operator-dashboards](../roadmap/operator-dashboards.md)
 - Issue: #12 — Add monitoring, SLOs, and alerting (milestone M4) — done; this idea's TUI/web-UI
-  front ends remain unbuilt and unscheduled
+  front ends are now milestones M5/M6
 - ADR-0002 — SQLite vs PostgreSQL revisit trigger; not applicable here, orchestrator stays
   single-process
 
 ## Open Questions
 
-- What library/pattern do other "beautiful" LLM terminal monitoring tools actually use? Needs
-  research before committing to Textual.
-- What is the minimal metrics backend needed for the TUI, versus what a future web UI would
-  additionally need (time-series storage, retention)?
-- Should the web UI be scoped as its own separate idea/spec once the TUI and metrics backend
-  exist, or revisited as part of this same idea later?
+- What library/pattern do other "beautiful" LLM terminal monitoring tools actually use? Textual is
+  proposed in the TUI spec as the starting choice; not independently researched against
+  alternatives.
+- What is the minimal metrics backend needed for the TUI, versus what the web UI additionally
+  needs (time-series storage, retention)? Resolved in the two specs: TUI parses `/metrics` live
+  with no storage; web UI adds its own small SQLite rolling-sample store.
+- ~~Should the web UI be scoped as its own separate idea/spec~~ — resolved: yes, see
+  [web-management-ui](../specs/20260719-web-management-ui.md).

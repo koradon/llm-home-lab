@@ -2,7 +2,8 @@
 
 ## Status
 
-draft
+completed — M1, M2, M3, and M4 are all delivered (issues #1-#12 closed); see
+[roadmap](../roadmap/README.md) for what follows.
 
 ## Related
 
@@ -27,6 +28,19 @@ Out of scope for this plan:
 - Exact dates and resourcing (tracked as horizons, not deadlines).
 - Model training or fine-tuning; the orchestrator treats backends as stateless workers.
 - Agent/client implementations that consume the API.
+
+## Delivery status
+
+| Milestone | Goal | Issues | Status |
+| --- | --- | --- | --- |
+| M1 — Core Orchestrator Foundation | OpenAI-compatible gateway + one LM Studio backend | #1, #2, #3 | done |
+| M2 — Stateful Session and Tool Context | orchestrator-owned session/workspace/tool state | #4, #5, #7 | done |
+| M3 — Intelligent Routing and Reliability | policy routing, failover, context cache | #6, #8, #9 | done |
+| M4 — Production Hardening and Multi-Node Operations | multi-node registry, monitoring/SLOs, security baseline | #10, #11, #12 | done |
+
+Tracking issue #13 (roadmap sequencing) was closed once this table and each milestone's plan
+status were updated to `completed`. Future work is tracked in [docs/roadmap/](../roadmap/README.md)
+instead.
 
 ## Steps
 
