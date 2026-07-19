@@ -10,7 +10,7 @@ The orchestrator is primarily an I/O-bound control plane: it proxies HTTP reques
 model backends (LM Studio), performs health checks, tracks session/workspace/tool state, and
 applies routing policy. It is not compute-heavy — the model inference itself runs in the
 backends, not in the orchestrator. We need a language that lets us move quickly through the
-M1–M4 milestone sequence (see [orchestrator-program plan](../plans/orchestrator-program.md))
+M1–M4 milestone sequence (see [orchestrator-program plan](../plans/20260711-orchestrator-program.md))
 while keeping the door open for future performance work.
 
 ## Considered Options

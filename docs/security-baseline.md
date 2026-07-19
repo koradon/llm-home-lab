@@ -1,7 +1,7 @@
 # Security Baseline
 
 How authentication, authorization, secrets, and audit logging work in this orchestrator. See
-[the spec](specs/security-and-governance-baseline.md) for the full behavioral contract; this doc
+[the spec](specs/20260717-security-and-governance-baseline.md) for the full behavioral contract; this doc
 is the practical how-to for operators and contributors.
 
 ## Authentication

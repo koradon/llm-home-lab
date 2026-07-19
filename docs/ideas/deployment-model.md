@@ -64,7 +64,7 @@ orchestration (compose/k8s) commitment yet.
 
 ## Related
 
-- Plan: [orchestrator-program](../plans/orchestrator-program.md) (M4 — production hardening and
+- Plan: [orchestrator-program](../plans/20260711-orchestrator-program.md) (M4 — production hardening and
   multi-node operations, where this gets decided for real)
 - ADR: [0001-python-as-implementation-language](../adr/0001-python-as-implementation-language.md)
 

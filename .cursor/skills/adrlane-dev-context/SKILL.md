@@ -17,6 +17,7 @@ This repository uses an [adrlane](https://github.com/koradon/adrlane) documentat
 1. Read `docs/README.md` for the documentation map.
 2. Search `docs/specs/` for a related spec; read it before changing behavior.
 3. Follow `docs/llm/AGENT_PROTOCOL.md` for workflow and write scope (`docs/**` only).
+4. If `.adrlane/workspace.yaml` exists at the workspace root, follow `adrlane-workspace-routing` to choose project vs service doc paths.
 
 ## During and after work
 

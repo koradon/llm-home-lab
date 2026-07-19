@@ -22,19 +22,23 @@ All starter templates live in `docs/llm/templates/`. Copy the relevant file when
 | Type | Pattern | Example |
 | --- | --- | --- |
 | ADR | `NNNN-short-title.md` | `0001-use-sqlite.md` |
-| Idea | `short-idea-name.md` | `cache-invalidation.md` |
-| Spec | `short-feature-name.md` | `cli-init.md` |
-| Acceptance (BDD) | `short-feature-name.feature` | `cli-init.feature` |
-| Plan (active) | `short-feature-name.md` | `cli-init.md` |
-| Plan (completed) | `short-feature-name.completed.md` | `cli-init.completed.md` |
-| Plan (revision) | `short-feature-name-v2.md` | `cli-init-v2.md` |
+| Idea | `YYYYMMDD-short-idea-name.md` | `20260707-cache-invalidation.md` |
+| Spec | `YYYYMMDD-short-feature-name.md` | `20260707-cli-init.md` |
+| Acceptance (BDD) | `features/YYYYMMDD-short-feature-name.feature` | `features/20260707-cli-init.feature` |
+| Plan (active) | `YYYYMMDD-short-feature-name.md` | `20260707-cli-init.md` |
+| Plan (completed) | `YYYYMMDD-short-feature-name.completed.md` | `20260707-cli-init.completed.md` |
+| Plan (revision) | `YYYYMMDD-short-feature-name-v2.md` | `20260707-cli-init-v2.md` |
 | Roadmap (horizon page) | `now.md` / `next.md` / `later.md` | `now.md` |
 | Runbook | `short-operation-name.md` | `local-development.md` |
 | Reference | `short-topic-name.md` | `cli-commands.md` |
 
 Use lowercase kebab-case for new files unless an existing convention differs.
 
-ADR numbers are sequential and monotonic — never reuse a number.
+Prefix Idea, Spec, and Plan filenames with the creation date (`YYYYMMDD-`) so a plain directory listing sorts chronologically. Use the date the file is first created; do not change it on later edits.
+
+ADR numbers are sequential and monotonic — never reuse a number. Do not date-prefix ADRs: the number is a stable citation ID (`ADR-0003`), and a date would still need a counter to disambiguate same-day ADRs.
+
+Acceptance files live under `docs/specs/features/`, not directly in `docs/specs/` — this keeps prose specs scannable as the number of specs grows. Use the same base name as the spec it covers, date prefix included.
 
 ## Document structure
 
