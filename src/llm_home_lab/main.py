@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.lmstudio import LMStudioBackend
 from llm_home_lab.health.monitor import HealthMonitor
+from llm_home_lab.observability.alerts import AlertEvaluator
+from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
@@ -15,6 +17,7 @@ from llm_home_lab.scheduling.queue import SchedulingQueue
 from llm_home_lab.security.key_store import ApiKeyStore
 
 DEFAULT_API_KEYS_FILE = "./config/api_keys.json"
+DEFAULT_ALERT_RULES_FILE = "./config/alert_rules.json"
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,15 @@ def _load_key_store() -> ApiKeyStore:
         # to start.
         return ApiKeyStore([])
     return ApiKeyStore.from_file(path)
+
+
+def _load_alert_evaluator() -> AlertEvaluator:
+    path = os.environ.get("ORCHESTRATOR_ALERT_RULES_FILE", DEFAULT_ALERT_RULES_FILE)
+    if not os.path.exists(path):
+        # No alert rules configured yet: /metrics still reports SLIs normally, nothing alerts
+        # until an operator adds this file.
+        return AlertEvaluator([])
+    return AlertEvaluator.from_file(path)
 
 
 BACKEND_FACTORIES = {
@@ -78,6 +90,8 @@ def create_default_app() -> FastAPI:
         health_monitor=health_monitor,
         scheduling_queue=SchedulingQueue(),
         backend_factories=BACKEND_FACTORIES,
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=_load_alert_evaluator(),
         key_store=_load_key_store() if auth_enabled else None,
         auth_enabled=auth_enabled,
     )

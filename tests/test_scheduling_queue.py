@@ -91,6 +91,26 @@ def test_dispatch_skips_a_fully_drained_tier_to_reach_a_lower_priority_tier():
     assert dispatched == "low-priority-req"
 
 
+def test_depth_is_zero_for_an_empty_queue():
+    queue = SchedulingQueue()
+
+    assert queue.depth() == 0
+
+
+def test_depth_counts_entries_across_tiers_and_sessions_and_drops_on_dispatch():
+    queue = SchedulingQueue()
+    registry = _registry_with_host()
+    queue.enqueue("req-a", session_id="session-1", priority=0, at=T0)
+    queue.enqueue("req-b", session_id="session-2", priority=0, at=T0)
+    queue.enqueue("req-c", session_id="session-1", priority=5, at=T0)
+
+    assert queue.depth() == 3
+
+    queue.dispatch(registry, at=T0)
+
+    assert queue.depth() == 2
+
+
 def test_draining_one_session_fully_then_enqueueing_a_new_session_dispatches_the_new_session():
     queue = SchedulingQueue()
     registry = _registry_with_host()

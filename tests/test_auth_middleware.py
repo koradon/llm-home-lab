@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendResponse
 from llm_home_lab.health.monitor import HealthMonitor
+from llm_home_lab.observability.alerts import AlertEvaluator
+from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
@@ -59,6 +61,8 @@ def _app(key_store=None, auth_enabled=True):
         health_monitor=HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
         backend_factories={"fake": lambda caps: backend},
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
         key_store=key_store if key_store is not None else (_key_store() if auth_enabled else None),
         auth_enabled=auth_enabled,
     )
@@ -132,6 +136,8 @@ def test_create_app_requires_a_key_store_when_auth_is_enabled():
             health_monitor=HealthMonitor(),
             scheduling_queue=SchedulingQueue(),
             backend_factories={},
+            metrics_registry=MetricsRegistry(),
+            alert_evaluator=AlertEvaluator([]),
             key_store=None,
             auth_enabled=True,
         )
