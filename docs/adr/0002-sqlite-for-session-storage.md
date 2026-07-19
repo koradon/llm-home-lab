@@ -8,10 +8,10 @@ accepted
 
 M2 introduces an orchestrator-owned state layer (session, workspace, tool state) that must
 survive process restarts and stay usable across model/backend switches (see
-[orchestrator-program plan](../plans/orchestrator-program.md)). The program plan explicitly
+[orchestrator-program plan](../plans/20260711-orchestrator-program.md)). The program plan explicitly
 flagged local storage choice — embedded DB vs. plain files — as a decision to make before M2
 implementation, since the schema underpins later routing/caching work in M3. The session manager
-core ([spec](../specs/session-manager-core.md)) is the first module that needs to make this
+core ([spec](../specs/20260717-session-manager-core.md)) is the first module that needs to make this
 choice, for messages and summaries keyed by session id.
 
 ## Considered Options

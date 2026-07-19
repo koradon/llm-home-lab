@@ -13,6 +13,7 @@ If this repository was bootstrapped with adrlane, agent-specific skills may be p
 | `adrlane-write-spec` | Write or update specs in `docs/specs/` |
 | `adrlane-write-plan` | Write or update plans in `docs/plans/` |
 | `adrlane-write-adr` | Document decisions in `docs/adr/` |
+| `adrlane-workspace-routing` | Route docs to project or sub-repo trees when `.adrlane/workspace.yaml` exists |
 
 Skills are thin adapters; this file and `docs/llm/DECISION_RULES.md` remain the source of truth.
 
@@ -32,12 +33,12 @@ Other sections (for example `docs/runbooks/`, `docs/reference/`) are added by th
 
 1. Write or update an **idea** when exploring a potential change that is not yet fully specified.
 2. Promote an accepted idea to a **spec** when desired behavior and contracts are clear.
-3. For accepted specs, keep Gherkin acceptance scenarios in a sibling file: `docs/specs/<spec-slug>.feature`.
-3. Create a **plan** from the spec when implementation spans multiple steps, modules, or sessions.
-4. Small changes may use a spec alone — a plan is not required for every spec.
-5. Link ideas, specs, and plans in a `## Related` section.
-6. When a plan is finished, set `## Status` to `completed` and optionally rename the file with a `.completed` suffix (for example `cli-init.completed.md`).
-7. When an idea is rejected, set `## Status` to `rejected` (and optionally link to the alternative decision, if any).
+3. For accepted specs, keep Gherkin acceptance scenarios in `docs/specs/features/<spec-slug>.feature`.
+4. Create a **plan** from the spec when implementation spans multiple steps, modules, or sessions.
+5. Small changes may use a spec alone — a plan is not required for every spec.
+6. Link ideas, specs, and plans in a `## Related` section.
+7. When a plan is finished, set `## Status` to `completed` and optionally rename the file with a `.completed` suffix (for example `cli-init.completed.md`).
+8. When an idea is rejected, set `## Status` to `rejected` (and optionally link to the alternative decision, if any).
 
 ## Before writing
 
