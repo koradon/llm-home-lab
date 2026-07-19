@@ -187,10 +187,10 @@ evaluate hook, the `chat_completions` recording hooks) → runbooks/docs last.
   state. This is the same operational assumption `expire_stale` already relies on (documented
   there, not solved here) — worth calling out to the operator in the runbook docs rather than
   silently assumed.
-- **Token usage isn't recorded for streaming responses**: `_stream_chunks` has no usage payload
-  today, so `token_usage_total` only reflects non-streaming `chat_completions` calls. Flagged
-  rather than silently wrong; closing this gap would need upstream backend support for
-  usage-on-stream-end, out of scope here.
+- ~~**Token usage isn't recorded for streaming responses**~~ — resolved by
+  [ADR-0003](../adr/0003-lmstudio-backend-always-streams-internally.md): `LMStudioBackend` now
+  requests `stream_options.include_usage` and `_stream_chunks` records token usage from the
+  accumulated stream the same way the non-streaming path always has.
 - **Existing-test churn is broad but shallow again**: same shape as the #11 `key_store` addition —
   every `create_app` call site needs one more constructor arg. Use the same shared-helper
   mitigation.
