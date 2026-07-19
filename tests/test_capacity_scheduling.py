@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 
 import httpx
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendResponse
@@ -52,7 +53,7 @@ class SlowBackend:
 
 
 def _app(backend, max_concurrent_requests=1, dispatch_wait_timeout=30.0, scheduling_queue=None):
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     registry.register(
         backend.backend_id,
         HostCapabilities(backend_type="slow", context_window=8192, base_url="unused"),

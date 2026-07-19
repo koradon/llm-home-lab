@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import (
@@ -38,7 +39,7 @@ def _permissive_key_store() -> ApiKeyStore:
 
 
 def _app_for(backend):
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     registry.register(
         backend.backend_id,
         HostCapabilities(backend_type="fake", context_window=8192, base_url="unused"),

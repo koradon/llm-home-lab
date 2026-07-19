@@ -2,9 +2,10 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
-from llm_home_lab.backends.base import BackendResponse
+from llm_home_lab.backends.base import BackendHealth, BackendResponse
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.metrics import MetricsRegistry
@@ -31,6 +32,9 @@ class FakeBackend:
             completion_tokens=1,
         )
 
+    async def check_health(self):
+        return BackendHealth(healthy=True, detail="ok")
+
 
 def _key_store(clients=None) -> ApiKeyStore:
     return ApiKeyStore(
@@ -46,7 +50,7 @@ def _key_store(clients=None) -> ApiKeyStore:
 
 
 def _app(key_store=None, auth_enabled=True):
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     backend = FakeBackend()
     registry.register(
         backend.backend_id,
@@ -126,7 +130,7 @@ def test_auth_disabled_allows_a_request_with_no_authorization_header():
 
 
 def test_create_app_requires_a_key_store_when_auth_is_enabled():
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
 
     with pytest.raises(ValueError):

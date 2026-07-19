@@ -18,6 +18,7 @@ from llm_home_lab.security.key_store import ApiKeyStore
 
 DEFAULT_API_KEYS_FILE = "./config/api_keys.json"
 DEFAULT_ALERT_RULES_FILE = "./config/alert_rules.json"
+DEFAULT_HOST_REGISTRY_DB_PATH = "./data/host_registry.db"
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,9 @@ BACKEND_FACTORIES = {
 
 
 def create_default_app() -> FastAPI:
-    registry = HostRegistry()
+    registry = HostRegistry(
+        os.environ.get("ORCHESTRATOR_HOST_REGISTRY_DB_PATH", DEFAULT_HOST_REGISTRY_DB_PATH)
+    )
     base_url = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234")
     registry.register(
         base_url,

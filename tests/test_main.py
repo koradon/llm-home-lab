@@ -1,4 +1,11 @@
+import pytest
+
 from llm_home_lab.main import _load_alert_evaluator, create_default_app
+
+
+@pytest.fixture(autouse=True)
+def _isolated_host_registry_db(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORCHESTRATOR_HOST_REGISTRY_DB_PATH", str(tmp_path / "host_registry.db"))
 
 
 def test_default_app_wires_lmstudio_backend_with_default_config(monkeypatch):

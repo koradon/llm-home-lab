@@ -1,6 +1,5 @@
-from datetime import timedelta
-
 from fastapi.testclient import TestClient
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.health.monitor import HealthMonitor
@@ -39,10 +38,10 @@ class FakeBackend:
         return BackendHealth(healthy=True, detail=self.detail)
 
 
-def _app(heartbeat_ttl=timedelta(seconds=60), backend_factory=None):
+def _app(db_path=None, backend_factory=None):
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
     return create_app(
-        registry=HostRegistry(),
+        registry=HostRegistry(db_path or new_registry_db_path()),
         router=RoutingEngine(policy),
         health_monitor=HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
@@ -50,7 +49,6 @@ def _app(heartbeat_ttl=timedelta(seconds=60), backend_factory=None):
         metrics_registry=MetricsRegistry(),
         alert_evaluator=AlertEvaluator([]),
         key_store=_permissive_key_store(),
-        heartbeat_ttl=heartbeat_ttl,
     )
 
 
@@ -205,11 +203,20 @@ def test_reregistering_a_host_with_unchanged_capabilities_does_not_reconstruct_t
     assert constructed_base_urls == ["http://localhost:1234"]
 
 
-def test_health_ready_expires_hosts_stale_past_the_heartbeat_ttl():
-    client = TestClient(_app(heartbeat_ttl=timedelta(seconds=0)), headers=AUTH_HEADERS)
+def test_a_registered_host_survives_an_app_restart():
+    db_path = new_registry_db_path()
+    first_client = TestClient(_app(db_path=db_path), headers=AUTH_HEADERS)
+    first_client.post("/v1/nodes/register", json=_register_payload())
+
+    second_client = TestClient(_app(db_path=db_path), headers=AUTH_HEADERS)
+
+    assert [n["host_id"] for n in second_client.get("/v1/nodes").json()["nodes"]] == ["host-a"]
+
+
+def test_health_ready_does_not_remove_a_host_regardless_of_time_elapsed():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
     client.post("/v1/nodes/register", json=_register_payload())
-    assert client.get("/v1/nodes").json()["nodes"] != []
 
     client.get("/health/ready")
 
-    assert client.get("/v1/nodes").json()["nodes"] == []
+    assert [n["host_id"] for n in client.get("/v1/nodes").json()["nodes"]] == ["host-a"]

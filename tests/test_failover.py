@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendHealth, BackendResponse
@@ -49,7 +50,7 @@ class FakeBackend:
 
 
 def _app_for(*backends, failure_threshold=1):
-    registry = HostRegistry()
+    registry = HostRegistry(new_registry_db_path())
     factories = {}
     for backend in backends:
         registry.register(
