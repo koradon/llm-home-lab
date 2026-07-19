@@ -293,12 +293,12 @@ def create_app(
         )
         return {"status": "registered"}
 
-    @app.post("/v1/nodes/{host_id}/heartbeat")
+    @app.post("/v1/nodes/{host_id:path}/heartbeat")
     async def heartbeat_node(host_id: str) -> dict[str, str]:
         registry.heartbeat(host_id, at=datetime.now(UTC))
         return {"status": "ok"}
 
-    @app.delete("/v1/nodes/{host_id}")
+    @app.delete("/v1/nodes/{host_id:path}")
     async def deregister_node(host_id: str) -> dict[str, str]:
         registry.deregister(host_id)
         _prune_backend_cache()
