@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import logging
 import os
 import re
 import sys
@@ -17,6 +18,8 @@ from llm_home_lab.tui.client import DiagnosticsClientError, OrchestratorDiagnost
 from llm_home_lab.tui.load_history import update_load_history
 from llm_home_lab.tui.rates import compute_token_rates
 
+logger = logging.getLogger(__name__)
+
 _BANNER_MESSAGES = {
     "unauthorized": "not authorized — check API key",
     "connection": "cannot reach orchestrator, retrying",
@@ -33,11 +36,20 @@ def _pick_error(errors: list[DiagnosticsClientError]) -> DiagnosticsClientError:
     return errors[0]
 
 
-def _sparkline_widget_id(host_id: str, prefix: str = "load") -> str:
+def _sparkline_widget_id(host_id: str, prefix: str, used_ids: set[str]) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", host_id)
     if not sanitized or not (sanitized[0].isalpha() or sanitized[0] == "_"):
         sanitized = f"h_{sanitized}"
-    return f"{prefix}-{sanitized}"
+    candidate = f"{prefix}-{sanitized}"
+    # Two distinct host_ids can sanitize to the same string (e.g. "node.1" and "node_1" both
+    # become "node_1") — disambiguate rather than mount a duplicate widget id, which Textual
+    # rejects and, per its Timer._tick, would take down the whole dashboard.
+    suffix = 2
+    while candidate in used_ids:
+        candidate = f"{prefix}-{sanitized}-{suffix}"
+        suffix += 1
+    used_ids.add(candidate)
+    return candidate
 
 
 _SEVERITY_STYLES = {"critical": "bold red", "warning": "bold yellow"}
@@ -84,6 +96,7 @@ class DiagnosticsClient(Protocol):
     async def list_nodes(self) -> dict[str, object]: ...
     async def list_alerts(self) -> dict[str, object]: ...
     async def fetch_metrics_text(self) -> str: ...
+    async def trigger_health_check(self) -> None: ...
 
 
 class DashboardApp(App[None]):
@@ -133,6 +146,7 @@ class DashboardApp(App[None]):
         self._ext_load_history: dict[str, list[float]] = {}
         self._ext_load_sparkline_ids: dict[str, str] = {}
         self._node_group_ids: dict[str, str] = {}
+        self._poll_in_progress = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -165,27 +179,46 @@ class DashboardApp(App[None]):
         self.set_interval(self._interval_s, self.poll)
 
     async def poll(self) -> None:
-        nodes, alerts, metrics_text = await asyncio.gather(
-            self._client.list_nodes(),
-            self._client.list_alerts(),
-            self._client.fetch_metrics_text(),
-            return_exceptions=True,
-        )
-        errors = [
-            result
-            for result in (nodes, alerts, metrics_text)
-            if isinstance(result, DiagnosticsClientError)
-        ]
-        if errors:
-            self._show_banner(_BANNER_MESSAGES.get(_pick_error(errors).kind, errors[0].kind))
+        # A slow or overlapping tick must never re-enter rendering: two concurrent passes
+        # racing to mount the same not-yet-tracked node's sparkline group raises NoMatches,
+        # and an unhandled exception here takes down the whole app (Textual's Timer._tick
+        # always exits the app on a callback exception).
+        if self._poll_in_progress:
             return
+        self._poll_in_progress = True
+        try:
+            # /v1/nodes only reports a status other than "unknown" for hosts that have a
+            # recorded probe, and nothing records one except a call to /health/ready — the
+            # dashboard triggers it itself here so status reflects reality instead of staying
+            # "unknown" forever. Its outcome is deliberately excluded from `errors` below: a
+            # transport failure here shouldn't blank out nodes/alerts/tokens that loaded fine.
+            nodes, alerts, metrics_text, _health_check = await asyncio.gather(
+                self._client.list_nodes(),
+                self._client.list_alerts(),
+                self._client.fetch_metrics_text(),
+                self._client.trigger_health_check(),
+                return_exceptions=True,
+            )
+            errors = [
+                result
+                for result in (nodes, alerts, metrics_text)
+                if isinstance(result, DiagnosticsClientError)
+            ]
+            if errors:
+                self._show_banner(_BANNER_MESSAGES.get(_pick_error(errors).kind, errors[0].kind))
+                return
 
-        self._show_banner("")
-        nodes_dict = cast("dict[str, object]", nodes)
-        self._render_nodes(nodes_dict)
-        self._render_alerts(cast("dict[str, object]", alerts))
-        self._render_queue_tokens(cast(str, metrics_text))
-        await self._render_load_sparklines(nodes_dict)
+            self._show_banner("")
+            nodes_dict = cast("dict[str, object]", nodes)
+            self._render_nodes(nodes_dict)
+            self._render_alerts(cast("dict[str, object]", alerts))
+            self._render_queue_tokens(cast(str, metrics_text))
+            await self._render_load_sparklines(nodes_dict)
+        except Exception:
+            logger.exception("dashboard render failed for this poll cycle")
+            self._show_banner("dashboard render error, retrying")
+        finally:
+            self._poll_in_progress = False
 
     def _show_banner(self, message: str) -> None:
         text = Text(message, style="bold red") if message else Text("")
@@ -259,11 +292,16 @@ class DashboardApp(App[None]):
             self._ext_load_sparkline_ids.pop(stale_host_id, None)
             await self.query_one(f"#{stale_group_id}").remove()
 
+        used_ids = (
+            set(self._node_group_ids.values())
+            | set(self._sparkline_ids.values())
+            | set(self._ext_load_sparkline_ids.values())
+        )
         for host_id in ratios:
             if host_id not in self._node_group_ids:
-                own_id = _sparkline_widget_id(host_id, "load")
-                ext_id = _sparkline_widget_id(host_id, "extload")
-                group_id = _sparkline_widget_id(host_id, "group")
+                own_id = _sparkline_widget_id(host_id, "load", used_ids)
+                ext_id = _sparkline_widget_id(host_id, "extload", used_ids)
+                group_id = _sparkline_widget_id(host_id, "group", used_ids)
                 self._sparkline_ids[host_id] = own_id
                 self._ext_load_sparkline_ids[host_id] = ext_id
                 self._node_group_ids[host_id] = group_id

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 from textual.widgets import DataTable, Sparkline, Static
@@ -29,6 +30,10 @@ class _FakeClient:
         if self._error:
             raise self._error
         return self._metrics_text
+
+    async def trigger_health_check(self):
+        if self._error:
+            raise self._error
 
 
 async def test_successful_poll_populates_all_three_panels():
@@ -359,6 +364,44 @@ async def test_a_node_that_disappears_has_its_sparkline_removed():
         await app.poll()
 
         assert len(app.query(Sparkline)) == 0
+
+
+async def test_colliding_sanitized_host_ids_get_distinct_sparklines():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("node.1", in_flight=1, max_concurrent_requests=4),
+                _node("node_1", in_flight=2, max_concurrent_requests=4),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        sparklines = app.query(Sparkline)
+        assert len(sparklines) == 4
+        ids = {s.id for s in sparklines}
+        assert len(ids) == 4
+
+
+async def test_overlapping_polls_do_not_crash_the_app():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("host-a", in_flight=1),
+                _node("host-b", in_flight=2),
+                _node("host-c", in_flight=0),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await asyncio.gather(app.poll(), app.poll())
+
+        assert len(app.query(Sparkline)) == 6
 
 
 async def test_an_offline_node_status_is_styled_red_and_stays_listed():

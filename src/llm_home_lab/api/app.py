@@ -163,10 +163,15 @@ def create_app(
                 continue
             if host.in_flight >= host.capacity.max_concurrent_requests:
                 continue
+            # No real latency measurement yet (see routing spec's Open Questions), so use
+            # each host's current load relative to its own capacity as a least-connections
+            # proxy — otherwise every request ties and falls back to alphabetical backend_id,
+            # filling one host before ever trying the others.
+            load_ratio = host.in_flight / host.capacity.max_concurrent_requests
             candidates.append(
                 RoutingCandidate(
                     backend=_backend_for(host.host_id, host.capabilities),
-                    latency_ms=0.0,
+                    latency_ms=load_ratio,
                     context_window=host.capabilities.context_window,
                 )
             )
@@ -400,6 +405,7 @@ def create_app(
     @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(
         request: ChatCompletionRequest,
+        response: Response,
     ) -> StreamingResponse | dict[str, object]:
         now = datetime.now(UTC)
         model_hosts, budget_blocked = await _model_capable_hosts(request.model)
@@ -454,7 +460,11 @@ def create_app(
                 finally:
                     registry.release_slot(decision.backend_id)
 
-            return StreamingResponse(_chunks(), media_type="text/event-stream")
+            return StreamingResponse(
+                _chunks(),
+                media_type="text/event-stream",
+                headers={"X-Backend-Id": decision.backend_id},
+            )
 
         try:
             result = await backend.complete(request)
@@ -471,6 +481,7 @@ def create_app(
             decision.backend_id, result.prompt_tokens, result.completion_tokens, datetime.now(UTC)
         )
 
+        response.headers["X-Backend-Id"] = decision.backend_id
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex}",
             "object": "chat.completion",

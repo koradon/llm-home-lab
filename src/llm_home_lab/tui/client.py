@@ -39,6 +39,18 @@ class OrchestratorDiagnosticsClient:
         response = await self._get("/metrics")
         return response.text
 
+    async def trigger_health_check(self) -> None:
+        # GET /v1/nodes reports a host's status from HealthMonitor's probe history, but nothing
+        # populates that history unless something calls /health/ready — that endpoint is the only
+        # place a probe gets recorded (see ADR/plan notes on failover-and-health-policy). Without
+        # a caller, every node stays "unknown" forever. The dashboard is exactly the kind of
+        # external prober that design expects, so it drives the cadence itself. A 503 here is a
+        # normal "some backend is unhealthy" outcome, not an error — only a transport failure is.
+        try:
+            await self._client.get("/health/ready")
+        except httpx.TransportError as exc:
+            raise DiagnosticsClientError("connection", str(exc)) from exc
+
     async def _get(self, path: str) -> httpx.Response:
         try:
             response = await self._client.get(path)
