@@ -16,6 +16,7 @@ from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBa
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.metrics import MetricsRegistry
+from llm_home_lab.registry.external_load import ExternalLoadProbe
 from llm_home_lab.registry.models import (
     HostCapabilities,
     HostCapacity,
@@ -72,10 +73,12 @@ def create_app(
     auth_enabled: bool = True,
     dispatch_wait_timeout: float = 30.0,
     dispatch_poll_interval: float = 0.1,
+    external_load_probe: ExternalLoadProbe | None = None,
 ) -> FastAPI:
     if auth_enabled and key_store is None:
         raise ValueError("key_store is required when auth_enabled is True")
 
+    external_load_probe = external_load_probe or ExternalLoadProbe()
     app = FastAPI()
     app.state.registry = registry
     app.state.router = router
@@ -83,6 +86,7 @@ def create_app(
     app.state.scheduling_queue = scheduling_queue
     app.state.auth_enabled = auth_enabled
     app.state.dispatch_wait_timeout = dispatch_wait_timeout
+    app.state.external_load_probe = external_load_probe
     backends_by_id: dict[str, ChatBackend] = {}
     backend_capabilities_by_id: dict[str, HostCapabilities] = {}
 
@@ -311,6 +315,13 @@ def create_app(
     @app.get("/v1/nodes")
     async def list_nodes() -> dict[str, list[dict[str, object]]]:
         at = datetime.now(UTC)
+        hosts = registry.hosts()
+        external_loads = await asyncio.gather(
+            *(
+                external_load_probe.probe(host.host_id, host.capabilities.base_url, at)
+                for host in hosts
+            )
+        )
         return {
             "nodes": [
                 {
@@ -325,8 +336,13 @@ def create_app(
                     "in_flight": host.in_flight,
                     "last_seen": host.last_seen.isoformat(),
                     "status": _node_status(host.host_id, at),
+                    "external_load": {
+                        "available": load.available,
+                        "status": load.status,
+                        "queued": load.queued,
+                    },
                 }
-                for host in registry.hosts()
+                for host, load in zip(hosts, external_loads, strict=True)
             ]
         }
 
@@ -365,6 +381,9 @@ def create_app(
             health = await backend.check_health()
             health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
             reports.append({"id": host.host_id, "healthy": health.healthy, "detail": health.detail})
+            await external_load_probe.probe(
+                host.host_id, host.capabilities.base_url, datetime.now(UTC)
+            )
         all_healthy = all(report["healthy"] for report in reports)
         alert_now = datetime.now(UTC)
         alert_evaluator.evaluate(

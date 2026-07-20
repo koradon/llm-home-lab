@@ -9,7 +9,7 @@ from typing import Protocol, cast
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Footer, Header, Label, Sparkline, Static
 
 from llm_home_lab.diagnostics.metrics_parser import parse_metrics_text
@@ -33,11 +33,11 @@ def _pick_error(errors: list[DiagnosticsClientError]) -> DiagnosticsClientError:
     return errors[0]
 
 
-def _sparkline_widget_id(host_id: str) -> str:
+def _sparkline_widget_id(host_id: str, prefix: str = "load") -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", host_id)
     if not sanitized or not (sanitized[0].isalpha() or sanitized[0] == "_"):
         sanitized = f"h_{sanitized}"
-    return f"load-{sanitized}"
+    return f"{prefix}-{sanitized}"
 
 
 _SEVERITY_STYLES = {"critical": "bold red", "warning": "bold yellow"}
@@ -54,6 +54,30 @@ _NODE_STATUS_STYLES = {"online": "bold green", "offline": "bold red", "unknown":
 def _styled_node_status(status: object) -> Text:
     style = _NODE_STATUS_STYLES.get(str(status), "")
     return Text(str(status), style=style)
+
+
+def _styled_external_load(external_load: object) -> Text:
+    load = external_load if isinstance(external_load, dict) else {}
+    if not load.get("available"):
+        return Text("unavailable", style="dim")
+
+    status = str(load.get("status") or "idle")
+    queued = load.get("queued") or 0
+    label = status if not queued else f"{status} ({queued} queued)"
+    return Text(label, style="" if status == "idle" else "bold yellow")
+
+
+def _external_load_value(external_load: object) -> float:
+    # `queued` alone is almost always 0 for a single caller hitting a node directly (it only
+    # counts requests waiting behind another), so a busy status must contribute even with no
+    # backlog — otherwise a genuinely busy node charts as a flat, empty line.
+    load = external_load if isinstance(external_load, dict) else {}
+    if not load.get("available"):
+        return 0.0
+    status = load.get("status")
+    busy = 0.0 if status in (None, "idle") else 1.0
+    queued = load.get("queued") or 0
+    return busy + (float(queued) if isinstance(queued, int | float) else 0.0)
 
 
 class DiagnosticsClient(Protocol):
@@ -79,6 +103,17 @@ class DashboardApp(App[None]):
         height: 3;
         margin: 0 1;
     }
+    .node-load-group {
+        height: auto;
+    }
+    .spark-row {
+        height: 3;
+    }
+    .spark-label {
+        width: 5;
+        content-align: left middle;
+        padding: 0 1;
+    }
     """
 
     def __init__(
@@ -95,6 +130,9 @@ class DashboardApp(App[None]):
         self._last_token_usage_at: datetime | None = None
         self._load_history: dict[str, list[float]] = {}
         self._sparkline_ids: dict[str, str] = {}
+        self._ext_load_history: dict[str, list[float]] = {}
+        self._ext_load_sparkline_ids: dict[str, str] = {}
+        self._node_group_ids: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -107,7 +145,9 @@ class DashboardApp(App[None]):
 
     def on_mount(self) -> None:
         nodes_table = self.query_one("#nodes-table", DataTable)
-        nodes_table.add_columns("host_id", "status", "backend_type", "in_flight/max", "last_seen")
+        nodes_table.add_columns(
+            "host_id", "status", "ext_load", "backend_type", "in_flight/max", "last_seen"
+        )
         nodes_table.border_title = "Nodes"
 
         alerts_table = self.query_one("#alerts-table", DataTable)
@@ -118,7 +158,9 @@ class DashboardApp(App[None]):
         queue_table.add_columns("metric", "value")
         queue_table.border_title = "Queue & Tokens"
 
-        self.query_one("#load-sparklines", Vertical).border_title = "Node Load"
+        self.query_one(
+            "#load-sparklines", Vertical
+        ).border_title = "Node Load — green: own, orange: external"
 
         self.set_interval(self._interval_s, self.poll)
 
@@ -156,6 +198,7 @@ class DashboardApp(App[None]):
             table.add_row(
                 host["host_id"],
                 _styled_node_status(host["status"]),
+                _styled_external_load(host.get("external_load")),
                 host["backend_type"],
                 f"{host['in_flight']}/{host['max_concurrent_requests']}",
                 host["last_seen"],
@@ -199,27 +242,54 @@ class DashboardApp(App[None]):
 
     async def _render_load_sparklines(self, nodes: dict[str, object]) -> None:
         ratios: dict[str, float] = {}
+        ext_loads: dict[str, float] = {}
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
             max_concurrent = cast(int, host["max_concurrent_requests"]) or 1
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
+            ext_loads[host_id] = _external_load_value(host.get("external_load"))
 
         self._load_history = update_load_history(self._load_history, ratios)
+        self._ext_load_history = update_load_history(self._ext_load_history, ext_loads)
 
         container = self.query_one("#load-sparklines", Vertical)
-        for stale_host_id in [hid for hid in self._sparkline_ids if hid not in ratios]:
-            stale_widget_id = self._sparkline_ids.pop(stale_host_id)
-            await self.query_one(f"#{stale_widget_id}-label").remove()
-            await self.query_one(f"#{stale_widget_id}").remove()
+        for stale_host_id in [hid for hid in self._node_group_ids if hid not in ratios]:
+            stale_group_id = self._node_group_ids.pop(stale_host_id)
+            self._sparkline_ids.pop(stale_host_id, None)
+            self._ext_load_sparkline_ids.pop(stale_host_id, None)
+            await self.query_one(f"#{stale_group_id}").remove()
 
         for host_id in ratios:
-            existing_widget_id = self._sparkline_ids.get(host_id)
-            if existing_widget_id is None:
-                existing_widget_id = _sparkline_widget_id(host_id)
-                self._sparkline_ids[host_id] = existing_widget_id
-                await container.mount(Label(host_id, id=f"{existing_widget_id}-label"))
-                await container.mount(Sparkline(id=existing_widget_id))
-            self.query_one(f"#{existing_widget_id}", Sparkline).data = self._load_history[host_id]
+            if host_id not in self._node_group_ids:
+                own_id = _sparkline_widget_id(host_id, "load")
+                ext_id = _sparkline_widget_id(host_id, "extload")
+                group_id = _sparkline_widget_id(host_id, "group")
+                self._sparkline_ids[host_id] = own_id
+                self._ext_load_sparkline_ids[host_id] = ext_id
+                self._node_group_ids[host_id] = group_id
+                await container.mount(
+                    Vertical(
+                        Label(host_id),
+                        Horizontal(
+                            Label("own", classes="spark-label"),
+                            Sparkline(id=own_id, min_color="green", max_color="green"),
+                            classes="spark-row",
+                        ),
+                        Horizontal(
+                            Label("ext", classes="spark-label"),
+                            Sparkline(id=ext_id, min_color="orange", max_color="orange"),
+                            classes="spark-row",
+                        ),
+                        id=group_id,
+                        classes="node-load-group",
+                    )
+                )
+            self.query_one(f"#{self._sparkline_ids[host_id]}", Sparkline).data = self._load_history[
+                host_id
+            ]
+            self.query_one(
+                f"#{self._ext_load_sparkline_ids[host_id]}", Sparkline
+            ).data = self._ext_load_history[host_id]
 
 
 def run(argv: list[str] | None = None) -> None:

@@ -139,6 +139,23 @@ orchestrator will *trigger*, not an active memory manager. Over budget → `503
 model_capacity_exceeded` (distinct from the flat `400` above — this one might work later if you
 free something up manually).
 
+## External node load visibility (optional)
+
+`in_flight` on `GET /v1/nodes` only counts requests the orchestrator itself dispatched — it can't
+see load on a node caused by something else hitting LM Studio directly (another tool, a manual
+`curl`, LM Studio's own UI playground). If you install LM Studio's `lms` CLI on the machine
+running the orchestrator, `GET /v1/nodes` and the TUI's `ext_load` column additionally report each
+node's *actual* queue/status straight from LM Studio, regardless of who caused it:
+
+```bash
+curl -fsSL https://lmstudio.ai/cli/install.sh | bash
+```
+
+This is entirely optional — everything else works without it, and a missing or non-functional
+`lms` binary just makes `external_load` report `unavailable` rather than failing any request. See
+[docs/adr/0005-lms-cli-for-external-node-load-visibility.md](docs/adr/0005-lms-cli-for-external-node-load-visibility.md)
+for why `lms` is required (LM Studio's REST API doesn't expose load/queue data itself).
+
 ## Configuration reference
 
 | Var | Default | Purpose |
@@ -149,10 +166,13 @@ free something up manually).
 | `ORCHESTRATOR_AUTH_ENABLED` | `true` | Set `false` to disable auth entirely (local testing only) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Default LM Studio host registered at startup |
 | `LMSTUDIO_TIMEOUT` | `120` | Per-chunk read timeout to LM Studio (seconds) — see note below |
+| `LMSTUDIO_CONNECT_TIMEOUT` | `10` | TCP connect timeout to LM Studio (seconds) — separate from `LMSTUDIO_TIMEOUT`, see note below |
 | `LMSTUDIO_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives — see note below |
 | `LMSTUDIO_CONTEXT_WINDOW` | `8192` | Context window advertised for routing |
 | `LMSTUDIO_MAX_CONCURRENT_REQUESTS` | `4` | Capacity used by the scheduling queue |
 | `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` | `120` | How long a queued request waits for a free host slot before failing with `503` |
+| `ORCHESTRATOR_LMS_BINARY_PATH` | `lms` | Path to the optional `lms` CLI for external node load visibility — see below |
+| `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` | `2` | Cache TTL (seconds) for external load probes — matches the TUI's default poll interval so its sparkline stays responsive; raise it if the `lms` subprocess overhead matters more than freshness for your setup |
 
 **Long-running generations**: the orchestrator always talks to LM Studio via its streaming
 protocol internally, even for a non-streaming caller — so `LMSTUDIO_TIMEOUT` is a *gap* timeout
@@ -163,6 +183,13 @@ the wait. `LMSTUDIO_MAX_RETRIES` only covers a connection failure before any out
 all (e.g. LM Studio not running yet). If you still regularly see `504 backend_timeout` for very
 long-form output, raise `LMSTUDIO_TIMEOUT` further — it only needs to cover the longest gap
 between two tokens, not the whole response.
+
+**Connect vs. gap timeout**: `LMSTUDIO_CONNECT_TIMEOUT` bounds only the initial TCP connect (is
+this host even reachable?), kept short so a powered-off or network-unreachable host fails fast
+instead of tying up `GET /health/ready` for the full `LMSTUDIO_TIMEOUT` duration. `LMSTUDIO_TIMEOUT`
+still governs everything after the connection is established (the per-chunk gap). Raise
+`LMSTUDIO_CONNECT_TIMEOUT` only if a legitimately slow network (e.g. Wi-Fi to another building)
+makes a healthy host's connect attempt regularly exceed 10 seconds.
 
 For genuinely long responses, also prefer **streaming** (`"stream": true` in the request body):
 the client gets tokens as they're generated instead of waiting in silence for the whole response.
@@ -199,7 +226,9 @@ Add a client entry to `config/api_keys.json` scoped to what the dashboard reads:
 ```
 
 `--base-url`/`ORCHESTRATOR_BASE_URL` and `--api-key`/`ORCHESTRATOR_API_KEY` are interchangeable
-(flag or env var); `--interval` controls the poll frequency in seconds (default `2`).
+(flag or env var); `--interval` controls the poll frequency in seconds (default `2`). The Node
+Load panel charts two sparklines per node: green for the orchestrator's own `in_flight` ratio,
+orange for external load (busy/queued, from `lms`) when it's installed — see above.
 
 ## How it works
 

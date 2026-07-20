@@ -213,6 +213,20 @@ def test_backend_id_reflects_configured_host():
     assert backend.backend_id == "http://lmstudio.local:1234"
 
 
+def test_connect_timeout_defaults_to_10_seconds_independent_of_the_gap_timeout():
+    backend = LMStudioBackend(base_url="http://lmstudio.local:1234", timeout=120.0)
+
+    assert backend.connect_timeout == 10.0
+
+
+def test_connect_timeout_is_configurable_independent_of_the_gap_timeout():
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=120.0, connect_timeout=3.0
+    )
+
+    assert backend.connect_timeout == 3.0
+
+
 async def test_check_health_reports_healthy_when_models_endpoint_succeeds():
     def handler(request):
         assert request.url.path == "/v1/models"

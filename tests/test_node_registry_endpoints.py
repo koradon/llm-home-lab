@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from registry_test_helpers import new_registry_db_path
+from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.health.monitor import HealthMonitor
@@ -38,7 +38,7 @@ class FakeBackend:
         return BackendHealth(healthy=True, detail=self.detail)
 
 
-def _app(db_path=None, backend_factory=None):
+def _app(db_path=None, backend_factory=None, external_load_probe=None):
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
     return create_app(
         registry=HostRegistry(db_path or new_registry_db_path()),
@@ -49,6 +49,7 @@ def _app(db_path=None, backend_factory=None):
         metrics_registry=MetricsRegistry(),
         alert_evaluator=AlertEvaluator([]),
         key_store=_permissive_key_store(),
+        external_load_probe=external_load_probe or inert_external_load_probe(),
     )
 
 
@@ -257,3 +258,37 @@ def test_a_host_that_fails_its_health_probe_reports_offline_status_and_stays_lis
     nodes = client.get("/v1/nodes").json()["nodes"]
     assert nodes[0]["host_id"] == "host-a"
     assert nodes[0]["status"] == "offline"
+
+
+def test_a_registered_host_reports_external_load_from_the_probe():
+    async def create_subprocess(*args, **kwargs):
+        class _Process:
+            returncode = 0
+
+            async def communicate(self):
+                return b'[{"status": "processingPrompt", "queued": 2}]', b""
+
+        return _Process()
+
+    from llm_home_lab.registry.external_load import ExternalLoadProbe
+
+    probe = ExternalLoadProbe(create_subprocess=create_subprocess)
+    client = TestClient(_app(external_load_probe=probe), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+
+    assert nodes[0]["external_load"] == {
+        "available": True,
+        "status": "processingPrompt",
+        "queued": 2,
+    }
+
+
+def test_a_host_with_no_working_lms_binary_reports_external_load_unavailable():
+    nodes = TestClient(_app(), headers=AUTH_HEADERS)
+    nodes.post("/v1/nodes/register", json=_register_payload())
+
+    result = nodes.get("/v1/nodes").json()["nodes"]
+
+    assert result[0]["external_load"] == {"available": False, "status": None, "queued": None}

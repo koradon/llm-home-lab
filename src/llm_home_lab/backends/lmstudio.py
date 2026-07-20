@@ -23,11 +23,17 @@ class LMStudioBackend:
         base_url: str,
         timeout: float,
         max_retries: int = 2,
+        connect_timeout: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.backend_id = base_url
         self._max_retries = max_retries
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=transport)
+        self.connect_timeout = connect_timeout
+        self._client = httpx.AsyncClient(
+            base_url=base_url,
+            timeout=httpx.Timeout(timeout, connect=connect_timeout),
+            transport=transport,
+        )
 
     async def check_health(self) -> BackendHealth:
         try:
