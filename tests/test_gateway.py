@@ -101,6 +101,7 @@ def test_valid_non_streaming_request_returns_openai_shaped_response():
     }
     assert "id" in body
     assert "created" in body
+    assert response.headers["x-backend-id"] == "fake-backend"
 
 
 def test_missing_messages_field_is_rejected_with_error_envelope():
@@ -218,6 +219,7 @@ def test_streaming_request_returns_sse_chunks_ending_in_done():
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-backend-id"] == "fake-backend"
     lines = [line for line in response.text.split("\n\n") if line]
     assert lines[-1] == "data: [DONE]"
     first_chunk = json.loads(lines[0].removeprefix("data: "))

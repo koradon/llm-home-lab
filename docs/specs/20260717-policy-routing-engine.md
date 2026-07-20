@@ -127,6 +127,10 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-policy-r
 - Where per-backend latency estimates come from at this stage: #8 introduces a proper
   health-score model with probe history; until then this engine needs some minimal injected
   latency input (e.g., a rolling average the caller supplies) rather than owning probing itself.
+  Resolved for now: `api/app.py` injects each host's current `in_flight / max_concurrent_requests`
+  ratio as the `latency_ms` input, so the `prefer-lower-latency` default policy behaves as
+  least-connections load balancing instead of always tie-breaking to the alphabetically-first
+  backend_id. A real probed latency estimate can replace this later without changing the engine.
 - Whether routing policy is defined in code at startup (assumed for the initial implementation)
   or becomes hot-reloadable configuration is an open question from the program plan; not
   blocking this spec.

@@ -1,4 +1,9 @@
-DEFAULT_MAX_POINTS = 30
+# The sparkline compresses whatever history it's given down to the terminal's column count, so
+# points beyond the widest realistic terminal can never be displayed even after a resize — no
+# reason to keep them and grow memory forever. 1000 comfortably covers that (no real terminal
+# gets that wide) while still spanning a long observability session at the default 2s poll
+# interval, instead of a window measured in minutes.
+DEFAULT_MAX_POINTS = 1000
 
 
 def update_load_history(

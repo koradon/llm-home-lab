@@ -230,6 +230,25 @@ Add a client entry to `config/api_keys.json` scoped to what the dashboard reads:
 Load panel charts two sparklines per node: green for the orchestrator's own `in_flight` ratio,
 orange for external load (busy/queued, from `lms`) when it's installed — see above.
 
+## Demo workload script
+
+`scripts/demo_workload.py` generates a burst of concurrent chat completion requests against the
+orchestrator, for exercising and observing routing across multiple registered nodes — pair it
+with the TUI dashboard (above) in another terminal to watch live request distribution:
+
+```bash
+uv run python scripts/demo_workload.py \
+  --base-url http://localhost:8080 --api-key sk-dev-changeme \
+  --model google/gemma-4-e4b --concurrency 8 --count 40
+```
+
+The orchestrator routes each request to the least-loaded healthy node (by current
+`in_flight / max_concurrent_requests`), so with `--concurrency` above 1 you should see load
+spread across all your registered nodes rather than piling onto just one — that's what to point
+at in the TUI's node table. `--base-url`/`ORCHESTRATOR_BASE_URL` and
+`--api-key`/`ORCHESTRATOR_API_KEY` work the same as for the TUI. `--model` must match a model
+actually loaded/allowed on your nodes.
+
 ## How it works
 
 - **Routing**: a policy-scored engine picks the best available host per request (e.g. lowest
