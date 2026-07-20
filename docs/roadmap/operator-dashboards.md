@@ -19,12 +19,19 @@ Two initiatives, sequenced per the appetite recorded in
 
 ### Terminal (TUI) operator dashboard
 
-- Related: [operator-observability-dashboards](../ideas/operator-observability-dashboards.md)
-  (Option A/C)
-- Confidence: medium
-- Notes: nearer-term, no new frontend stack — a Python TUI client polling the orchestrator's
-  existing diagnostics endpoints. Library choice (likely Textual) is an open question in the
-  idea doc.
+- Related: [tui-operator-dashboard](../specs/20260719-tui-operator-dashboard.md)
+- Confidence: shipped (M5)
+- Notes: built as a Textual client polling the orchestrator's diagnostics endpoints; live in real
+  two-node (Mac + Windows) use.
+
+### External node load visibility
+
+- Related: [external-node-load-visibility](../specs/20260720-external-node-load-visibility.md),
+  [ADR-0005](../adr/0005-lms-cli-for-external-node-load-visibility.md)
+- Confidence: medium — speced and planned, not yet implemented
+- Notes: extends the TUI Nodes panel with load caused by something other than this orchestrator,
+  via LM Studio's `lms ps --host` CLI (its REST API has no such endpoint). This project's first
+  subprocess/external-binary dependency; degrades gracefully if `lms` is missing.
 
 ### Web management UI
 
