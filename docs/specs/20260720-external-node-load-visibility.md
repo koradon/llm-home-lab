@@ -33,7 +33,11 @@ request-serving path if the `lms` binary is missing, times out, or the target ho
     model reports the highest activity if more than one is loaded), `queued: int | None` (summed
     across loaded models), `checked_at: datetime`.
   - `ExternalLoadProbe(lms_binary: str = "lms", timeout_s: float = 5.0, cache_ttl: timedelta =
-    timedelta(seconds=15))`:
+    timedelta(seconds=2))`: kept short (rather than the initially-proposed 15s) and matched to the
+    TUI's own default 2s poll interval, so its external-load sparkline (see below) stays visually
+    responsive — the tradeoff is a fresh `lms` subprocess spawn per host on almost every poll;
+    operators who care more about subprocess overhead than freshness can raise
+    `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S`.
     - `async def probe(host_id: str, base_url: str, at: datetime) -> ExternalLoadStatus` — if a
       cached result for `host_id` is younger than `cache_ttl` relative to `at`, returns it
       unchanged (no subprocess spawned). Otherwise runs
@@ -49,7 +53,7 @@ request-serving path if the `lms` binary is missing, times out, or the target ho
       returns `ExternalLoadStatus(available=False, status=None, queued=None, checked_at=at)`,
       logged once at `INFO` (not `ERROR`; a missing optional tool is not an orchestrator problem).
 - `main.py` gains `ORCHESTRATOR_LMS_BINARY_PATH` (default `"lms"`, resolved via `PATH`) and
-  `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` (default `15`), wired into `ExternalLoadProbe`.
+  `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` (default `2`), wired into `ExternalLoadProbe`.
 - `GET /v1/nodes` gains an `external_load` field per host:
   `{"available": bool, "status": str | null, "queued": int | null}`, sourced from
   `ExternalLoadProbe.probe(...)`, called from the same place `/health/ready`'s per-host loop
@@ -59,6 +63,15 @@ request-serving path if the `lms` binary is missing, times out, or the target ho
 - TUI (`src/llm_home_lab/tui/app.py`) Nodes panel gains a column for this — rendered similarly to
   the existing node `status` column (colored), e.g. `unavailable` in a muted style, `idle` neutral,
   anything else (busy) highlighted, with `queued` shown alongside when `> 0`.
+- TUI also gains a second sparkline per node, grouped directly under the existing `in_flight`-ratio
+  one (same panel, own label per host, own color: green for the existing in-flight ratio, orange
+  for external load) rather than a separate panel — charting a combined busy+backlog value:
+  `(1.0 if status not in (None, "idle") else 0.0) + queued`. Raw `queued` alone is not charted,
+  since it is almost always `0` for a single caller hitting a node directly (it only counts
+  requests waiting *behind* another) — a busy status must contribute even with no backlog, or a
+  genuinely busy node charts as a flat, empty line. `available: false` charts as `0.0` (the
+  DataTable column remains the source of truth for distinguishing "unavailable" from "genuinely
+  idle").
 
 ## Behavior
 
