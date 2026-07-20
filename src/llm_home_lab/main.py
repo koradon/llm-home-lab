@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI
 
@@ -9,6 +9,7 @@ from llm_home_lab.backends.lmstudio import LMStudioBackend
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.metrics import MetricsRegistry
+from llm_home_lab.registry.external_load import ExternalLoadProbe
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
@@ -55,6 +56,7 @@ BACKEND_FACTORIES = {
         base_url=caps.base_url,
         timeout=float(os.environ.get("LMSTUDIO_TIMEOUT", "120")),
         max_retries=int(os.environ.get("LMSTUDIO_MAX_RETRIES", "2")),
+        connect_timeout=float(os.environ.get("LMSTUDIO_CONNECT_TIMEOUT", "10")),
     ),
 }
 
@@ -98,6 +100,12 @@ def create_default_app() -> FastAPI:
         key_store=_load_key_store() if auth_enabled else None,
         auth_enabled=auth_enabled,
         dispatch_wait_timeout=float(os.environ.get("ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S", "120")),
+        external_load_probe=ExternalLoadProbe(
+            lms_binary=os.environ.get("ORCHESTRATOR_LMS_BINARY_PATH", "lms"),
+            cache_ttl=timedelta(
+                seconds=int(os.environ.get("ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S", "2"))
+            ),
+        ),
     )
 
 

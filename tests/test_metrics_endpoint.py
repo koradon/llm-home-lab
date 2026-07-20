@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
-from registry_test_helpers import new_registry_db_path
+from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendChunk, BackendConnectionError, BackendResponse
@@ -83,6 +83,7 @@ def _app_for(
         key_store=_permissive_key_store(),
         metrics_registry=metrics_registry or MetricsRegistry(),
         alert_evaluator=alert_evaluator or AlertEvaluator([]),
+        external_load_probe=inert_external_load_probe(),
     )
 
 
@@ -288,6 +289,7 @@ def test_a_dispatch_timeout_with_an_unhealthy_candidate_records_failover_failure
         key_store=_permissive_key_store(),
         dispatch_wait_timeout=0.05,
         dispatch_poll_interval=0.01,
+        external_load_probe=inert_external_load_probe(),
     )
     client = TestClient(app, headers=AUTH_HEADERS)
     payload = {

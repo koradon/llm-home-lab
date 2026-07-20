@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
-from registry_test_helpers import new_registry_db_path
+from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendHealth, BackendResponse
@@ -52,6 +52,7 @@ def _app_for(*backends):
         metrics_registry=MetricsRegistry(),
         alert_evaluator=AlertEvaluator([]),
         key_store=_permissive_key_store(),
+        external_load_probe=inert_external_load_probe(),
     )
 
 

@@ -82,6 +82,10 @@ that doesn't currently exist in this project, so it's a materially bigger bet.
 - Roadmap: [operator-dashboards](../roadmap/operator-dashboards.md)
 - Issue: #12 — Add monitoring, SLOs, and alerting (milestone M4) — done; this idea's TUI/web-UI
   front ends are now milestones M5/M6
+- Spec: [external-node-load-visibility](../specs/20260720-external-node-load-visibility.md) —
+  extends the TUI's Nodes panel with load caused by something other than this orchestrator
+- Plan: [external-node-load-visibility](../plans/20260720-external-node-load-visibility.md)
+- ADR: [0005-lms-cli-for-external-node-load-visibility](../adr/0005-lms-cli-for-external-node-load-visibility.md)
 - ADR-0002 — SQLite vs PostgreSQL revisit trigger; not applicable here, orchestrator stays
   single-process
 

@@ -192,7 +192,7 @@ async def test_first_poll_shows_no_token_rate_yet():
         assert ["tokens/s[host-a]", "-"] in rows
 
 
-def _node(host_id, in_flight, max_concurrent_requests=4, status="online"):
+def _node(host_id, in_flight, max_concurrent_requests=4, status="online", external_load=None):
     return {
         "host_id": host_id,
         "backend_type": "lmstudio",
@@ -200,6 +200,7 @@ def _node(host_id, in_flight, max_concurrent_requests=4, status="online"):
         "max_concurrent_requests": max_concurrent_requests,
         "last_seen": "2026-07-19T00:00:00+00:00",
         "status": status,
+        "external_load": external_load,
     }
 
 
@@ -210,9 +211,8 @@ async def test_a_sparkline_is_mounted_for_each_node_with_its_load_ratio():
     async with app.run_test():
         await app.poll()
 
-        sparklines = app.query(Sparkline)
-        assert len(sparklines) == 1
-        assert list(sparklines[0].data) == [0.5]
+        load_sparkline = app.query_one("#load-host-a", Sparkline)
+        assert list(load_sparkline.data) == [0.5]
 
 
 async def test_a_second_poll_appends_to_the_same_nodes_sparkline():
@@ -224,9 +224,129 @@ async def test_a_second_poll_appends_to_the_same_nodes_sparkline():
         client._nodes = {"nodes": [_node("host-a", in_flight=1, max_concurrent_requests=4)]}
         await app.poll()
 
-        sparklines = app.query(Sparkline)
-        assert len(sparklines) == 1
-        assert list(sparklines[0].data) == [0.5, 0.25]
+        load_sparkline = app.query_one("#load-host-a", Sparkline)
+        assert list(load_sparkline.data) == [0.5, 0.25]
+
+
+async def test_each_nodes_load_group_stays_compact_instead_of_stretching_to_fill_the_panel():
+    client = _FakeClient(
+        nodes={"nodes": [_node("host-a", in_flight=0), _node("host-b", in_flight=0)]}
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        group = app.query_one("#group-host-a")
+        assert group.size.height == 7
+
+
+async def test_a_busy_external_load_with_a_queue_backlog_combines_both_into_one_value():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={"available": True, "status": "processingPrompt", "queued": 3},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
+        assert list(ext_load_sparkline.data) == [4.0]
+
+
+async def test_a_busy_node_with_no_queue_backlog_still_shows_nonzero_external_load():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={"available": True, "status": "generating", "queued": 0},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
+        assert list(ext_load_sparkline.data) == [1.0]
+
+
+async def test_an_idle_external_load_is_charted_as_zero():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={"available": True, "status": "idle", "queued": 0},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
+        assert list(ext_load_sparkline.data) == [0.0]
+
+
+async def test_an_unavailable_external_load_is_charted_as_zero():
+    client = _FakeClient(
+        nodes={"nodes": [_node("host-a", in_flight=0, external_load={"available": False})]}
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
+        assert list(ext_load_sparkline.data) == [0.0]
+
+
+async def test_a_second_poll_appends_to_the_same_external_load_sparkline():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={"available": True, "status": "idle", "queued": 0},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+        client._nodes = {
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={"available": True, "status": "processingPrompt", "queued": 2},
+                )
+            ]
+        }
+        await app.poll()
+
+        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
+        assert list(ext_load_sparkline.data) == [0.0, 3.0]
 
 
 async def test_a_node_that_disappears_has_its_sparkline_removed():
@@ -283,6 +403,73 @@ async def test_an_online_node_status_has_no_alarming_style():
         status_cell = table.get_cell(row_key, column_key)
         assert "red" not in status_cell.style
         assert "yellow" not in status_cell.style
+
+
+async def test_a_node_with_unavailable_external_load_is_styled_dim():
+    client = _FakeClient(
+        nodes={"nodes": [_node("host-a", in_flight=0, external_load={"available": False})]}
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[2].key
+        ext_load_cell = table.get_cell(row_key, column_key)
+        assert str(ext_load_cell) == "unavailable"
+        assert "dim" in ext_load_cell.style
+
+
+async def test_a_node_with_idle_external_load_has_no_alarming_style():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={"available": True, "status": "idle", "queued": 0},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[2].key
+        ext_load_cell = table.get_cell(row_key, column_key)
+        assert str(ext_load_cell) == "idle"
+        assert "yellow" not in ext_load_cell.style
+
+
+async def test_a_node_with_busy_external_load_is_styled_yellow_with_queued_count():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={"available": True, "status": "processingPrompt", "queued": 2},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[2].key
+        ext_load_cell = table.get_cell(row_key, column_key)
+        assert str(ext_load_cell) == "processingPrompt (2 queued)"
+        assert "yellow" in ext_load_cell.style
 
 
 async def test_second_poll_shows_token_rate_since_the_first():

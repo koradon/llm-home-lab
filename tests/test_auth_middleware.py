@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from registry_test_helpers import new_registry_db_path
+from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendHealth, BackendResponse
@@ -69,6 +69,7 @@ def _app(key_store=None, auth_enabled=True):
         alert_evaluator=AlertEvaluator([]),
         key_store=key_store if key_store is not None else (_key_store() if auth_enabled else None),
         auth_enabled=auth_enabled,
+        external_load_probe=inert_external_load_probe(),
     )
 
 

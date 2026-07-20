@@ -1,6 +1,7 @@
 import pytest
 
-from llm_home_lab.main import _load_alert_evaluator, create_default_app
+from llm_home_lab.main import BACKEND_FACTORIES, _load_alert_evaluator, create_default_app
+from llm_home_lab.registry.models import HostCapabilities
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +46,56 @@ def test_default_app_respects_dispatch_wait_timeout_env_override(monkeypatch):
     app = create_default_app()
 
     assert app.state.dispatch_wait_timeout == 90.0
+
+
+def test_lmstudio_backend_factory_uses_a_10_second_connect_timeout_by_default(monkeypatch):
+    monkeypatch.delenv("LMSTUDIO_CONNECT_TIMEOUT", raising=False)
+    caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
+
+    backend = BACKEND_FACTORIES["lmstudio"](caps)
+
+    assert backend.connect_timeout == 10.0
+
+
+def test_lmstudio_backend_factory_respects_connect_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("LMSTUDIO_CONNECT_TIMEOUT", "3")
+    caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
+
+    backend = BACKEND_FACTORIES["lmstudio"](caps)
+
+    assert backend.connect_timeout == 3.0
+
+
+def test_default_app_uses_lms_binary_by_default(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_LMS_BINARY_PATH", raising=False)
+
+    app = create_default_app()
+
+    assert app.state.external_load_probe.lms_binary == "lms"
+
+
+def test_default_app_respects_lms_binary_path_env_override(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_LMS_BINARY_PATH", "/opt/lms/lms")
+
+    app = create_default_app()
+
+    assert app.state.external_load_probe.lms_binary == "/opt/lms/lms"
+
+
+def test_default_app_uses_a_2_second_external_load_probe_interval_by_default(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S", raising=False)
+
+    app = create_default_app()
+
+    assert app.state.external_load_probe.cache_ttl.total_seconds() == 2.0
+
+
+def test_default_app_respects_external_load_probe_interval_env_override(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S", "30")
+
+    app = create_default_app()
+
+    assert app.state.external_load_probe.cache_ttl.total_seconds() == 30.0
 
 
 def test_default_app_has_auth_enabled_by_default(monkeypatch):

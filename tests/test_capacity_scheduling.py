@@ -2,7 +2,7 @@ import asyncio
 from datetime import UTC, datetime
 
 import httpx
-from registry_test_helpers import new_registry_db_path
+from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendResponse
@@ -72,6 +72,7 @@ def _app(backend, max_concurrent_requests=1, dispatch_wait_timeout=30.0, schedul
         key_store=_permissive_key_store(),
         dispatch_wait_timeout=dispatch_wait_timeout,
         dispatch_poll_interval=0.01,
+        external_load_probe=inert_external_load_probe(),
     )
 
 
