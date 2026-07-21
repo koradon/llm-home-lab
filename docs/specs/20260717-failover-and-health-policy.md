@@ -120,9 +120,12 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-failover
 
 ## Open Questions
 
-- Who calls `record_probe` and on what cadence — a background poller versus piggy-backing on
-  `/health/ready` calls — is an app-wiring decision left to the plan, not this spec; either way,
-  timestamps are supplied by the caller.
+- ~~Who calls `record_probe` and on what cadence~~ — resolved: a background poller (started via
+  the FastAPI lifespan) probes every registered host on a fixed interval, in addition to
+  `/health/ready` continuing to probe synchronously for on-demand callers. See
+  `docs/adr/0006-background-health-poller.md` and
+  `docs/plans/20260720-background-health-poller.md`. Timestamps are still supplied by the caller
+  either way — `HealthMonitor` itself remains clock-agnostic.
 - Whether `failure_threshold`/`cooldown`/`recovery_threshold` should be configurable per-backend
   rather than global monitor-wide defaults is deferred until a concrete need for per-backend
   tuning appears.

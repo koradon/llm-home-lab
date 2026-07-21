@@ -115,6 +115,52 @@ async def test_a_request_that_never_gets_a_free_slot_times_out_as_service_unavai
     await first
 
 
+class BrieflyBusyBackend:
+    """Completes quickly on its own (no external release needed), so many
+    concurrent callers naturally contend for a single slot without manual
+    handoff choreography."""
+
+    backend_id = "briefly-busy-backend"
+
+    def __init__(self, hold_s: float = 0.05) -> None:
+        self.hold_s = hold_s
+        self.completed = 0
+
+    async def complete(self, request):
+        await asyncio.sleep(self.hold_s)
+        self.completed += 1
+        return BackendResponse(
+            model=request.model,
+            content="done",
+            finish_reason="stop",
+            prompt_tokens=1,
+            completion_tokens=1,
+        )
+
+
+async def test_three_waiters_for_one_slot_all_eventually_succeed():
+    """Regression test: dispatch() only checks that free capacity exists
+    *somewhere*, it doesn't reserve a slot for the specific request_id it admits.
+    With capacity=1 and multiple concurrent waiters, an admitted waiter can find
+    candidates empty (another admitted waiter claimed the only slot first) — that
+    must re-queue and keep waiting on the remaining budget, not fail outright.
+    """
+    backend = BrieflyBusyBackend(hold_s=0.05)
+    transport = httpx.ASGITransport(app=_app(backend, dispatch_wait_timeout=5.0))
+
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        responses = await asyncio.gather(
+            client.post("/v1/chat/completions", json=PAYLOAD),
+            client.post("/v1/chat/completions", json=PAYLOAD),
+            client.post("/v1/chat/completions", json=PAYLOAD),
+        )
+
+    assert [r.status_code for r in responses] == [200, 200, 200]
+    assert backend.completed == 3
+
+
 async def test_a_timed_out_request_is_removed_from_the_queue_not_left_stuck():
     backend = SlowBackend()
     scheduling_queue = SchedulingQueue()

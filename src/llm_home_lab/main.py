@@ -70,11 +70,11 @@ def create_default_app() -> FastAPI:
         base_url,
         HostCapabilities(
             backend_type="lmstudio",
-            context_window=int(os.environ.get("LMSTUDIO_CONTEXT_WINDOW", "8192")),
+            context_window=int(os.environ.get("LMSTUDIO_CONTEXT_WINDOW", "131072")),
             base_url=base_url,
         ),
         HostCapacity(
-            max_concurrent_requests=int(os.environ.get("LMSTUDIO_MAX_CONCURRENT_REQUESTS", "4"))
+            max_concurrent_requests=int(os.environ.get("LMSTUDIO_MAX_CONCURRENT_REQUESTS", "1"))
         ),
         at=datetime.now(UTC),
     )
@@ -106,6 +106,7 @@ def create_default_app() -> FastAPI:
                 seconds=int(os.environ.get("ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S", "2"))
             ),
         ),
+        health_poll_interval=float(os.environ.get("ORCHESTRATOR_HEALTH_POLL_INTERVAL_S", "5")),
     )
 
 

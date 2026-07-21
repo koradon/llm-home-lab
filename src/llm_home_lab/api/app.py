@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -31,6 +32,7 @@ from llm_home_lab.security.key_store import ApiKeyStore
 
 access_logger = logging.getLogger("llm_home_lab.access")
 audit_logger = logging.getLogger("llm_home_lab.audit")
+health_logger = logging.getLogger("llm_home_lab.health")
 
 AUTH_EXEMPT_PATHS = {"/health/live", "/health/ready", "/metrics"}
 
@@ -74,19 +76,12 @@ def create_app(
     dispatch_wait_timeout: float = 30.0,
     dispatch_poll_interval: float = 0.1,
     external_load_probe: ExternalLoadProbe | None = None,
+    health_poll_interval: float | None = None,
 ) -> FastAPI:
     if auth_enabled and key_store is None:
         raise ValueError("key_store is required when auth_enabled is True")
 
     external_load_probe = external_load_probe or ExternalLoadProbe()
-    app = FastAPI()
-    app.state.registry = registry
-    app.state.router = router
-    app.state.health_monitor = health_monitor
-    app.state.scheduling_queue = scheduling_queue
-    app.state.auth_enabled = auth_enabled
-    app.state.dispatch_wait_timeout = dispatch_wait_timeout
-    app.state.external_load_probe = external_load_probe
     backends_by_id: dict[str, ChatBackend] = {}
     backend_capabilities_by_id: dict[str, HostCapabilities] = {}
 
@@ -176,6 +171,56 @@ def create_app(
                 )
             )
         return candidates
+
+    async def _probe_all_hosts() -> list[dict[str, object]]:
+        """Probe every registered host once, recording results into health_monitor and
+        external_load_probe. Shared by /health/ready (on-demand) and the background poll
+        loop below (continuous) so health state never depends on which of the two — or
+        whether either — happens to run (see docs/adr/0006-background-health-poller.md).
+        """
+        _prune_backend_cache()
+        reports: list[dict[str, object]] = []
+        for host in registry.hosts():
+            backend = _backend_for(host.host_id, host.capabilities)
+            health = await backend.check_health()
+            health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
+            reports.append({"id": host.host_id, "healthy": health.healthy, "detail": health.detail})
+            await external_load_probe.probe(
+                host.host_id, host.capabilities.base_url, datetime.now(UTC)
+            )
+        return reports
+
+    async def _health_poll_loop(interval: float) -> None:
+        while True:
+            try:
+                await _probe_all_hosts()
+            except Exception:
+                # One bad tick (a host timing out, an unexpected error) must not kill the
+                # loop — that would silently reintroduce the exact bug this poller fixes.
+                health_logger.exception("background health poll tick failed; retrying")
+            await asyncio.sleep(interval)
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        task: asyncio.Task[None] | None = None
+        if health_poll_interval is not None:
+            task = asyncio.create_task(_health_poll_loop(health_poll_interval))
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    app = FastAPI(lifespan=_lifespan)
+    app.state.registry = registry
+    app.state.router = router
+    app.state.health_monitor = health_monitor
+    app.state.scheduling_queue = scheduling_queue
+    app.state.auth_enabled = auth_enabled
+    app.state.dispatch_wait_timeout = dispatch_wait_timeout
+    app.state.external_load_probe = external_load_probe
 
     @app.middleware("http")
     async def log_requests(
@@ -379,16 +424,7 @@ def create_app(
 
     @app.get("/health/ready")
     async def health_ready() -> JSONResponse:
-        _prune_backend_cache()
-        reports = []
-        for host in registry.hosts():
-            backend = _backend_for(host.host_id, host.capabilities)
-            health = await backend.check_health()
-            health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
-            reports.append({"id": host.host_id, "healthy": health.healthy, "detail": health.detail})
-            await external_load_probe.probe(
-                host.host_id, host.capabilities.base_url, datetime.now(UTC)
-            )
+        reports = await _probe_all_hosts()
         all_healthy = all(report["healthy"] for report in reports)
         alert_now = datetime.now(UTC)
         alert_evaluator.evaluate(
@@ -425,23 +461,35 @@ def create_app(
         if not candidates:
             request_id = uuid.uuid4().hex
             queue_session_id = request.session_id or request_id
-            scheduling_queue.enqueue(request_id, session_id=queue_session_id, priority=0, at=now)
             waited = 0.0
-            admitted = False
-            while waited < dispatch_wait_timeout:
-                await asyncio.sleep(dispatch_poll_interval)
-                waited += dispatch_poll_interval
-                if scheduling_queue.dispatch(registry, datetime.now(UTC)) == request_id:
-                    admitted = True
-                    break
-            if not admitted:
-                scheduling_queue.cancel(request_id, session_id=queue_session_id, priority=0)
-                if failover_in_play:
-                    metrics_registry.record_failover_outcome(False, datetime.now(UTC))
-                raise NoAvailableBackendError(
-                    "no host became available before the dispatch timeout"
+            while True:
+                scheduling_queue.enqueue(
+                    request_id, session_id=queue_session_id, priority=0, at=now
                 )
-            candidates = _eligible_candidates(model_hosts, datetime.now(UTC))
+                admitted = False
+                while waited < dispatch_wait_timeout:
+                    await asyncio.sleep(dispatch_poll_interval)
+                    waited += dispatch_poll_interval
+                    if scheduling_queue.dispatch(registry, datetime.now(UTC)) == request_id:
+                        admitted = True
+                        break
+                if not admitted:
+                    scheduling_queue.cancel(request_id, session_id=queue_session_id, priority=0)
+                    if failover_in_play:
+                        metrics_registry.record_failover_outcome(False, datetime.now(UTC))
+                    raise NoAvailableBackendError(
+                        "no host became available before the dispatch timeout"
+                    )
+                candidates = _eligible_candidates(model_hosts, datetime.now(UTC))
+                if candidates:
+                    break
+                # dispatch() only checks that free capacity exists *somewhere* — it
+                # doesn't reserve a slot for this request_id. With another admitted
+                # waiter grabbing the only free slot before we got here (more likely
+                # the tighter capacity is, e.g. max_concurrent_requests=1), candidates
+                # is empty even though we were "admitted". Re-enqueue and keep waiting
+                # on the remaining budget instead of failing a request that could
+                # still succeed.
 
         decision = router.select_backend(request, candidates, session_id=request.session_id)
         backend = backends_by_id[decision.backend_id]
