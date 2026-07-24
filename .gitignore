@@ -30,6 +30,9 @@ htmlcov/
 # Planhub files
 .plan/
 
+# Lavish
+.lavish/
+
 # Local session state
 data/
 

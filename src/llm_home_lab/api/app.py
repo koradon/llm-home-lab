@@ -5,6 +5,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request, Response
@@ -54,6 +55,27 @@ class NodeRegistrationRequest(BaseModel):
     allowed_models: list[str] | None = None
     memory_budget_gb: float | None = None
     model_sizes_gb: dict[str, float] | None = None
+
+
+class NodeUpdateRequest(BaseModel):
+    backend_type: str | None = None
+    context_window: int | None = None
+    base_url: str | None = None
+    max_concurrent_requests: int | None = None
+    allowed_models: list[str] | None = None
+    memory_budget_gb: float | None = None
+    model_sizes_gb: dict[str, float] | None = None
+
+
+_NODE_CAPABILITY_FIELDS = {
+    "backend_type",
+    "context_window",
+    "base_url",
+    "allowed_models",
+    "memory_budget_gb",
+    "model_sizes_gb",
+}
+_NODE_CAPACITY_FIELDS = {"max_concurrent_requests"}
 
 
 def _error_response(status_code: int, message: str, error_type: str, code: str) -> JSONResponse:
@@ -350,6 +372,21 @@ def create_app(
             at=datetime.now(UTC),
         )
         return {"status": "registered"}
+
+    @app.patch("/v1/nodes/{host_id:path}")
+    async def update_node(host_id: str, payload: NodeUpdateRequest) -> dict[str, str]:
+        existing = registry.get(host_id)
+        fields = payload.model_dump(exclude_unset=True)
+        capabilities = replace(
+            existing.capabilities,
+            **{k: v for k, v in fields.items() if k in _NODE_CAPABILITY_FIELDS},
+        )
+        capacity = replace(
+            existing.capacity,
+            **{k: v for k, v in fields.items() if k in _NODE_CAPACITY_FIELDS},
+        )
+        registry.register(host_id, capabilities, capacity, at=datetime.now(UTC))
+        return {"status": "updated"}
 
     @app.post("/v1/nodes/{host_id:path}/heartbeat")
     async def heartbeat_node(host_id: str) -> dict[str, str]:

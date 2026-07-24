@@ -39,6 +39,9 @@ class OrchestratorDiagnosticsClient:
         response = await self._get("/metrics")
         return response.text
 
+    async def update_node(self, host_id: str, fields: dict[str, object]) -> None:
+        await self._patch(f"/v1/nodes/{host_id}", fields)
+
     async def trigger_health_check(self) -> None:
         # GET /v1/nodes reports a host's status from HealthMonitor's probe history, but nothing
         # populates that history unless something calls /health/ready — that endpoint is the only
@@ -56,7 +59,16 @@ class OrchestratorDiagnosticsClient:
             response = await self._client.get(path)
         except httpx.TransportError as exc:
             raise DiagnosticsClientError("connection", str(exc)) from exc
+        return self._raise_for_error_status(response)
 
+    async def _patch(self, path: str, json: dict[str, object]) -> httpx.Response:
+        try:
+            response = await self._client.patch(path, json=json)
+        except httpx.TransportError as exc:
+            raise DiagnosticsClientError("connection", str(exc)) from exc
+        return self._raise_for_error_status(response)
+
+    def _raise_for_error_status(self, response: httpx.Response) -> httpx.Response:
         if response.status_code in (401, 403):
             raise DiagnosticsClientError("unauthorized", f"status {response.status_code}")
         if response.status_code // 100 != 2:

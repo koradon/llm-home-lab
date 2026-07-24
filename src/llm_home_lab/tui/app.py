@@ -11,7 +11,8 @@ from typing import Protocol, cast
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Footer, Header, Label, Sparkline, Static
+from textual.screen import ModalScreen
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Sparkline, Static
 
 from llm_home_lab.diagnostics.metrics_parser import parse_metrics_text
 from llm_home_lab.tui.client import DiagnosticsClientError, OrchestratorDiagnosticsClient
@@ -97,11 +98,121 @@ class DiagnosticsClient(Protocol):
     async def list_alerts(self) -> dict[str, object]: ...
     async def fetch_metrics_text(self) -> str: ...
     async def trigger_health_check(self) -> None: ...
+    async def update_node(self, host_id: str, fields: dict[str, object]) -> None: ...
+
+
+class NodeEditScreen(ModalScreen[dict[str, object] | None]):
+    """Prompts for a registered node's editable parameters, prefilled from its current state."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+    CSS = """
+    NodeEditScreen {
+        align: center middle;
+    }
+    #edit-dialog {
+        width: 60;
+        height: auto;
+        border: round $accent;
+        padding: 1 2;
+        background: $panel;
+    }
+    #edit-error {
+        height: auto;
+        color: $error;
+    }
+    #edit-dialog Label {
+        height: 1;
+    }
+    #edit-dialog Input {
+        border: none;
+        height: 1;
+    }
+    """
+
+    def __init__(self, host_id: str, node: dict[str, object]) -> None:
+        super().__init__()
+        self._host_id = host_id
+        self._node = node
+
+    def compose(self) -> ComposeResult:
+        node = self._node
+        allowed_models = cast("list[str] | None", node.get("allowed_models")) or []
+        memory_budget_gb = node.get("memory_budget_gb")
+        with Vertical(id="edit-dialog"):
+            yield Label(f"Edit {self._host_id}")
+            yield Label("context_window")
+            yield Input(value=str(node.get("context_window", "")), id="context_window")
+            yield Label("max_concurrent_requests")
+            yield Input(
+                value=str(node.get("max_concurrent_requests", "")),
+                id="max_concurrent_requests",
+            )
+            yield Label("base_url")
+            yield Input(value=str(node.get("base_url", "")), id="base_url")
+            yield Label("allowed_models (comma-separated, blank = unrestricted)")
+            yield Input(value=", ".join(allowed_models), id="allowed_models")
+            yield Label("memory_budget_gb (blank = unset)")
+            yield Input(
+                value="" if memory_budget_gb is None else str(memory_budget_gb),
+                id="memory_budget_gb",
+            )
+            yield Static("", id="edit-error")
+            with Horizontal():
+                yield Button("Save", id="save", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        fields, error = self._collect_fields()
+        if error is not None:
+            self.query_one("#edit-error", Static).update(Text(error, style="bold red"))
+            return
+        self.dismiss(fields)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _collect_fields(self) -> tuple[dict[str, object], str | None]:
+        try:
+            context_window = int(self.query_one("#context_window", Input).value)
+            max_concurrent_requests = int(self.query_one("#max_concurrent_requests", Input).value)
+        except ValueError:
+            return {}, "context_window and max_concurrent_requests must be whole numbers"
+
+        base_url = self.query_one("#base_url", Input).value.strip()
+        if not base_url:
+            return {}, "base_url must not be empty"
+
+        fields: dict[str, object] = {
+            "context_window": context_window,
+            "max_concurrent_requests": max_concurrent_requests,
+            "base_url": base_url,
+        }
+
+        allowed_models_raw = self.query_one("#allowed_models", Input).value.strip()
+        fields["allowed_models"] = (
+            [m.strip() for m in allowed_models_raw.split(",") if m.strip()]
+            if allowed_models_raw
+            else None
+        )
+
+        memory_budget_raw = self.query_one("#memory_budget_gb", Input).value.strip()
+        if memory_budget_raw:
+            try:
+                fields["memory_budget_gb"] = float(memory_budget_raw)
+            except ValueError:
+                return {}, "memory_budget_gb must be a number"
+        else:
+            fields["memory_budget_gb"] = None
+
+        return fields, None
 
 
 class DashboardApp(App[None]):
     TITLE = "llm-home-lab — Operator Dashboard"
-    BINDINGS = [("q", "quit", "Quit")]
+    BINDINGS = [("q", "quit", "Quit"), ("e", "edit_node", "Edit node")]
     CSS = """
     DataTable, #load-sparklines {
         border: round $accent;
@@ -147,6 +258,8 @@ class DashboardApp(App[None]):
         self._ext_load_sparkline_ids: dict[str, str] = {}
         self._node_group_ids: dict[str, str] = {}
         self._poll_in_progress = False
+        self._node_row_order: list[str] = []
+        self._nodes_by_id: dict[str, dict[str, object]] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -227,15 +340,39 @@ class DashboardApp(App[None]):
     def _render_nodes(self, nodes: dict[str, object]) -> None:
         table = self.query_one("#nodes-table", DataTable)
         table.clear()
+        self._node_row_order = []
+        self._nodes_by_id = {}
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
+            host_id = cast(str, host["host_id"])
             table.add_row(
-                host["host_id"],
+                host_id,
                 _styled_node_status(host["status"]),
                 _styled_external_load(host.get("external_load")),
                 host["backend_type"],
                 f"{host['in_flight']}/{host['max_concurrent_requests']}",
                 host["last_seen"],
             )
+            self._node_row_order.append(host_id)
+            self._nodes_by_id[host_id] = host
+
+    def action_edit_node(self) -> None:
+        table = self.query_one("#nodes-table", DataTable)
+        if table.row_count == 0:
+            return
+        host_id = self._node_row_order[table.cursor_row]
+        node = self._nodes_by_id[host_id]
+
+        async def handle_result(fields: dict[str, object] | None) -> None:
+            if fields is None:
+                return
+            try:
+                await self._client.update_node(host_id, fields)
+            except DiagnosticsClientError as exc:
+                self._show_banner(_BANNER_MESSAGES.get(exc.kind, exc.kind))
+                return
+            await self.poll()
+
+        self.push_screen(NodeEditScreen(host_id, node), handle_result)
 
     def _render_alerts(self, alerts: dict[str, object]) -> None:
         table = self.query_one("#alerts-table", DataTable)

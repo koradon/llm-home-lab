@@ -106,6 +106,20 @@ The orchestrator then routes and load-balances across every registered, healthy 
 `GET /v1/nodes` to list registered hosts, `POST /v1/nodes/{host_id}/heartbeat` to keep one alive,
 and `DELETE /v1/nodes/{host_id}` to remove one.
 
+**Changing a parameter on an already-registered host** doesn't require re-sending the whole
+payload above — `PATCH /v1/nodes/{host_id}` accepts just the fields you're changing and leaves
+everything else as-is:
+
+```bash
+curl -X PATCH http://localhost:8080/v1/nodes/gpu-box \
+  -H "Authorization: Bearer <a key allowed on /v1/nodes>" \
+  -H "Content-Type: application/json" \
+  -d '{"max_concurrent_requests": 8}'
+```
+
+Or press `e` on a selected row in the [TUI dashboard](#terminal-dashboard-tui) to edit a node's
+parameters interactively, without touching `curl` at all.
+
 **Avoiding surprise model loads**: LM Studio will just-in-time load any model in its catalog the
 moment it's requested — even one you never intended to run, which can silently eat all your RAM
 if a client sends an unexpected `model` value. Without an explicit `allowed_models` list, the
@@ -200,15 +214,17 @@ it runs; register more hosts if you need to run many long generations at once.
 ## API surface
 
 - `POST /v1/chat/completions` — OpenAI-compatible chat completions (streaming and non-streaming).
-- `POST /v1/nodes/register`, `POST /v1/nodes/{host_id}/heartbeat`, `DELETE /v1/nodes/{host_id}`,
-  `GET /v1/nodes` — manage model hosts.
+- `POST /v1/nodes/register`, `PATCH /v1/nodes/{host_id}`, `POST /v1/nodes/{host_id}/heartbeat`,
+  `DELETE /v1/nodes/{host_id}`, `GET /v1/nodes` — manage model hosts.
 - `GET /health/live`, `GET /health/ready` — liveness/readiness (no auth required).
 
 ## Terminal dashboard (TUI)
 
 An optional terminal dashboard shows live node health, firing alerts, and queue/token usage —
-comparable to `docker stats`. It's a separate, read-only client; it doesn't need to run on the
-same machine as the orchestrator.
+comparable to `docker stats`. It's a separate client that doesn't need to run on the same machine
+as the orchestrator. Select a node row and press `e` to edit its parameters (context window,
+capacity, base URL, allowed models, memory budget) in place — this calls the same
+`PATCH /v1/nodes/{host_id}` endpoint described above.
 
 ```bash
 uv sync --extra tui
@@ -224,6 +240,9 @@ Add a client entry to `config/api_keys.json` scoped to what the dashboard reads:
   "keys": [{"key": "sk-dev-changeme", "expires_at": null}]
 }
 ```
+
+Path-prefix authorization doesn't distinguish HTTP methods, so the same `/v1/nodes` scope above
+already permits the dashboard's `PATCH` edit requests — there's no separate write scope to add.
 
 `--base-url`/`ORCHESTRATOR_BASE_URL` and `--api-key`/`ORCHESTRATOR_API_KEY` are interchangeable
 (flag or env var); `--interval` controls the poll frequency in seconds (default `2`). The Node

@@ -46,6 +46,9 @@ multiple remote model hosts — this spec does not introduce a distributed contr
     an existing `host_id` replaces its capabilities/capacity and counts as a heartbeat.
     `HostRegistry` itself stays backend-agnostic — it never constructs a `ChatBackend`; app wiring
     uses `capabilities.backend_type`/`base_url` to build one (see Related).
+  - `get(host_id) -> HostInfo` — returns the current state of one host. Raises
+    `HostNotRegisteredError` if `host_id` is not registered. Backs the partial-update endpoint below
+    so it can merge changed fields into current state without scanning `hosts()`.
   - `heartbeat(host_id, at)` — updates the host's last-seen timestamp. Raises if `host_id` is not
     registered (a host must register before it can heartbeat).
   - `deregister(host_id)` — explicit, immediate removal. This is now the **only** removal path —
@@ -109,6 +112,27 @@ for.
 - `POST /v1/nodes/register` accepts an optional `allowed_models` field in its payload, threaded
   straight into `HostCapabilities`.
 
+## Partial node updates
+
+Added because changing one field of an already-registered host (e.g. bumping
+`max_concurrent_requests` after tuning) otherwise required re-sending the full registration
+payload — an operator had to `GET /v1/nodes` first, copy every existing field, and re-`POST` the
+whole thing to `/v1/nodes/register`, or risk silently clearing fields it omitted.
+
+- `PATCH /v1/nodes/{host_id}` accepts the same fields as `POST /v1/nodes/register` (minus
+  `host_id` itself), all optional. Only fields present in the request body are changed; omitted
+  fields keep their current value. Uses Pydantic's `exclude_unset` semantics, so a field must be
+  entirely absent from the JSON body to be treated as "unchanged" — sending `null` for an optional
+  field explicitly clears it (e.g. `{"allowed_models": null}` resets `allowed_models` to
+  unrestricted).
+- Returns `404` (`HostNotRegisteredError`) if `host_id` is not currently registered — a PATCH never
+  creates a host; only `POST /v1/nodes/register` does.
+- Implemented as a thin merge in front of the existing `register`: fetch the current `HostInfo` via
+  `registry.get(host_id)`, apply the changed fields onto its `capabilities`/`capacity` via
+  `dataclasses.replace`, then call `registry.register(...)` with the merged result — so it inherits
+  `register`'s existing behavior for free: in-flight count is preserved, and a changed `base_url`
+  reconstructs the cached backend the same way a full re-registration does.
+
 ### On-demand loading within a memory budget
 
 A model that isn't currently loaded doesn't have to be a hard reject — LM Studio's just-in-time
@@ -156,6 +180,10 @@ unhealthy/offline and `_eligible_candidates` excludes it from routing, but it st
 
 **Explicit deregistration is immediate**: `deregister(host_id)` removes the host regardless of how
 recently it heartbeat, distinct from timeout-based expiry.
+
+**Partial updates never create a host and never reset unrelated fields**: `PATCH
+/v1/nodes/{host_id}` on an unregistered host is a `404`, not an implicit registration; on a
+registered host, any field absent from the request body keeps its existing value.
 
 **A request queues when all eligible hosts are full**: if every host whose capabilities satisfy
 the request is at `max_concurrent_requests`, `dispatch` returns `None` for that request and it
@@ -212,7 +240,8 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-multi-no
 ## Open Questions
 
 - ~~How a host actually reaches the registry~~ — resolved: `POST /v1/nodes/register`,
-  `POST /v1/nodes/{id}/heartbeat`, `DELETE /v1/nodes/{id}`, `GET /v1/nodes`.
+  `PATCH /v1/nodes/{id}`, `POST /v1/nodes/{id}/heartbeat`, `DELETE /v1/nodes/{id}`,
+  `GET /v1/nodes`.
 - ~~Who calls `expire_stale` and on what cadence~~ — moot per ADR-0004: `expire_stale` is removed
   entirely.
 - ~~Whether `capabilities` needs a structured schema (e.g. supported model names)~~ — resolved,
