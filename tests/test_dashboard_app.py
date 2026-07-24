@@ -1,9 +1,9 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from textual.widgets import DataTable, Sparkline, Static
+from textual.widgets import DataTable, Input, Sparkline, Static
 
-from llm_home_lab.tui.app import DashboardApp
+from llm_home_lab.tui.app import DashboardApp, NodeEditScreen
 from llm_home_lab.tui.client import DiagnosticsClientError
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -15,6 +15,10 @@ class _FakeClient:
         self._alerts = alerts or {"alerts": []}
         self._metrics_text = metrics_text or ""
         self._error = error
+        self.update_node_calls = []
+
+    async def update_node(self, host_id, fields):
+        self.update_node_calls.append((host_id, fields))
 
     async def list_nodes(self):
         if self._error:
@@ -513,6 +517,132 @@ async def test_a_node_with_busy_external_load_is_styled_yellow_with_queued_count
         ext_load_cell = table.get_cell(row_key, column_key)
         assert str(ext_load_cell) == "processingPrompt (2 queued)"
         assert "yellow" in ext_load_cell.style
+
+
+def _full_node(host_id, **overrides):
+    node = {
+        "host_id": host_id,
+        "backend_type": "lmstudio",
+        "context_window": 8192,
+        "base_url": "http://localhost:1234",
+        "allowed_models": None,
+        "memory_budget_gb": None,
+        "in_flight": 0,
+        "max_concurrent_requests": 4,
+        "last_seen": "2026-07-19T00:00:00+00:00",
+        "status": "online",
+        "external_load": None,
+    }
+    node.update(overrides)
+    return node
+
+
+async def test_pressing_e_opens_an_edit_modal_prefilled_with_the_selected_nodes_values():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a", max_concurrent_requests=4)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        assert isinstance(app.screen, NodeEditScreen)
+        assert app.screen.query_one("#context_window", Input).value == "8192"
+        assert app.screen.query_one("#max_concurrent_requests", Input).value == "4"
+        assert app.screen.query_one("#base_url", Input).value == "http://localhost:1234"
+
+
+async def test_saving_the_edit_modal_sends_the_updated_fields_and_refreshes():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a", max_concurrent_requests=4)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#max_concurrent_requests", Input).value = "8"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls == [
+            (
+                "host-a",
+                {
+                    "context_window": 8192,
+                    "max_concurrent_requests": 8,
+                    "base_url": "http://localhost:1234",
+                    "allowed_models": None,
+                    "memory_budget_gb": None,
+                },
+            )
+        ]
+        assert not isinstance(app.screen, NodeEditScreen)
+
+
+async def test_cancelling_the_edit_modal_sends_no_update():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        await pilot.click("#cancel")
+        await pilot.pause()
+
+        assert client.update_node_calls == []
+        assert not isinstance(app.screen, NodeEditScreen)
+
+
+async def test_pressing_e_with_no_nodes_registered_does_nothing():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+
+        await pilot.press("e")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, NodeEditScreen)
+
+
+async def test_editing_allowed_models_sends_a_parsed_comma_separated_list():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a", allowed_models=["model-a"])]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        assert app.screen.query_one("#allowed_models", Input).value == "model-a"
+        app.screen.query_one("#allowed_models", Input).value = "model-a, model-b"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls[0][1]["allowed_models"] == ["model-a", "model-b"]
+
+
+async def test_an_invalid_numeric_field_keeps_the_modal_open_with_an_error():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        app.screen.query_one("#max_concurrent_requests", Input).value = "not-a-number"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert isinstance(app.screen, NodeEditScreen)
+        assert client.update_node_calls == []
+        error = app.screen.query_one("#edit-error", Static)
+        assert "whole numbers" in str(error.render())
 
 
 async def test_second_poll_shows_token_rate_since_the_first():

@@ -106,6 +106,91 @@ def test_registering_a_host_without_allowed_models_defaults_to_none():
     assert nodes[0]["allowed_models"] is None
 
 
+def test_patching_a_host_updates_only_the_given_field():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    response = client.patch("/v1/nodes/host-a", json={"max_concurrent_requests": 8})
+
+    assert response.status_code == 200
+    node = client.get("/v1/nodes").json()["nodes"][0]
+    assert node["max_concurrent_requests"] == 8
+
+
+def test_patching_a_host_preserves_fields_not_included_in_the_payload():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    payload = _register_payload()
+    payload["allowed_models"] = ["qwen2.5-coder-14b-instruct-mlx"]
+    client.post("/v1/nodes/register", json=payload)
+
+    client.patch("/v1/nodes/host-a", json={"max_concurrent_requests": 8})
+
+    node = client.get("/v1/nodes").json()["nodes"][0]
+    assert node["context_window"] == 8192
+    assert node["base_url"] == "http://localhost:1234"
+    assert node["allowed_models"] == ["qwen2.5-coder-14b-instruct-mlx"]
+
+
+def test_patching_a_host_with_an_explicit_null_clears_the_field():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    payload = _register_payload()
+    payload["allowed_models"] = ["qwen2.5-coder-14b-instruct-mlx"]
+    client.post("/v1/nodes/register", json=payload)
+
+    client.patch("/v1/nodes/host-a", json={"allowed_models": None})
+
+    node = client.get("/v1/nodes").json()["nodes"][0]
+    assert node["allowed_models"] is None
+
+
+def test_patching_an_unregistered_host_returns_404():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+
+    response = client.patch("/v1/nodes/host-a", json={"max_concurrent_requests": 8})
+
+    assert response.status_code == 404
+    assert response.json()["error"]["type"] == "invalid_request_error"
+
+
+def test_patching_a_host_id_containing_slashes_succeeds():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    host_id = "http://localhost:1234"
+    client.post("/v1/nodes/register", json=_register_payload(host_id))
+
+    response = client.patch(f"/v1/nodes/{host_id}", json={"max_concurrent_requests": 8})
+
+    assert response.status_code == 200
+
+
+def test_patching_a_host_does_not_reset_its_in_flight_count():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+    client.get("/health/ready")
+
+    client.patch("/v1/nodes/host-a", json={"max_concurrent_requests": 8})
+
+    node = client.get("/v1/nodes").json()["nodes"][0]
+    assert node["in_flight"] == 0
+
+
+def test_patching_a_host_with_a_different_base_url_reconstructs_the_cached_backend():
+    constructed_base_urls: list[str] = []
+
+    def factory(capabilities):
+        constructed_base_urls.append(capabilities.base_url)
+        return FakeBackend(detail=capabilities.base_url)
+
+    client = TestClient(_app(backend_factory=factory), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+    client.get("/health/ready")
+
+    client.patch("/v1/nodes/host-a", json={"base_url": "http://new-host:1234"})
+    response = client.get("/health/ready")
+
+    assert response.json()["backends"][0]["detail"] == "http://new-host:1234"
+    assert constructed_base_urls == ["http://localhost:1234", "http://new-host:1234"]
+
+
 def test_heartbeat_on_an_unregistered_host_returns_404():
     client = TestClient(_app(), headers=AUTH_HEADERS)
 

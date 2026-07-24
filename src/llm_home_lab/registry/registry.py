@@ -32,6 +32,11 @@ class HostRegistry:
         )
         self._store.upsert(host_id, capabilities, capacity, at)
 
+    def get(self, host_id: str) -> HostInfo:
+        if host_id not in self._hosts:
+            raise HostNotRegisteredError(host_id)
+        return self._hosts[host_id]
+
     def hosts(self) -> Sequence[HostInfo]:
         return list(self._hosts.values())
 

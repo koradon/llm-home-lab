@@ -65,6 +65,22 @@ def test_reregistering_updates_capacity_without_resetting_in_flight_count(tmp_pa
     assert registry.hosts()[0].capacity.max_concurrent_requests == 5
 
 
+def test_get_returns_the_registered_host(tmp_path):
+    registry = HostRegistry(str(tmp_path / "registry.db"))
+    registry.register("host-a", _capabilities(), _capacity(), at=T0)
+
+    host = registry.get("host-a")
+
+    assert host.host_id == "host-a"
+
+
+def test_get_on_an_unregistered_host_raises(tmp_path):
+    registry = HostRegistry(str(tmp_path / "registry.db"))
+
+    with pytest.raises(HostNotRegisteredError):
+        registry.get("host-a")
+
+
 def test_heartbeat_updates_last_seen(tmp_path):
     registry = HostRegistry(str(tmp_path / "registry.db"))
     registry.register("host-a", _capabilities(), _capacity(), at=T0)
