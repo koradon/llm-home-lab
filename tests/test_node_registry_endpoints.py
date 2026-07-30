@@ -84,6 +84,27 @@ def test_registering_a_host_with_allowed_models_threads_them_into_node_metadata(
     assert nodes[0]["allowed_models"] == ["qwen2.5-coder-14b-instruct-mlx"]
 
 
+def test_registering_a_host_with_model_aliases_threads_them_into_node_metadata():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    payload = _register_payload()
+    payload["allowed_models"] = ["google/gemma-4-e4b"]
+    payload["model_aliases"] = {"google/gemma-4-e4b": ["gemma-a", "gemma-b"]}
+
+    client.post("/v1/nodes/register", json=payload)
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["model_aliases"] == {"google/gemma-4-e4b": ["gemma-a", "gemma-b"]}
+
+
+def test_registering_a_host_without_model_aliases_defaults_to_none():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["model_aliases"] is None
+
+
 def test_registering_a_host_with_a_memory_budget_threads_it_into_node_metadata():
     client = TestClient(_app(), headers=AUTH_HEADERS)
     payload = _register_payload()

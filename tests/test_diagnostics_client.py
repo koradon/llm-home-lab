@@ -126,6 +126,73 @@ async def test_update_node_raises_connection_kind_on_transport_failure():
     assert exc_info.value.kind == "connection"
 
 
+async def test_register_node_sends_a_post_request_with_the_given_fields():
+    def handler(request):
+        assert request.method == "POST"
+        assert request.url.path == "/v1/nodes/register"
+        assert json.loads(request.content) == {"host_id": "host-a", "base_url": "http://x:1"}
+        return httpx.Response(200, json={"status": "registered"})
+
+    client = _client(handler)
+
+    await client.register_node({"host_id": "host-a", "base_url": "http://x:1"})
+
+
+async def test_register_node_raises_server_error_kind_on_5xx():
+    def handler(request):
+        return httpx.Response(500, json={"error": "boom"})
+
+    client = _client(handler)
+
+    with pytest.raises(DiagnosticsClientError) as exc_info:
+        await client.register_node({"host_id": "host-a"})
+    assert exc_info.value.kind == "server_error"
+
+
+async def test_register_node_raises_connection_kind_on_transport_failure():
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    client = _client(handler)
+
+    with pytest.raises(DiagnosticsClientError) as exc_info:
+        await client.register_node({"host_id": "host-a"})
+    assert exc_info.value.kind == "connection"
+
+
+async def test_deregister_node_sends_a_delete_request_to_the_hosts_path():
+    def handler(request):
+        assert request.method == "DELETE"
+        assert request.url.path == "/v1/nodes/host-a"
+        return httpx.Response(200, json={"status": "deregistered"})
+
+    client = _client(handler)
+
+    await client.deregister_node("host-a")
+
+
+async def test_deregister_node_raises_unauthorized_kind_on_401():
+    def handler(request):
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    client = _client(handler)
+
+    with pytest.raises(DiagnosticsClientError) as exc_info:
+        await client.deregister_node("host-a")
+    assert exc_info.value.kind == "unauthorized"
+
+
+async def test_deregister_node_raises_connection_kind_on_transport_failure():
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    client = _client(handler)
+
+    with pytest.raises(DiagnosticsClientError) as exc_info:
+        await client.deregister_node("host-a")
+    assert exc_info.value.kind == "connection"
+
+
 async def test_trigger_health_check_calls_health_ready():
     def handler(request):
         assert request.url.path == "/health/ready"

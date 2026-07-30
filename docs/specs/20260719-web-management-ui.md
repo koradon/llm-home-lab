@@ -66,8 +66,9 @@ recorded in [operator-observability-dashboards](../ideas/operator-observability-
 ## Behavior
 
 **The web UI only ever reads the orchestrator's diagnostic surface.** It never talks to LM Studio
-backends directly and never proxies `/v1/chat/completions` — the same read-only boundary the TUI
-spec establishes.
+backends directly and never proxies `/v1/chat/completions` — the same boundary the TUI spec
+establishes (the TUI also registers/edits/deregisters nodes via the orchestrator's existing node
+endpoints, but neither client ever talks to LM Studio directly or proxies inference traffic).
 
 **A poll failure degrades to "stale," not blank.** If the orchestrator is unreachable, `/api/*`
 keeps serving the last successfully polled snapshot with a `stale_since` timestamp the frontend

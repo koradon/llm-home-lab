@@ -170,6 +170,57 @@ This is entirely optional — everything else works without it, and a missing or
 [docs/adr/0005-lms-cli-for-external-node-load-visibility.md](docs/adr/0005-lms-cli-for-external-node-load-visibility.md)
 for why `lms` is required (LM Studio's REST API doesn't expose load/queue data itself).
 
+## Running one model as multiple parallel instances (full context each)
+
+LM Studio's **Max Concurrent Predictions** setting serves several requests at once via
+continuous batching, but every concurrent slot shares the model's *one* configured context
+window — more concurrency means less context per request. If you'd rather keep the full context
+window on every request and still get real parallelism, load the same model twice under
+different identifiers instead: each loaded instance gets its own independent context/KV cache,
+and LM Studio can run both at once. You don't need headless mode, a second server process, or a
+second port for this — both instances run inside the one already-running LM Studio app/server on
+its existing port; the `lms` CLI just talks to it remotely.
+
+```bash
+lms load google/gemma-4-e4b --identifier gemma-a --context-length 8192
+lms load google/gemma-4-e4b --identifier gemma-b --context-length 8192
+lms ps   # confirm both are listed as loaded, independently, each with its own context
+```
+
+The `--identifier` values are arbitrary — pick whatever names make sense to you.
+`--context-length` is optional; omit it to use the model's default. Both instances also show up
+in the desktop app itself (the "My Models"/loaded models panel), not just on the command line —
+`lms` is just remote-controlling the same running app.
+
+Register the one node that's actually serving them (same `base_url` — it's the same physical host
+and GPU/RAM either way) with `allowed_models` set to the name your callers will actually send, and
+`model_aliases` mapping that name to the real loaded identifiers behind it. Set
+`max_concurrent_requests` to the number of instances it can genuinely run at once:
+
+```bash
+curl -X POST http://localhost:8080/v1/nodes/register \
+  -H "Authorization: Bearer <a key allowed on /v1/nodes>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host_id": "gpu-box",
+    "backend_type": "lmstudio",
+    "base_url": "http://localhost:1234",
+    "context_window": 8192,
+    "max_concurrent_requests": 2,
+    "allowed_models": ["google/gemma-4-e4b"],
+    "model_aliases": {"google/gemma-4-e4b": ["gemma-a", "gemma-b"]}
+  }'
+```
+
+Callers keep sending `"model": "google/gemma-4-e4b"` exactly as before — nothing changes on their
+end. The orchestrator round-robins across `model_aliases["google/gemma-4-e4b"]` on every request
+and rewrites the outgoing `model` field to whichever identifier it picked
+(`LMStudioBackend._resolve_model`) before it reaches LM Studio; the response still reports the
+original name back to the caller. It's a plain alternating counter, not per-instance load
+tracking — `max_concurrent_requests` still caps the *shared* total across both instances, so the
+node won't be overloaded, but a given moment could still send more to whichever instance happens
+to be slower. A node with no `model_aliases` entry for a model behaves exactly as before.
+
 ## Configuration reference
 
 | Var | Default | Purpose |
@@ -222,9 +273,11 @@ it runs; register more hosts if you need to run many long generations at once.
 
 An optional terminal dashboard shows live node health, firing alerts, and queue/token usage —
 comparable to `docker stats`. It's a separate client that doesn't need to run on the same machine
-as the orchestrator. Select a node row and press `e` to edit its parameters (context window,
-capacity, base URL, allowed models, memory budget) in place — this calls the same
-`PATCH /v1/nodes/{host_id}` endpoint described above.
+as the orchestrator. The Nodes panel is a full registration UI, not just a viewer: press `n` or
+click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
+place, or press `x` to deregister it (after a confirmation dialog). Every field
+`POST /v1/nodes/register`/`PATCH /v1/nodes/{host_id}` accept is editable in the form, including
+`model_aliases`/`model_sizes_gb` as repeatable model-name/value rows.
 
 ```bash
 uv sync --extra tui
@@ -242,7 +295,8 @@ Add a client entry to `config/api_keys.json` scoped to what the dashboard reads:
 ```
 
 Path-prefix authorization doesn't distinguish HTTP methods, so the same `/v1/nodes` scope above
-already permits the dashboard's `PATCH` edit requests — there's no separate write scope to add.
+already permits the dashboard's register/edit/deregister requests — there's no separate write
+scope to add.
 
 `--base-url`/`ORCHESTRATOR_BASE_URL` and `--api-key`/`ORCHESTRATOR_API_KEY` are interchangeable
 (flag or env var); `--interval` controls the poll frequency in seconds (default `2`). The Node

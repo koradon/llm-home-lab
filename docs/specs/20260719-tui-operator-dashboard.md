@@ -9,8 +9,9 @@ draft
 A Textual-based terminal client, shipped as its own console script in this repo, that polls a
 running orchestrator's existing diagnostic endpoints (`GET /v1/nodes`, `GET /v1/alerts`, `GET
 /metrics`) and renders live node health/capacity, firing alerts, and queue depth/token usage —
-comparable to `docker stats` or `htop`. It is a read-only client the operator runs against a
-(possibly remote) orchestrator; it introduces no new orchestrator endpoints and no persistence of
+comparable to `docker stats` or `htop`, that the operator runs against a (possibly remote)
+orchestrator. It also registers, edits, and deregisters nodes (see "The TUI is no longer strictly
+read-only" below); either way it introduces no new orchestrator endpoints and no persistence of
 its own, matching the "TUI first, no new backend surface" appetite recorded in
 [operator-observability-dashboards](../ideas/operator-observability-dashboards.md).
 
@@ -32,9 +33,11 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   sibling to `observability/`, `registry/`, etc. — reuses this repo's existing `httpx` dependency
   rather than adding a new HTTP client library.
 - `client.py` — `OrchestratorDiagnosticsClient(base_url: str, api_key: str)`, an async `httpx`
-  wrapper with three methods: `list_nodes()`, `list_alerts()`, `fetch_metrics_text()` — one call per
-  existing endpoint, `Authorization: Bearer <api_key>` header on each, matching how any other client
-  authenticates against `enforce_auth`.
+  wrapper originally scoped to `list_nodes()`, `list_alerts()`, `fetch_metrics_text()` — one call
+  per existing GET endpoint — and since extended with `register_node()`, `update_node()`,
+  `deregister_node()`, and `trigger_health_check()` as the Nodes panel grew mutation support.
+  `Authorization: Bearer <api_key>` header on each, matching how any other client authenticates
+  against `enforce_auth`.
 - `metrics_parser.py` — a minimal Prometheus text-exposition parser that extracts only the metric
   names this repo's `MetricsRegistry.render_prometheus` actually emits (`llm_home_lab_queue_depth`,
   `llm_home_lab_token_usage_total{host_id="..."}`, plus the three windowed SLIs) — not a general
@@ -43,11 +46,18 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 - `app.py` — a Textual `App` with a fixed-interval polling loop (default 2s, `--interval`) driving
   three panels:
   - **Nodes** — `host_id`, `backend_type`, `in_flight`/`max_concurrent_requests`, `last_seen`, one
-    row per host from `list_nodes()`.
+    row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
+    buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
+    row currently selected via cursor, or deregister it after a confirm dialog — every field
+    `NodeRegistrationRequest`/`NodeUpdateRequest` accepts (including `model_sizes_gb` and
+    `model_aliases`, each edited as repeating name/value input rows, not free text) is editable
+    here.
   - **Alerts** — `rule_name`, `severity`, `state`, `value`/`threshold_value`, `runbook_url`, one row
     per currently-firing alert from `list_alerts()`.
-  - **Queue & Tokens** — queue depth and per-host cumulative token usage, parsed from
-    `fetch_metrics_text()`.
+  - **Queue & Tokens** — queue depth, per-host cumulative token usage, and per-host token rate,
+    parsed from `fetch_metrics_text()`, each with a session-scoped "max" column tracking the
+    highest value observed since the TUI started (not shown for the cumulative token-usage row,
+    since its max is always its current value).
 - CLI flags / env vars: `--base-url`/`ORCHESTRATOR_BASE_URL` (default `http://localhost:8080`),
   `--api-key`/`ORCHESTRATOR_API_KEY` (required, no insecure default — matches this repo's
   auth-required-by-default posture), `--interval`.
@@ -63,9 +73,12 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 **Polling is fixed-interval, not event-driven.** No websocket/SSE surface is added to the
 orchestrator for this — matches home-lab scale and keeps the orchestrator's API contract unchanged.
 
-**The TUI is strictly read-only.** It has no path to node registration/deregistration or any
-config-changing endpoint; scope is limited to the three GET diagnostic endpoints, matching the
-idea doc's intent to keep observability separate from operational mutation.
+**The TUI is no longer strictly read-only.** The original design limited it to the three GET
+diagnostic endpoints; it has since grown a Nodes panel that also edits (`PATCH`), registers
+(`POST /v1/nodes/register`), and deregisters (`DELETE`) nodes, gated by explicit user action
+(a modal + confirm dialog for deregistration) rather than anything automatic. See
+[per-alias-completion-metrics](20260730-per-alias-completion-metrics.md) for context on one field
+(`model_aliases`) this mutation surface edits.
 
 **A failed poll shows an inline error, not a crash.** Connection errors, `401`/`403` (bad or
 missing key), and `5xx` responses are rendered as a status banner in the running TUI; the next
@@ -98,6 +111,8 @@ Keep scenarios in a sibling Gherkin file:
   auth and `allowed_path_prefixes` this spec's client entry follows.
 - Spec: [web-management-ui](20260719-web-management-ui.md) — shares the same three orchestrator
   endpoints and, in the plan, the same `metrics_parser.py` module.
+- Spec: [per-alias-completion-metrics](20260730-per-alias-completion-metrics.md) — future
+  per-alias breakdown for the Queue & Tokens panel, not yet scheduled.
 - Roadmap: [operator-dashboards](../roadmap/operator-dashboards.md)
 - Plan: (to be written) `docs/plans/20260719-tui-operator-dashboard.md`
 - Issue: (to be created, milestone M5)

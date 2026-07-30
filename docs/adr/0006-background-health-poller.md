@@ -82,3 +82,11 @@ anything driving real traffic.
 - Plan: `docs/plans/20260717-failover-and-health-policy.md` (the "accepted limitation" this
   supersedes), `docs/plans/20260720-background-health-poller.md` (implementation)
 - Module: `src/llm_home_lab/health/monitor.py`, `src/llm_home_lab/api/app.py` (`/health/ready`)
+
+## Update (2026-07-30)
+
+The "pure, read-only visualizer" framing above described this ADR's own rationale for why the
+poller shouldn't depend on the TUI; it did not commit the TUI to staying read-only for other
+reasons. The TUI has since gained node registration/edit/deregistration — see
+`docs/specs/20260719-tui-operator-dashboard.md` ("The TUI is no longer strictly read-only") for
+the current, authoritative statement of TUI scope. This ADR's health-poller decision is unaffected.
