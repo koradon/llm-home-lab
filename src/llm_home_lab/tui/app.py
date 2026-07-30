@@ -176,8 +176,9 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         allowed_models = cast("list[str] | None", node.get("allowed_models")) or []
         memory_budget_gb = node.get("memory_budget_gb")
         backend_type = cast(str, node.get("backend_type") or _KNOWN_BACKEND_TYPES[0])
-        if backend_type not in _KNOWN_BACKEND_TYPES:
-            backend_type = _KNOWN_BACKEND_TYPES[0]
+        backend_type_options = list(_KNOWN_BACKEND_TYPES)
+        if backend_type not in backend_type_options:
+            backend_type_options.append(backend_type)
 
         with Vertical(id="edit-dialog"):
             title = "Register new node" if self._mode == "register" else f"Edit {self._host_id}"
@@ -188,7 +189,7 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                     yield Input(value="", id="host_id")
                 yield Label("backend_type")
                 yield Select(
-                    [(name, name) for name in _KNOWN_BACKEND_TYPES],
+                    [(name, name) for name in backend_type_options],
                     value=backend_type,
                     allow_blank=False,
                     id="backend_type",
