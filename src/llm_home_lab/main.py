@@ -57,6 +57,7 @@ BACKEND_FACTORIES = {
         timeout=float(os.environ.get("LMSTUDIO_TIMEOUT", "120")),
         max_retries=int(os.environ.get("LMSTUDIO_MAX_RETRIES", "2")),
         connect_timeout=float(os.environ.get("LMSTUDIO_CONNECT_TIMEOUT", "10")),
+        model_aliases=caps.model_aliases,
     ),
 }
 

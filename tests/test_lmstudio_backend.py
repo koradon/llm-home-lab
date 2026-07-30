@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -293,6 +295,81 @@ async def test_list_models_returns_none_when_backend_is_unreachable():
     models = await backend.list_models()
 
     assert models is None
+
+
+async def test_no_model_aliases_forwards_the_original_model_unchanged():
+    captured_models = []
+
+    def handler(request):
+        captured_models.append(json.loads(request.content)["model"])
+        return _sse_response(*SUCCESSFUL_SSE_LINES)
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=5.0, transport=transport
+    )
+
+    await backend.complete(_request())
+
+    assert captured_models == ["test-model"]
+
+
+async def test_model_aliases_round_robin_across_successive_requests():
+    captured_models = []
+
+    def handler(request):
+        captured_models.append(json.loads(request.content)["model"])
+        return _sse_response(*SUCCESSFUL_SSE_LINES)
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234",
+        timeout=5.0,
+        transport=transport,
+        model_aliases={"test-model": ["test-model-a", "test-model-b"]},
+    )
+
+    for _ in range(3):
+        await backend.complete(_request())
+
+    assert captured_models == ["test-model-a", "test-model-b", "test-model-a"]
+
+
+async def test_model_aliases_do_not_change_the_model_reported_back_to_the_caller():
+    def handler(request):
+        return _sse_response(*SUCCESSFUL_SSE_LINES)
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234",
+        timeout=5.0,
+        transport=transport,
+        model_aliases={"test-model": ["test-model-a", "test-model-b"]},
+    )
+
+    result = await backend.complete(_request())
+
+    assert result.model == "test-model"
+
+
+async def test_a_model_absent_from_model_aliases_is_forwarded_unchanged():
+    captured_models = []
+
+    def handler(request):
+        captured_models.append(json.loads(request.content)["model"])
+        return _sse_response(*SUCCESSFUL_SSE_LINES)
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234",
+        timeout=5.0,
+        transport=transport,
+        model_aliases={"some-other-model": ["a", "b"]},
+    )
+
+    await backend.complete(_request())
+
+    assert captured_models == ["test-model"]
 
 
 async def test_check_health_reports_unhealthy_when_backend_is_unreachable():

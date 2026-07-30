@@ -10,6 +10,7 @@ class HostCapabilities:
     allowed_models: list[str] | None = None
     memory_budget_gb: float | None = None
     model_sizes_gb: dict[str, float] | None = None
+    model_aliases: dict[str, list[str]] | None = None
 
 
 @dataclass

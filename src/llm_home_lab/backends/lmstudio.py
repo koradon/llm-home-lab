@@ -25,6 +25,7 @@ class LMStudioBackend:
         max_retries: int = 2,
         connect_timeout: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        model_aliases: dict[str, list[str]] | None = None,
     ) -> None:
         self.backend_id = base_url
         self._max_retries = max_retries
@@ -34,6 +35,19 @@ class LMStudioBackend:
             timeout=httpx.Timeout(timeout, connect=connect_timeout),
             transport=transport,
         )
+        self._model_aliases = model_aliases or {}
+        self._alias_cursor: dict[str, int] = {}
+
+    def _resolve_model(self, model: str) -> str:
+        # Round-robins across the real LM Studio identifiers behind one client-facing model
+        # name, so multiple loaded instances of the same model (each with its own full context)
+        # can share one name without the caller needing to pick an instance itself.
+        aliases = self._model_aliases.get(model)
+        if not aliases:
+            return model
+        index = self._alias_cursor.get(model, 0) % len(aliases)
+        self._alias_cursor[model] = index + 1
+        return aliases[index]
 
     async def check_health(self) -> BackendHealth:
         try:
@@ -97,7 +111,9 @@ class LMStudioBackend:
         return self._stream_chunks(request)
 
     async def _stream_chunks(self, request: ChatCompletionRequest) -> AsyncIterator[BackendChunk]:
-        payload = _to_lmstudio_payload(request)
+        # Resolved once per call, before the retry loop below, so a retry keeps hitting the
+        # same instance it already started with instead of round-robining mid-request.
+        payload = _to_lmstudio_payload(request, self._resolve_model(request.model))
         attempts = self._max_retries + 1
         last_error: httpx.TransportError | None = None
 
@@ -160,8 +176,9 @@ class LMStudioBackend:
         raise BackendConnectionError(str(last_error)) from last_error
 
 
-def _to_lmstudio_payload(request: ChatCompletionRequest) -> dict[str, object]:
+def _to_lmstudio_payload(request: ChatCompletionRequest, model: str) -> dict[str, object]:
     return request.model_dump(exclude={"stream"}) | {
+        "model": model,
         "stream": True,
         "stream_options": {"include_usage": True},
     }

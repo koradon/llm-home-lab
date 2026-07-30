@@ -55,6 +55,7 @@ class NodeRegistrationRequest(BaseModel):
     allowed_models: list[str] | None = None
     memory_budget_gb: float | None = None
     model_sizes_gb: dict[str, float] | None = None
+    model_aliases: dict[str, list[str]] | None = None
 
 
 class NodeUpdateRequest(BaseModel):
@@ -65,6 +66,7 @@ class NodeUpdateRequest(BaseModel):
     allowed_models: list[str] | None = None
     memory_budget_gb: float | None = None
     model_sizes_gb: dict[str, float] | None = None
+    model_aliases: dict[str, list[str]] | None = None
 
 
 _NODE_CAPABILITY_FIELDS = {
@@ -74,6 +76,7 @@ _NODE_CAPABILITY_FIELDS = {
     "allowed_models",
     "memory_budget_gb",
     "model_sizes_gb",
+    "model_aliases",
 }
 _NODE_CAPACITY_FIELDS = {"max_concurrent_requests"}
 
@@ -367,6 +370,7 @@ def create_app(
                 allowed_models=payload.allowed_models,
                 memory_budget_gb=payload.memory_budget_gb,
                 model_sizes_gb=payload.model_sizes_gb,
+                model_aliases=payload.model_aliases,
             ),
             HostCapacity(max_concurrent_requests=payload.max_concurrent_requests),
             at=datetime.now(UTC),
@@ -419,6 +423,7 @@ def create_app(
                     "allowed_models": host.capabilities.allowed_models,
                     "memory_budget_gb": host.capabilities.memory_budget_gb,
                     "model_sizes_gb": host.capabilities.model_sizes_gb,
+                    "model_aliases": host.capabilities.model_aliases,
                     "max_concurrent_requests": host.capacity.max_concurrent_requests,
                     "in_flight": host.in_flight,
                     "last_seen": host.last_seen.isoformat(),
