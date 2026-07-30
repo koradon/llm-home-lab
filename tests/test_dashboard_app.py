@@ -1,9 +1,9 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from textual.widgets import DataTable, Input, Sparkline, Static
+from textual.widgets import Button, DataTable, Input, Select, Sparkline, Static
 
-from llm_home_lab.tui.app import DashboardApp, NodeEditScreen
+from llm_home_lab.tui.app import DashboardApp, NodeFormScreen, RemoveNodeConfirmScreen
 from llm_home_lab.tui.client import DiagnosticsClientError
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -15,10 +15,18 @@ class _FakeClient:
         self._alerts = alerts or {"alerts": []}
         self._metrics_text = metrics_text or ""
         self._error = error
+        self.register_node_calls = []
         self.update_node_calls = []
+        self.deregister_node_calls = []
+
+    async def register_node(self, fields):
+        self.register_node_calls.append(fields)
 
     async def update_node(self, host_id, fields):
         self.update_node_calls.append((host_id, fields))
+
+    async def deregister_node(self, host_id):
+        self.deregister_node_calls.append(host_id)
 
     async def list_nodes(self):
         if self._error:
@@ -145,7 +153,7 @@ async def test_missing_metric_renders_unavailable_without_affecting_other_panels
         queue_table = app.query_one("#queue-tokens-table", DataTable)
 
         assert nodes_table.row_count == 1
-        assert queue_table.get_row_at(0) == ["queue_depth", "unavailable"]
+        assert queue_table.get_row_at(0) == ["queue_depth", "unavailable", "unavailable"]
 
 
 async def test_critical_alert_severity_is_styled_red():
@@ -186,7 +194,7 @@ async def test_p95_latency_is_rendered_from_parsed_metrics():
 
         table = app.query_one("#queue-tokens-table", DataTable)
         rows = [table.get_row_at(i) for i in range(table.row_count)]
-        assert ["p95_latency_ms", "124"] in rows
+        assert ["p95_latency_ms", "124", "124"] in rows
 
 
 async def test_first_poll_shows_no_token_rate_yet():
@@ -198,7 +206,7 @@ async def test_first_poll_shows_no_token_rate_yet():
 
         table = app.query_one("#queue-tokens-table", DataTable)
         rows = [table.get_row_at(i) for i in range(table.row_count)]
-        assert ["tokens/s[host-a]", "-"] in rows
+        assert ["tokens/s[host-a]", "-", "-"] in rows
 
 
 def _node(host_id, in_flight, max_concurrent_requests=4, status="online", external_load=None):
@@ -546,7 +554,7 @@ async def test_pressing_e_opens_an_edit_modal_prefilled_with_the_selected_nodes_
         await pilot.press("e")
         await pilot.pause()
 
-        assert isinstance(app.screen, NodeEditScreen)
+        assert isinstance(app.screen, NodeFormScreen)
         assert app.screen.query_one("#context_window", Input).value == "8192"
         assert app.screen.query_one("#max_concurrent_requests", Input).value == "4"
         assert app.screen.query_one("#base_url", Input).value == "http://localhost:1234"
@@ -569,15 +577,18 @@ async def test_saving_the_edit_modal_sends_the_updated_fields_and_refreshes():
             (
                 "host-a",
                 {
+                    "backend_type": "lmstudio",
                     "context_window": 8192,
                     "max_concurrent_requests": 8,
                     "base_url": "http://localhost:1234",
                     "allowed_models": None,
                     "memory_budget_gb": None,
+                    "model_sizes_gb": None,
+                    "model_aliases": None,
                 },
             )
         ]
-        assert not isinstance(app.screen, NodeEditScreen)
+        assert not isinstance(app.screen, NodeFormScreen)
 
 
 async def test_cancelling_the_edit_modal_sends_no_update():
@@ -593,7 +604,7 @@ async def test_cancelling_the_edit_modal_sends_no_update():
         await pilot.pause()
 
         assert client.update_node_calls == []
-        assert not isinstance(app.screen, NodeEditScreen)
+        assert not isinstance(app.screen, NodeFormScreen)
 
 
 async def test_pressing_e_with_no_nodes_registered_does_nothing():
@@ -606,7 +617,7 @@ async def test_pressing_e_with_no_nodes_registered_does_nothing():
         await pilot.press("e")
         await pilot.pause()
 
-        assert not isinstance(app.screen, NodeEditScreen)
+        assert not isinstance(app.screen, NodeFormScreen)
 
 
 async def test_editing_allowed_models_sends_a_parsed_comma_separated_list():
@@ -639,7 +650,7 @@ async def test_an_invalid_numeric_field_keeps_the_modal_open_with_an_error():
         await pilot.click("#save")
         await pilot.pause()
 
-        assert isinstance(app.screen, NodeEditScreen)
+        assert isinstance(app.screen, NodeFormScreen)
         assert client.update_node_calls == []
         error = app.screen.query_one("#edit-error", Static)
         assert "whole numbers" in str(error.render())
@@ -657,4 +668,313 @@ async def test_second_poll_shows_token_rate_since_the_first():
 
         table = app.query_one("#queue-tokens-table", DataTable)
         rows = [table.get_row_at(i) for i in range(table.row_count)]
-        assert ["tokens/s[host-a]", "10.0/s"] in rows
+        assert ["tokens/s[host-a]", "10.0/s", "10.0/s"] in rows
+
+
+async def test_queue_depth_max_column_tracks_the_highest_value_seen():
+    client = _FakeClient(metrics_text="llm_home_lab_queue_depth 3\n")
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+        client._metrics_text = "llm_home_lab_queue_depth 7\n"
+        await app.poll()
+        client._metrics_text = "llm_home_lab_queue_depth 2\n"
+        await app.poll()
+
+        table = app.query_one("#queue-tokens-table", DataTable)
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        assert ["queue_depth", "2", "7"] in rows
+
+
+async def test_tokens_row_always_shows_a_dash_for_max():
+    client = _FakeClient(metrics_text='llm_home_lab_token_usage_total{host_id="host-a"} 100\n')
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#queue-tokens-table", DataTable)
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        assert ["tokens[host-a]", "100", "—"] in rows
+
+
+async def test_editing_prefills_model_sizes_and_aliases_as_separate_rows():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "host-a",
+                    model_sizes_gb={"model-a": 12.5},
+                    model_aliases={"model-a": ["alias-1", "alias-2"]},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        sizes = app.screen.query_one("#model-sizes-rows")
+        aliases = app.screen.query_one("#model-aliases-rows")
+        assert [w.value for w in sizes.query(".mapping-name")] == ["model-a"]
+        assert [w.value for w in sizes.query(".mapping-value")] == ["12.5"]
+        assert [w.value for w in aliases.query(".mapping-name")] == ["model-a"]
+        assert [w.value for w in aliases.query(".mapping-value")] == ["alias-1, alias-2"]
+
+
+async def test_saving_the_edit_modal_sends_model_sizes_and_aliases_as_dicts():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "host-a",
+                    model_sizes_gb={"model-a": 12.5},
+                    model_aliases={"model-a": ["alias-1", "alias-2"]},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        _, fields = client.update_node_calls[0]
+        assert fields["model_sizes_gb"] == {"model-a": 12.5}
+        assert fields["model_aliases"] == {"model-a": ["alias-1", "alias-2"]}
+
+
+async def test_adding_a_new_size_row_and_saving_includes_it():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        app.screen.query_one("#add-size", Button).press()
+        await pilot.pause()
+        sizes = app.screen.query_one("#model-sizes-rows")
+        list(sizes.query(".mapping-name"))[0].value = "model-x"
+        list(sizes.query(".mapping-value"))[0].value = "4"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls[0][1]["model_sizes_gb"] == {"model-x": 4.0}
+
+
+async def test_removing_a_mapping_row_excludes_it_from_the_saved_dict():
+    client = _FakeClient(
+        nodes={"nodes": [_full_node("host-a", model_sizes_gb={"model-a": 12.5, "model-b": 8.0})]}
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        first_remove_button = list(
+            app.screen.query_one("#model-sizes-rows").query(".mapping-remove")
+        )[0]
+        first_remove_button.press()
+        await pilot.pause()
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls[0][1]["model_sizes_gb"] == {"model-b": 8.0}
+
+
+async def test_duplicate_model_name_in_mapping_rows_is_rejected():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        app.screen.query_one("#add-size", Button).press()
+        app.screen.query_one("#add-size", Button).press()
+        await pilot.pause()
+        sizes = app.screen.query_one("#model-sizes-rows")
+        names = list(sizes.query(".mapping-name"))
+        values = list(sizes.query(".mapping-value"))
+        names[0].value = "model-a"
+        values[0].value = "1"
+        names[1].value = "model-a"
+        values[1].value = "2"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert isinstance(app.screen, NodeFormScreen)
+        assert client.update_node_calls == []
+        error = app.screen.query_one("#edit-error", Static)
+        assert "duplicate" in str(error.render())
+
+
+async def test_clicking_new_node_button_opens_a_blank_register_modal():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.click("#new-node-button")
+        await pilot.pause()
+
+        assert isinstance(app.screen, NodeFormScreen)
+        assert app.screen.query_one("#host_id", Input).value == ""
+        assert app.screen.query_one("#backend_type", Select).value == "lmstudio"
+
+
+async def test_pressing_n_opens_the_register_modal():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("n")
+        await pilot.pause()
+
+        assert isinstance(app.screen, NodeFormScreen)
+
+
+async def test_registering_a_new_node_sends_the_collected_fields():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("n")
+        await pilot.pause()
+
+        app.screen.query_one("#host_id", Input).value = "new-host"
+        app.screen.query_one("#context_window", Input).value = "8192"
+        app.screen.query_one("#max_concurrent_requests", Input).value = "4"
+        app.screen.query_one("#base_url", Input).value = "http://new:1234"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.register_node_calls == [
+            {
+                "backend_type": "lmstudio",
+                "context_window": 8192,
+                "max_concurrent_requests": 4,
+                "base_url": "http://new:1234",
+                "host_id": "new-host",
+                "allowed_models": None,
+                "memory_budget_gb": None,
+                "model_sizes_gb": None,
+                "model_aliases": None,
+            }
+        ]
+        assert not isinstance(app.screen, NodeFormScreen)
+
+
+async def test_registering_without_a_host_id_shows_an_error():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("n")
+        await pilot.pause()
+
+        app.screen.query_one("#context_window", Input).value = "8192"
+        app.screen.query_one("#max_concurrent_requests", Input).value = "4"
+        app.screen.query_one("#base_url", Input).value = "http://new:1234"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert isinstance(app.screen, NodeFormScreen)
+        assert client.register_node_calls == []
+        error = app.screen.query_one("#edit-error", Static)
+        assert "host_id" in str(error.render())
+
+
+async def test_pressing_x_opens_a_remove_confirm_for_the_selected_node():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("x")
+        await pilot.pause()
+
+        assert isinstance(app.screen, RemoveNodeConfirmScreen)
+
+
+async def test_cancelling_the_remove_confirm_sends_no_deregister():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("x")
+        await pilot.pause()
+
+        await pilot.click("#cancel")
+        await pilot.pause()
+
+        assert client.deregister_node_calls == []
+        assert not isinstance(app.screen, RemoveNodeConfirmScreen)
+
+
+async def test_confirming_the_remove_dialog_deregisters_the_selected_node_and_refreshes():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("x")
+        await pilot.pause()
+
+        await pilot.click("#confirm")
+        await pilot.pause()
+
+        assert client.deregister_node_calls == ["host-a"]
+        assert not isinstance(app.screen, RemoveNodeConfirmScreen)
+
+
+async def test_pressing_x_with_no_nodes_registered_does_nothing():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+
+        await pilot.press("x")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, RemoveNodeConfirmScreen)
+
+
+async def test_clicking_remove_node_button_operates_on_the_selected_row():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a"), _full_node("host-b")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        table.move_cursor(row=1)
+        await pilot.click("#remove-node-button")
+        await pilot.pause()
+        await pilot.click("#confirm")
+        await pilot.pause()
+
+        assert client.deregister_node_calls == ["host-b"]

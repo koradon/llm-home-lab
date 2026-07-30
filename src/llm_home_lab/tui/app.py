@@ -6,13 +6,24 @@ import re
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Sparkline, Static
+from textual.widget import Widget
+from textual.widgets import (
+    Button,
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    Label,
+    Select,
+    Sparkline,
+    Static,
+)
 
 from llm_home_lab.diagnostics.metrics_parser import parse_metrics_text
 from llm_home_lab.tui.client import DiagnosticsClientError, OrchestratorDiagnosticsClient
@@ -20,6 +31,10 @@ from llm_home_lab.tui.load_history import update_load_history
 from llm_home_lab.tui.rates import compute_token_rates
 
 logger = logging.getLogger(__name__)
+
+# Mirrors BACKEND_FACTORIES' keys (src/llm_home_lab/api/app.py) — extend when a new backend
+# factory is registered there.
+_KNOWN_BACKEND_TYPES = ["lmstudio"]
 
 _BANNER_MESSAGES = {
     "unauthorized": "not authorized — check API key",
@@ -98,23 +113,30 @@ class DiagnosticsClient(Protocol):
     async def list_alerts(self) -> dict[str, object]: ...
     async def fetch_metrics_text(self) -> str: ...
     async def trigger_health_check(self) -> None: ...
+    async def register_node(self, fields: dict[str, object]) -> None: ...
     async def update_node(self, host_id: str, fields: dict[str, object]) -> None: ...
+    async def deregister_node(self, host_id: str) -> None: ...
 
 
-class NodeEditScreen(ModalScreen[dict[str, object] | None]):
-    """Prompts for a registered node's editable parameters, prefilled from its current state."""
+class NodeFormScreen(ModalScreen[dict[str, object] | None]):
+    """Collects a node's capabilities, either registering a new node or editing an existing one."""
 
     BINDINGS = [("escape", "cancel", "Cancel")]
     CSS = """
-    NodeEditScreen {
+    NodeFormScreen {
         align: center middle;
     }
     #edit-dialog {
-        width: 60;
+        width: 70;
         height: auto;
+        max-height: 90%;
         border: round $accent;
         padding: 1 2;
         background: $panel;
+    }
+    #form-body {
+        height: auto;
+        max-height: 14;
     }
     #edit-error {
         height: auto;
@@ -127,44 +149,128 @@ class NodeEditScreen(ModalScreen[dict[str, object] | None]):
         border: none;
         height: 1;
     }
+    .mapping-row {
+        height: 3;
+    }
+    .mapping-row Input {
+        width: 1fr;
+    }
+    .mapping-remove {
+        min-width: 3;
+        width: 3;
+    }
     """
 
-    def __init__(self, host_id: str, node: dict[str, object]) -> None:
+    def __init__(
+        self, mode: Literal["register", "edit"], host_id: str, node: dict[str, object]
+    ) -> None:
         super().__init__()
+        self._mode = mode
         self._host_id = host_id
         self._node = node
+        self._size_row_seq = 0
+        self._alias_row_seq = 0
 
     def compose(self) -> ComposeResult:
         node = self._node
         allowed_models = cast("list[str] | None", node.get("allowed_models")) or []
         memory_budget_gb = node.get("memory_budget_gb")
+        backend_type = cast(str, node.get("backend_type") or _KNOWN_BACKEND_TYPES[0])
+        if backend_type not in _KNOWN_BACKEND_TYPES:
+            backend_type = _KNOWN_BACKEND_TYPES[0]
+
         with Vertical(id="edit-dialog"):
-            yield Label(f"Edit {self._host_id}")
-            yield Label("context_window")
-            yield Input(value=str(node.get("context_window", "")), id="context_window")
-            yield Label("max_concurrent_requests")
-            yield Input(
-                value=str(node.get("max_concurrent_requests", "")),
-                id="max_concurrent_requests",
-            )
-            yield Label("base_url")
-            yield Input(value=str(node.get("base_url", "")), id="base_url")
-            yield Label("allowed_models (comma-separated, blank = unrestricted)")
-            yield Input(value=", ".join(allowed_models), id="allowed_models")
-            yield Label("memory_budget_gb (blank = unset)")
-            yield Input(
-                value="" if memory_budget_gb is None else str(memory_budget_gb),
-                id="memory_budget_gb",
-            )
+            title = "Register new node" if self._mode == "register" else f"Edit {self._host_id}"
+            yield Label(title)
+            with VerticalScroll(id="form-body"):
+                if self._mode == "register":
+                    yield Label("host_id")
+                    yield Input(value="", id="host_id")
+                yield Label("backend_type")
+                yield Select(
+                    [(name, name) for name in _KNOWN_BACKEND_TYPES],
+                    value=backend_type,
+                    allow_blank=False,
+                    id="backend_type",
+                )
+                yield Label("context_window")
+                yield Input(value=str(node.get("context_window", "")), id="context_window")
+                yield Label("max_concurrent_requests")
+                yield Input(
+                    value=str(node.get("max_concurrent_requests", "")),
+                    id="max_concurrent_requests",
+                )
+                yield Label("base_url")
+                yield Input(value=str(node.get("base_url", "")), id="base_url")
+                yield Label("allowed_models (comma-separated, blank = unrestricted)")
+                yield Input(value=", ".join(allowed_models), id="allowed_models")
+                yield Label("memory_budget_gb (blank = unset)")
+                yield Input(
+                    value="" if memory_budget_gb is None else str(memory_budget_gb),
+                    id="memory_budget_gb",
+                )
+                yield Label("model_sizes_gb")
+                yield Vertical(id="model-sizes-rows")
+                yield Button("+ Add size", id="add-size")
+                yield Label("model_aliases (aliases: comma-separated)")
+                yield Vertical(id="model-aliases-rows")
+                yield Button("+ Add mapping", id="add-mapping")
             yield Static("", id="edit-error")
             with Horizontal():
-                yield Button("Save", id="save", variant="primary")
+                yield Button(
+                    "Register" if self._mode == "register" else "Save", id="save", variant="primary"
+                )
                 yield Button("Cancel", id="cancel")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    async def on_mount(self) -> None:
+        model_sizes_gb = cast("dict[str, float] | None", self._node.get("model_sizes_gb")) or {}
+        for name, size in model_sizes_gb.items():
+            await self._add_size_row(name, str(size))
+
+        model_aliases = cast("dict[str, list[str]] | None", self._node.get("model_aliases")) or {}
+        for name, aliases in model_aliases.items():
+            await self._add_alias_row(name, ", ".join(aliases))
+
+    async def _add_size_row(self, name: str = "", value: str = "") -> None:
+        self._size_row_seq += 1
+        await self.query_one("#model-sizes-rows", Vertical).mount(
+            Horizontal(
+                Input(value=name, placeholder="model name", classes="mapping-name"),
+                Input(value=value, placeholder="size_gb", classes="mapping-value"),
+                Button("✕", classes="mapping-remove"),
+                id=f"size-row-{self._size_row_seq}",
+                classes="mapping-row",
+            )
+        )
+
+    async def _add_alias_row(self, name: str = "", value: str = "") -> None:
+        self._alias_row_seq += 1
+        await self.query_one("#model-aliases-rows", Vertical).mount(
+            Horizontal(
+                Input(value=name, placeholder="model name", classes="mapping-name"),
+                Input(value=value, placeholder="alias1, alias2", classes="mapping-value"),
+                Button("✕", classes="mapping-remove"),
+                id=f"alias-row-{self._alias_row_seq}",
+                classes="mapping-row",
+            )
+        )
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
             return
+        if event.button.id == "add-size":
+            await self._add_size_row()
+            return
+        if event.button.id == "add-mapping":
+            await self._add_alias_row()
+            return
+        if event.button.has_class("mapping-remove"):
+            row = event.button.parent
+            assert isinstance(row, Widget)
+            await row.remove()
+            return
+
         fields, error = self._collect_fields()
         if error is not None:
             self.query_one("#edit-error", Static).update(Text(error, style="bold red"))
@@ -186,10 +292,17 @@ class NodeEditScreen(ModalScreen[dict[str, object] | None]):
             return {}, "base_url must not be empty"
 
         fields: dict[str, object] = {
+            "backend_type": self.query_one("#backend_type", Select).value,
             "context_window": context_window,
             "max_concurrent_requests": max_concurrent_requests,
             "base_url": base_url,
         }
+
+        if self._mode == "register":
+            host_id = self.query_one("#host_id", Input).value.strip()
+            if not host_id:
+                return {}, "host_id must not be empty"
+            fields["host_id"] = host_id
 
         allowed_models_raw = self.query_one("#allowed_models", Input).value.strip()
         fields["allowed_models"] = (
@@ -207,12 +320,96 @@ class NodeEditScreen(ModalScreen[dict[str, object] | None]):
         else:
             fields["memory_budget_gb"] = None
 
+        model_sizes_gb, sizes_error = self._collect_mapping_rows(
+            "#model-sizes-rows",
+            parse_value=float,
+            value_error="model_sizes_gb values must be numbers",
+        )
+        if sizes_error is not None:
+            return {}, sizes_error
+        fields["model_sizes_gb"] = model_sizes_gb or None
+
+        model_aliases, aliases_error = self._collect_mapping_rows(
+            "#model-aliases-rows",
+            parse_value=lambda raw: [a.strip() for a in raw.split(",") if a.strip()],
+            value_error="model_aliases values must not be empty",
+        )
+        if aliases_error is not None:
+            return {}, aliases_error
+        fields["model_aliases"] = model_aliases or None
+
         return fields, None
+
+    def _collect_mapping_rows(
+        self, container_id: str, parse_value: Callable[[str], object], value_error: str
+    ) -> tuple[dict[str, object], str | None]:
+        result: dict[str, object] = {}
+        seen: set[str] = set()
+        for row in self.query_one(container_id, Vertical).query(".mapping-row"):
+            name = row.query_one(".mapping-name", Input).value.strip()
+            if not name:
+                continue
+            if name in seen:
+                return {}, f'duplicate model name "{name}"'
+            seen.add(name)
+
+            raw_value = row.query_one(".mapping-value", Input).value.strip()
+            if not raw_value:
+                continue
+            try:
+                result[name] = parse_value(raw_value)
+            except ValueError:
+                return {}, value_error
+        return result, None
+
+
+class RemoveNodeConfirmScreen(ModalScreen[bool]):
+    """Confirms deregistration before it's sent, since it takes effect immediately."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+    CSS = """
+    RemoveNodeConfirmScreen {
+        align: center middle;
+    }
+    #confirm-dialog {
+        width: 60;
+        height: auto;
+        border: round $error;
+        padding: 1 2;
+        background: $panel;
+    }
+    """
+
+    def __init__(self, host_id: str) -> None:
+        super().__init__()
+        self._host_id = host_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Label(f"Remove {self._host_id}?")
+            yield Static(
+                "This deregisters the node from the orchestrator immediately. In-flight "
+                "requests are not affected; new requests will no longer be routed here."
+            )
+            with Horizontal():
+                yield Button("Remove", id="confirm", variant="error")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class DashboardApp(App[None]):
     TITLE = "llm-home-lab — Operator Dashboard"
-    BINDINGS = [("q", "quit", "Quit"), ("e", "edit_node", "Edit node")]
+    BINDINGS = [
+        ("q", "quit", "Quit"),
+        ("e", "edit_node", "Edit node"),
+        ("n", "new_node", "New node"),
+        ("x", "remove_node", "Remove node"),
+    ]
     CSS = """
     DataTable, #load-sparklines {
         border: round $accent;
@@ -222,6 +419,13 @@ class DashboardApp(App[None]):
     #banner {
         height: auto;
         padding: 0 1;
+    }
+    #nodes-toolbar {
+        height: auto;
+        margin: 0 1;
+    }
+    #nodes-toolbar Button {
+        margin-right: 1;
     }
     Sparkline {
         height: 3;
@@ -260,10 +464,14 @@ class DashboardApp(App[None]):
         self._poll_in_progress = False
         self._node_row_order: list[str] = []
         self._nodes_by_id: dict[str, dict[str, object]] = {}
+        self._metric_max: dict[str, float] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static("", id="banner")
+        with Horizontal(id="nodes-toolbar"):
+            yield Button("+ New Node", id="new-node-button")
+            yield Button("✕ Remove Node", id="remove-node-button", variant="error")
         yield DataTable(id="nodes-table", zebra_stripes=True)
         yield DataTable(id="alerts-table", zebra_stripes=True)
         yield DataTable(id="queue-tokens-table", zebra_stripes=True)
@@ -282,7 +490,7 @@ class DashboardApp(App[None]):
         alerts_table.border_title = "Alerts"
 
         queue_table = self.query_one("#queue-tokens-table", DataTable)
-        queue_table.add_columns("metric", "value")
+        queue_table.add_columns("metric", "value", "max")
         queue_table.border_title = "Queue & Tokens"
 
         self.query_one(
@@ -372,7 +580,44 @@ class DashboardApp(App[None]):
                 return
             await self.poll()
 
-        self.push_screen(NodeEditScreen(host_id, node), handle_result)
+        self.push_screen(NodeFormScreen(mode="edit", host_id=host_id, node=node), handle_result)
+
+    def action_new_node(self) -> None:
+        async def handle_result(fields: dict[str, object] | None) -> None:
+            if fields is None:
+                return
+            try:
+                await self._client.register_node(fields)
+            except DiagnosticsClientError as exc:
+                self._show_banner(_BANNER_MESSAGES.get(exc.kind, exc.kind))
+                return
+            await self.poll()
+
+        self.push_screen(NodeFormScreen(mode="register", host_id="", node={}), handle_result)
+
+    def action_remove_node(self) -> None:
+        table = self.query_one("#nodes-table", DataTable)
+        if table.row_count == 0:
+            return
+        host_id = self._node_row_order[table.cursor_row]
+
+        async def handle_result(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            try:
+                await self._client.deregister_node(host_id)
+            except DiagnosticsClientError as exc:
+                self._show_banner(_BANNER_MESSAGES.get(exc.kind, exc.kind))
+                return
+            await self.poll()
+
+        self.push_screen(RemoveNodeConfirmScreen(host_id), handle_result)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "new-node-button":
+            self.action_new_node()
+        elif event.button.id == "remove-node-button":
+            self.action_remove_node()
 
     def _render_alerts(self, alerts: dict[str, object]) -> None:
         table = self.query_one("#alerts-table", DataTable)
@@ -399,16 +644,34 @@ class DashboardApp(App[None]):
         self._last_token_usage = dict(parsed.token_usage_total)
         self._last_token_usage_at = now
 
-        queue_depth = "unavailable" if parsed.queue_depth is None else str(parsed.queue_depth)
-        table.add_row("queue_depth", queue_depth)
+        if parsed.queue_depth is None:
+            table.add_row("queue_depth", "unavailable", "unavailable")
+        else:
+            max_queue_depth = self._track_max("queue_depth", parsed.queue_depth)
+            table.add_row("queue_depth", str(parsed.queue_depth), str(max_queue_depth))
 
-        p95 = "unavailable" if parsed.p95_latency_ms is None else f"{parsed.p95_latency_ms:.0f}"
-        table.add_row("p95_latency_ms", p95)
+        if parsed.p95_latency_ms is None:
+            table.add_row("p95_latency_ms", "unavailable", "unavailable")
+        else:
+            max_p95 = self._track_max("p95_latency_ms", parsed.p95_latency_ms)
+            table.add_row("p95_latency_ms", f"{parsed.p95_latency_ms:.0f}", f"{max_p95:.0f}")
 
         for host_id, total in parsed.token_usage_total.items():
-            table.add_row(f"tokens[{host_id}]", str(total))
+            # A cumulative counter's max is always its current value — showing it would be
+            # redundant, not informative, unlike the fluctuating metrics tracked below.
+            table.add_row(f"tokens[{host_id}]", str(total), "—")
             rate = rates.get(host_id)
-            table.add_row(f"tokens/s[{host_id}]", "-" if rate is None else f"{rate:.1f}/s")
+            rate_key = f"tokens/s[{host_id}]"
+            if rate is None:
+                table.add_row(rate_key, "-", "-")
+            else:
+                max_rate = self._track_max(rate_key, rate)
+                table.add_row(rate_key, f"{rate:.1f}/s", f"{max_rate:.1f}/s")
+
+    def _track_max(self, key: str, value: float) -> float:
+        updated = max(self._metric_max.get(key, value), value)
+        self._metric_max[key] = updated
+        return updated
 
     async def _render_load_sparklines(self, nodes: dict[str, object]) -> None:
         ratios: dict[str, float] = {}

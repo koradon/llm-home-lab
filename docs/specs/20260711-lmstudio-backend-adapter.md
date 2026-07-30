@@ -98,6 +98,8 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260711-lmstudio
 - ADR: [0003-lmstudio-backend-always-streams-internally](../adr/0003-lmstudio-backend-always-streams-internally.md)
 - Spec: [monitoring-slos-and-alerting](20260719-monitoring-slos-and-alerting.md) — token usage
   recording, now also populated for streaming responses as a consequence of ADR-0003
+- Spec: [per-alias-completion-metrics](20260730-per-alias-completion-metrics.md) — future
+  extension attributing token usage to `_resolve_model()`'s chosen alias, not yet scheduled
 - Acceptance: `docs/specs/features/20260711-lmstudio-backend-adapter.feature`
 
 ## Open Questions

@@ -39,8 +39,14 @@ class OrchestratorDiagnosticsClient:
         response = await self._get("/metrics")
         return response.text
 
+    async def register_node(self, fields: dict[str, object]) -> None:
+        await self._post("/v1/nodes/register", fields)
+
     async def update_node(self, host_id: str, fields: dict[str, object]) -> None:
         await self._patch(f"/v1/nodes/{host_id}", fields)
+
+    async def deregister_node(self, host_id: str) -> None:
+        await self._delete(f"/v1/nodes/{host_id}")
 
     async def trigger_health_check(self) -> None:
         # GET /v1/nodes reports a host's status from HealthMonitor's probe history, but nothing
@@ -61,9 +67,23 @@ class OrchestratorDiagnosticsClient:
             raise DiagnosticsClientError("connection", str(exc)) from exc
         return self._raise_for_error_status(response)
 
+    async def _post(self, path: str, json: dict[str, object]) -> httpx.Response:
+        try:
+            response = await self._client.post(path, json=json)
+        except httpx.TransportError as exc:
+            raise DiagnosticsClientError("connection", str(exc)) from exc
+        return self._raise_for_error_status(response)
+
     async def _patch(self, path: str, json: dict[str, object]) -> httpx.Response:
         try:
             response = await self._client.patch(path, json=json)
+        except httpx.TransportError as exc:
+            raise DiagnosticsClientError("connection", str(exc)) from exc
+        return self._raise_for_error_status(response)
+
+    async def _delete(self, path: str) -> httpx.Response:
+        try:
+            response = await self._client.delete(path)
         except httpx.TransportError as exc:
             raise DiagnosticsClientError("connection", str(exc)) from exc
         return self._raise_for_error_status(response)
