@@ -591,6 +591,37 @@ async def test_saving_the_edit_modal_sends_the_updated_fields_and_refreshes():
         assert not isinstance(app.screen, NodeFormScreen)
 
 
+async def test_editing_a_node_with_an_unrecognized_backend_type_preserves_it_on_save():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a", backend_type="ollama")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        assert app.screen.query_one("#backend_type", Select).value == "ollama"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls == [
+            (
+                "host-a",
+                {
+                    "backend_type": "ollama",
+                    "context_window": 8192,
+                    "max_concurrent_requests": 4,
+                    "base_url": "http://localhost:1234",
+                    "allowed_models": None,
+                    "memory_budget_gb": None,
+                    "model_sizes_gb": None,
+                    "model_aliases": None,
+                },
+            )
+        ]
+
+
 async def test_cancelling_the_edit_modal_sends_no_update():
     client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
     app = DashboardApp(client=client, interval_s=100.0)

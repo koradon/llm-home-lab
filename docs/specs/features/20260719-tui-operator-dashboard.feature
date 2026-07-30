@@ -36,7 +36,9 @@ Feature: TUI operator dashboard
     Then the affected Queue & Tokens row shows "unavailable"
     And the Nodes and Alerts panels continue to render normally
 
-  Scenario: The TUI never mutates orchestrator state
+  Scenario: The TUI's polling loop never mutates orchestrator state
     Given the TUI is running against a live orchestrator
     When it polls on its interval
     Then it only ever issues GET requests to /v1/nodes, /v1/alerts, and /metrics
+    And it only registers, edits, or deregisters a node in response to explicit operator action
+      in the Nodes panel, never as part of the polling loop itself

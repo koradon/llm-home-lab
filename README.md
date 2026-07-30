@@ -273,9 +273,11 @@ it runs; register more hosts if you need to run many long generations at once.
 
 An optional terminal dashboard shows live node health, firing alerts, and queue/token usage —
 comparable to `docker stats`. It's a separate client that doesn't need to run on the same machine
-as the orchestrator. Select a node row and press `e` to edit its parameters (context window,
-capacity, base URL, allowed models, memory budget) in place — this calls the same
-`PATCH /v1/nodes/{host_id}` endpoint described above.
+as the orchestrator. The Nodes panel is a full registration UI, not just a viewer: press `n` or
+click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
+place, or press `x` to deregister it (after a confirmation dialog). Every field
+`POST /v1/nodes/register`/`PATCH /v1/nodes/{host_id}` accept is editable in the form, including
+`model_aliases`/`model_sizes_gb` as repeatable model-name/value rows.
 
 ```bash
 uv sync --extra tui
@@ -293,7 +295,8 @@ Add a client entry to `config/api_keys.json` scoped to what the dashboard reads:
 ```
 
 Path-prefix authorization doesn't distinguish HTTP methods, so the same `/v1/nodes` scope above
-already permits the dashboard's `PATCH` edit requests — there's no separate write scope to add.
+already permits the dashboard's register/edit/deregister requests — there's no separate write
+scope to add.
 
 `--base-url`/`ORCHESTRATOR_BASE_URL` and `--api-key`/`ORCHESTRATOR_API_KEY` are interchangeable
 (flag or env var); `--interval` controls the poll frequency in seconds (default `2`). The Node

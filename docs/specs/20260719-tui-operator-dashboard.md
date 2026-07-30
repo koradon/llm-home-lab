@@ -9,8 +9,9 @@ draft
 A Textual-based terminal client, shipped as its own console script in this repo, that polls a
 running orchestrator's existing diagnostic endpoints (`GET /v1/nodes`, `GET /v1/alerts`, `GET
 /metrics`) and renders live node health/capacity, firing alerts, and queue depth/token usage —
-comparable to `docker stats` or `htop`. It is a read-only client the operator runs against a
-(possibly remote) orchestrator; it introduces no new orchestrator endpoints and no persistence of
+comparable to `docker stats` or `htop`, that the operator runs against a (possibly remote)
+orchestrator. It also registers, edits, and deregisters nodes (see "The TUI is no longer strictly
+read-only" below); either way it introduces no new orchestrator endpoints and no persistence of
 its own, matching the "TUI first, no new backend surface" appetite recorded in
 [operator-observability-dashboards](../ideas/operator-observability-dashboards.md).
 
