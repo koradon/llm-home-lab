@@ -18,7 +18,7 @@ from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBa
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.metrics import MetricsRegistry
-from llm_home_lab.registry.external_load import ExternalLoadProbe
+from llm_home_lab.registry.external_load import ExternalLoadProbe, LoadProbe
 from llm_home_lab.registry.models import (
     HostCapabilities,
     HostCapacity,
@@ -100,7 +100,7 @@ def create_app(
     auth_enabled: bool = True,
     dispatch_wait_timeout: float = 30.0,
     dispatch_poll_interval: float = 0.1,
-    external_load_probe: ExternalLoadProbe | None = None,
+    external_load_probe: LoadProbe | None = None,
     health_poll_interval: float | None = None,
 ) -> FastAPI:
     if auth_enabled and key_store is None:

@@ -34,7 +34,13 @@ logger = logging.getLogger(__name__)
 
 # Mirrors BACKEND_FACTORIES' keys (src/llm_home_lab/api/app.py) — extend when a new backend
 # factory is registered there.
-_KNOWN_BACKEND_TYPES = ["lmstudio"]
+_KNOWN_BACKEND_TYPES = ["lmstudio", "llamaserver"]
+
+# Each backend's own standard default port, offered as a base_url suggestion — never enforced.
+_DEFAULT_BASE_URLS = {
+    "lmstudio": "http://localhost:1234",
+    "llamaserver": "http://localhost:8080",
+}
 
 _BANNER_MESSAGES = {
     "unauthorized": "not authorized — check API key",
@@ -170,6 +176,9 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         self._node = node
         self._size_row_seq = 0
         self._alias_row_seq = 0
+        # Tracks the last value this screen auto-filled for base_url, so a backend_type change
+        # only overwrites it if the operator hasn't typed a real value of their own yet.
+        self._suggested_base_url: str | None = None
 
     def compose(self) -> ComposeResult:
         node = self._node
@@ -179,6 +188,11 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         backend_type_options = list(_KNOWN_BACKEND_TYPES)
         if backend_type not in backend_type_options:
             backend_type_options.append(backend_type)
+
+        base_url = str(node.get("base_url", ""))
+        if not base_url:
+            base_url = _DEFAULT_BASE_URLS.get(backend_type, "")
+            self._suggested_base_url = base_url or None
 
         with Vertical(id="edit-dialog"):
             title = "Register new node" if self._mode == "register" else f"Edit {self._host_id}"
@@ -202,7 +216,7 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                     id="max_concurrent_requests",
                 )
                 yield Label("base_url")
-                yield Input(value=str(node.get("base_url", "")), id="base_url")
+                yield Input(value=base_url, id="base_url")
                 yield Label("allowed_models (comma-separated, blank = unrestricted)")
                 yield Input(value=", ".join(allowed_models), id="allowed_models")
                 yield Label("memory_budget_gb (blank = unset)")
@@ -255,6 +269,20 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                 classes="mapping-row",
             )
         )
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "backend_type":
+            return
+
+        base_url_input = self.query_one("#base_url", Input)
+        # Only overwrite an auto-suggested value, never one the operator actually typed.
+        if base_url_input.value.strip() and base_url_input.value != self._suggested_base_url:
+            return
+
+        backend_type = cast(str, event.value)
+        suggestion = _DEFAULT_BASE_URLS.get(backend_type, "")
+        base_url_input.value = suggestion
+        self._suggested_base_url = suggestion or None
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":

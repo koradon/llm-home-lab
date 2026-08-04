@@ -66,12 +66,34 @@ def test_lmstudio_backend_factory_respects_connect_timeout_env_override(monkeypa
     assert backend.connect_timeout == 3.0
 
 
+def test_llamaserver_backend_factory_uses_a_10_second_connect_timeout_by_default(monkeypatch):
+    monkeypatch.delenv("LLAMASERVER_CONNECT_TIMEOUT", raising=False)
+    caps = HostCapabilities(
+        backend_type="llamaserver", context_window=8192, base_url="http://x:8080"
+    )
+
+    backend = BACKEND_FACTORIES["llamaserver"](caps)
+
+    assert backend.connect_timeout == 10.0
+
+
+def test_llamaserver_backend_factory_respects_connect_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("LLAMASERVER_CONNECT_TIMEOUT", "3")
+    caps = HostCapabilities(
+        backend_type="llamaserver", context_window=8192, base_url="http://x:8080"
+    )
+
+    backend = BACKEND_FACTORIES["llamaserver"](caps)
+
+    assert backend.connect_timeout == 3.0
+
+
 def test_default_app_uses_lms_binary_by_default(monkeypatch):
     monkeypatch.delenv("ORCHESTRATOR_LMS_BINARY_PATH", raising=False)
 
     app = create_default_app()
 
-    assert app.state.external_load_probe.lms_binary == "lms"
+    assert app.state.external_load_probe.probe_for("lmstudio").lms_binary == "lms"
 
 
 def test_default_app_respects_lms_binary_path_env_override(monkeypatch):
@@ -79,7 +101,7 @@ def test_default_app_respects_lms_binary_path_env_override(monkeypatch):
 
     app = create_default_app()
 
-    assert app.state.external_load_probe.lms_binary == "/opt/lms/lms"
+    assert app.state.external_load_probe.probe_for("lmstudio").lms_binary == "/opt/lms/lms"
 
 
 def test_default_app_uses_a_2_second_external_load_probe_interval_by_default(monkeypatch):
@@ -87,7 +109,8 @@ def test_default_app_uses_a_2_second_external_load_probe_interval_by_default(mon
 
     app = create_default_app()
 
-    assert app.state.external_load_probe.cache_ttl.total_seconds() == 2.0
+    assert app.state.external_load_probe.probe_for("lmstudio").cache_ttl.total_seconds() == 2.0
+    assert app.state.external_load_probe.probe_for("llamaserver").cache_ttl.total_seconds() == 2.0
 
 
 def test_default_app_respects_external_load_probe_interval_env_override(monkeypatch):
@@ -95,7 +118,8 @@ def test_default_app_respects_external_load_probe_interval_env_override(monkeypa
 
     app = create_default_app()
 
-    assert app.state.external_load_probe.cache_ttl.total_seconds() == 30.0
+    assert app.state.external_load_probe.probe_for("lmstudio").cache_ttl.total_seconds() == 30.0
+    assert app.state.external_load_probe.probe_for("llamaserver").cache_ttl.total_seconds() == 30.0
 
 
 def test_default_app_has_auth_enabled_by_default(monkeypatch):

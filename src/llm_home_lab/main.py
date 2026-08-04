@@ -1,16 +1,21 @@
 import logging
 import os
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI
 
 from llm_home_lab.api.app import create_app
+from llm_home_lab.backends.base import ChatBackend
+from llm_home_lab.backends.llamaserver import LlamaCPPServerBackend
 from llm_home_lab.backends.lmstudio import LMStudioBackend
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.external_load import ExternalLoadProbe
+from llm_home_lab.registry.llamaserver_load import LlamaCPPServerLoadProbe
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
+from llm_home_lab.registry.multi_backend_load_probe import MultiBackendLoadProbe
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
 from llm_home_lab.routing.models import PolicyRule, RoutingPolicy
@@ -51,13 +56,19 @@ def _load_alert_evaluator() -> AlertEvaluator:
     return AlertEvaluator.from_file(path)
 
 
-BACKEND_FACTORIES = {
+BACKEND_FACTORIES: Mapping[str, Callable[[HostCapabilities], ChatBackend]] = {
     "lmstudio": lambda caps: LMStudioBackend(
         base_url=caps.base_url,
         timeout=float(os.environ.get("LMSTUDIO_TIMEOUT", "120")),
         max_retries=int(os.environ.get("LMSTUDIO_MAX_RETRIES", "2")),
         connect_timeout=float(os.environ.get("LMSTUDIO_CONNECT_TIMEOUT", "10")),
         model_aliases=caps.model_aliases,
+    ),
+    "llamaserver": lambda caps: LlamaCPPServerBackend(
+        base_url=caps.base_url,
+        timeout=float(os.environ.get("LLAMASERVER_TIMEOUT", "120")),
+        max_retries=int(os.environ.get("LLAMASERVER_MAX_RETRIES", "2")),
+        connect_timeout=float(os.environ.get("LLAMASERVER_CONNECT_TIMEOUT", "10")),
     ),
 }
 
@@ -101,11 +112,25 @@ def create_default_app() -> FastAPI:
         key_store=_load_key_store() if auth_enabled else None,
         auth_enabled=auth_enabled,
         dispatch_wait_timeout=float(os.environ.get("ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S", "120")),
-        external_load_probe=ExternalLoadProbe(
-            lms_binary=os.environ.get("ORCHESTRATOR_LMS_BINARY_PATH", "lms"),
-            cache_ttl=timedelta(
-                seconds=int(os.environ.get("ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S", "2"))
-            ),
+        external_load_probe=MultiBackendLoadProbe(
+            registry=registry,
+            probes_by_backend_type={
+                "lmstudio": ExternalLoadProbe(
+                    lms_binary=os.environ.get("ORCHESTRATOR_LMS_BINARY_PATH", "lms"),
+                    cache_ttl=timedelta(
+                        seconds=int(
+                            os.environ.get("ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S", "2")
+                        )
+                    ),
+                ),
+                "llamaserver": LlamaCPPServerLoadProbe(
+                    cache_ttl=timedelta(
+                        seconds=int(
+                            os.environ.get("ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S", "2")
+                        )
+                    ),
+                ),
+            },
         ),
         health_poll_interval=float(os.environ.get("ORCHESTRATOR_HEALTH_POLL_INTERVAL_S", "5")),
     )
