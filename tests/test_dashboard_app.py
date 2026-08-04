@@ -871,6 +871,65 @@ async def test_clicking_new_node_button_opens_a_blank_register_modal():
         assert app.screen.query_one("#backend_type", Select).value == "lmstudio"
 
 
+async def test_a_blank_register_modal_suggests_the_default_backend_types_base_url():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.click("#new-node-button")
+        await pilot.pause()
+
+        assert app.screen.query_one("#backend_type", Select).value == "lmstudio"
+        assert app.screen.query_one("#base_url", Input).value == "http://localhost:1234"
+
+
+async def test_changing_backend_type_updates_the_suggested_base_url():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.click("#new-node-button")
+        await pilot.pause()
+
+        app.screen.query_one("#backend_type", Select).value = "llamaserver"
+        await pilot.pause()
+
+        assert app.screen.query_one("#base_url", Input).value == "http://localhost:8080"
+
+
+async def test_changing_backend_type_does_not_overwrite_a_typed_base_url():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.click("#new-node-button")
+        await pilot.pause()
+
+        app.screen.query_one("#base_url", Input).value = "http://gpu-box.home:9000"
+        app.screen.query_one("#backend_type", Select).value = "llamaserver"
+        await pilot.pause()
+
+        assert app.screen.query_one("#base_url", Input).value == "http://gpu-box.home:9000"
+
+
+async def test_editing_an_existing_node_does_not_overwrite_its_real_base_url():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test() as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        app.screen.query_one("#backend_type", Select).value = "llamaserver"
+        await pilot.pause()
+
+        assert app.screen.query_one("#base_url", Input).value == "http://localhost:1234"
+
+
 async def test_pressing_n_opens_the_register_modal():
     client = _FakeClient(nodes={"nodes": []})
     app = DashboardApp(client=client, interval_s=100.0)

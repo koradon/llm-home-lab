@@ -4,6 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Protocol
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,10 @@ class ExternalLoadStatus:
     status: str | None
     queued: int | None
     checked_at: datetime
+
+
+class LoadProbe(Protocol):
+    async def probe(self, host_id: str, base_url: str, at: datetime) -> ExternalLoadStatus: ...
 
 
 def _unavailable(at: datetime) -> ExternalLoadStatus:
