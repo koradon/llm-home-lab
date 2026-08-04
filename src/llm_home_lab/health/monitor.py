@@ -35,6 +35,12 @@ class HealthMonitor:
             return 1.0
         return sum(state.history) / len(state.history)
 
+    def failure_count(self, backend_id: str) -> int:
+        state = self._states.get(backend_id)
+        if state is None:
+            return 0
+        return sum(1 for healthy in state.history if not healthy)
+
     def record_probe(self, backend_id: str, healthy: bool, at: datetime) -> None:
         state = self._states.setdefault(backend_id, BackendHealthState())
         state.history.append(healthy)

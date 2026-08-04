@@ -32,6 +32,34 @@ def test_a_backend_with_no_probes_has_no_probe_history():
     assert monitor.has_probe_history("backend-a") is False
 
 
+def test_a_backend_with_no_probes_has_zero_failure_count():
+    monitor = HealthMonitor()
+
+    assert monitor.failure_count("backend-a") == 0
+
+
+def test_failure_count_reflects_failures_recorded_in_recent_history():
+    monitor = HealthMonitor(failure_threshold=100)
+
+    monitor.record_probe("backend-a", healthy=False, at=T0)
+    monitor.record_probe("backend-a", healthy=True, at=T0 + timedelta(seconds=1))
+    monitor.record_probe("backend-a", healthy=False, at=T0 + timedelta(seconds=2))
+    monitor.record_probe("backend-a", healthy=True, at=T0 + timedelta(seconds=3))
+    monitor.record_probe("backend-a", healthy=True, at=T0 + timedelta(seconds=4))
+
+    assert monitor.failure_count("backend-a") == 2
+
+
+def test_failure_count_ages_out_failures_older_than_the_bounded_history_window():
+    monitor = HealthMonitor(failure_threshold=100)
+
+    monitor.record_probe("backend-a", healthy=False, at=T0)
+    for i in range(20):
+        monitor.record_probe("backend-a", healthy=True, at=T0 + timedelta(seconds=i + 1))
+
+    assert monitor.failure_count("backend-a") == 0
+
+
 def test_a_backend_with_a_recorded_probe_has_probe_history():
     monitor = HealthMonitor()
 

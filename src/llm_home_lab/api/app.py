@@ -176,6 +176,9 @@ def create_app(
             return "unknown"
         return "online" if health_monitor.is_healthy(host_id, at) else "offline"
 
+    def _node_health(host_id: str) -> dict[str, int]:
+        return {"recent_failures": health_monitor.failure_count(host_id)}
+
     def _eligible_candidates(hosts: list[HostInfo], at: datetime) -> list[RoutingCandidate]:
         candidates = []
         for host in hosts:
@@ -428,6 +431,7 @@ def create_app(
                     "in_flight": host.in_flight,
                     "last_seen": host.last_seen.isoformat(),
                     "status": _node_status(host.host_id, at),
+                    "health": _node_health(host.host_id),
                     "external_load": {
                         "available": load.available,
                         "status": load.status,

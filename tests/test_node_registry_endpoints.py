@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
@@ -38,12 +40,12 @@ class FakeBackend:
         return BackendHealth(healthy=True, detail=self.detail)
 
 
-def _app(db_path=None, backend_factory=None, external_load_probe=None):
+def _app(db_path=None, backend_factory=None, external_load_probe=None, health_monitor=None):
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
     return create_app(
         registry=HostRegistry(db_path or new_registry_db_path()),
         router=RoutingEngine(policy),
-        health_monitor=HealthMonitor(),
+        health_monitor=health_monitor or HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
         backend_factories={"fake": backend_factory or (lambda caps: FakeBackend())},
         metrics_registry=MetricsRegistry(),
@@ -103,6 +105,27 @@ def test_registering_a_host_without_model_aliases_defaults_to_none():
 
     nodes = client.get("/v1/nodes").json()["nodes"]
     assert nodes[0]["model_aliases"] is None
+
+
+def test_a_freshly_registered_host_reports_zero_recent_failures():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["health"]["recent_failures"] == 0
+
+
+def test_a_host_with_recorded_failures_reports_its_recent_failure_count():
+    health_monitor = HealthMonitor(failure_threshold=100)
+    client = TestClient(_app(health_monitor=health_monitor), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    health_monitor.record_probe("host-a", healthy=False, at=datetime.now(UTC))
+    health_monitor.record_probe("host-a", healthy=False, at=datetime.now(UTC))
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert nodes[0]["health"]["recent_failures"] == 2
 
 
 def test_registering_a_host_with_a_memory_budget_threads_it_into_node_metadata():

@@ -209,8 +209,15 @@ async def test_first_poll_shows_no_token_rate_yet():
         assert ["tokens/s[host-a]", "-", "-"] in rows
 
 
-def _node(host_id, in_flight, max_concurrent_requests=4, status="online", external_load=None):
-    return {
+def _node(
+    host_id,
+    in_flight,
+    max_concurrent_requests=4,
+    status="online",
+    external_load=None,
+    recent_failures=None,
+):
+    node = {
         "host_id": host_id,
         "backend_type": "lmstudio",
         "in_flight": in_flight,
@@ -219,6 +226,9 @@ def _node(host_id, in_flight, max_concurrent_requests=4, status="online", extern
         "status": status,
         "external_load": external_load,
     }
+    if recent_failures is not None:
+        node["health"] = {"recent_failures": recent_failures}
+    return node
 
 
 async def test_a_sparkline_is_mounted_for_each_node_with_its_load_ratio():
@@ -460,6 +470,50 @@ async def test_an_online_node_status_has_no_alarming_style():
         assert "yellow" not in status_cell.style
 
 
+async def test_a_node_with_recent_failures_shows_a_red_highlighted_count():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, recent_failures=2)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[2].key
+        errors_cell = table.get_cell(row_key, column_key)
+        assert str(errors_cell) == "2"
+        assert "red" in errors_cell.style
+
+
+async def test_a_node_with_no_recent_failures_shows_zero_with_no_alarming_style():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, recent_failures=0)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[2].key
+        errors_cell = table.get_cell(row_key, column_key)
+        assert str(errors_cell) == "0"
+        assert "red" not in errors_cell.style
+
+
+async def test_a_node_with_a_missing_health_field_shows_zero_errors():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[2].key
+        errors_cell = table.get_cell(row_key, column_key)
+        assert str(errors_cell) == "0"
+
+
 async def test_a_node_with_unavailable_external_load_is_styled_dim():
     client = _FakeClient(
         nodes={"nodes": [_node("host-a", in_flight=0, external_load={"available": False})]}
@@ -471,7 +525,7 @@ async def test_a_node_with_unavailable_external_load_is_styled_dim():
 
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[2].key
+        column_key = table.ordered_columns[3].key
         ext_load_cell = table.get_cell(row_key, column_key)
         assert str(ext_load_cell) == "unavailable"
         assert "dim" in ext_load_cell.style
@@ -496,7 +550,7 @@ async def test_a_node_with_idle_external_load_has_no_alarming_style():
 
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[2].key
+        column_key = table.ordered_columns[3].key
         ext_load_cell = table.get_cell(row_key, column_key)
         assert str(ext_load_cell) == "idle"
         assert "yellow" not in ext_load_cell.style
@@ -521,7 +575,7 @@ async def test_a_node_with_busy_external_load_is_styled_yellow_with_queued_count
 
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[2].key
+        column_key = table.ordered_columns[3].key
         ext_load_cell = table.get_cell(row_key, column_key)
         assert str(ext_load_cell) == "processingPrompt (2 queued)"
         assert "yellow" in ext_load_cell.style

@@ -90,6 +90,13 @@ def _styled_node_status(status: object) -> Text:
     return Text(str(status), style=style)
 
 
+def _styled_failure_count(recent_failures: object) -> Text:
+    count = recent_failures if isinstance(recent_failures, int) else 0
+    if count == 0:
+        return Text("0", style="dim")
+    return Text(str(count), style="bold red")
+
+
 def _styled_external_load(external_load: object) -> Text:
     load = external_load if isinstance(external_load, dict) else {}
     if not load.get("available"):
@@ -510,7 +517,13 @@ class DashboardApp(App[None]):
     def on_mount(self) -> None:
         nodes_table = self.query_one("#nodes-table", DataTable)
         nodes_table.add_columns(
-            "host_id", "status", "ext_load", "backend_type", "in_flight/max", "last_seen"
+            "host_id",
+            "status",
+            "errors",
+            "ext_load",
+            "backend_type",
+            "in_flight/max",
+            "last_seen",
         )
         nodes_table.border_title = "Nodes"
 
@@ -581,9 +594,11 @@ class DashboardApp(App[None]):
         self._nodes_by_id = {}
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
+            health = cast("dict[str, object]", host.get("health") or {})
             table.add_row(
                 host_id,
                 _styled_node_status(host["status"]),
+                _styled_failure_count(health.get("recent_failures")),
                 _styled_external_load(host.get("external_load")),
                 host["backend_type"],
                 f"{host['in_flight']}/{host['max_concurrent_requests']}",

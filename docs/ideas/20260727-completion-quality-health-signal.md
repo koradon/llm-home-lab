@@ -109,6 +109,8 @@ same PR as A/B.
   `HealthMonitor`'s existing state machine and `health_score()`, both reused as-is by this idea
 - Plan: [completion-quality-health-signal](../plans/20260804-completion-quality-health-signal.md) —
   Option A, implemented
+- Spec: [per-host-failure-visibility](../specs/20260804-per-host-failure-visibility.md) — Option B
+- Plan: [per-host-failure-visibility](../plans/20260804-per-host-failure-visibility.md) — Option B
 - ADR: [0006-background-health-poller](../adr/0006-background-health-poller.md) — establishes the
   periodic liveness probe this idea adds a second, request-driven signal alongside
 - Idea: [operator-observability-dashboards](operator-observability-dashboards.md) — the TUI/API
