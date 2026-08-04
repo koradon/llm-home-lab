@@ -124,8 +124,12 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-failover
   the FastAPI lifespan) probes every registered host on a fixed interval, in addition to
   `/health/ready` continuing to probe synchronously for on-demand callers. See
   `docs/adr/0006-background-health-poller.md` and
-  `docs/plans/20260720-background-health-poller.md`. Timestamps are still supplied by the caller
-  either way — `HealthMonitor` itself remains clock-agnostic.
+  `docs/plans/20260720-background-health-poller.md`. `chat_completions()` and `_stream_chunks()`
+  in `src/llm_home_lab/api/app.py` also call it per real completion, feeding actual request
+  outcomes rather than just liveness — see
+  [completion-quality-health-signal](../plans/20260804-completion-quality-health-signal.md).
+  Timestamps are still supplied by the caller either way — `HealthMonitor` itself remains
+  clock-agnostic.
 - Whether `failure_threshold`/`cooldown`/`recovery_threshold` should be configurable per-backend
   rather than global monitor-wide defaults is deferred until a concrete need for per-backend
   tuning appears.

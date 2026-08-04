@@ -107,6 +107,8 @@ same PR as A/B.
 
 - Spec: [failover-and-health-policy](../specs/20260717-failover-and-health-policy.md) —
   `HealthMonitor`'s existing state machine and `health_score()`, both reused as-is by this idea
+- Plan: [completion-quality-health-signal](../plans/20260804-completion-quality-health-signal.md) —
+  Option A, implemented
 - ADR: [0006-background-health-poller](../adr/0006-background-health-poller.md) — establishes the
   periodic liveness probe this idea adds a second, request-driven signal alongside
 - Idea: [operator-observability-dashboards](operator-observability-dashboards.md) — the TUI/API
@@ -123,7 +125,8 @@ same PR as A/B.
 ## Open Questions
 
 - What's the right "degenerate completion" definition — empty content only, or also very short
-  content / non-`stop` finish reasons? Needs a decision before implementing (1).
+  content / non-`stop` finish reasons? Resolved in the plan: empty/whitespace content or any
+  non-`"stop"` finish reason, no length heuristic.
 - Should Option C (folding `health_score()` into routing weight) get its own idea/spec once A/B
   have shipped and been observed, or is it premature to even scope now? Leaning toward: revisit
   only if A/B don't fully resolve the "bad host hogs traffic" pattern in practice.

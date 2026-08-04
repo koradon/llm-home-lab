@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
 from llm_home_lab.api.app import create_app
-from llm_home_lab.backends.base import BackendHealth, BackendResponse
+from llm_home_lab.backends.base import BackendChunk, BackendError, BackendHealth, BackendResponse
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.metrics import MetricsRegistry
@@ -32,18 +32,36 @@ def _permissive_key_store() -> ApiKeyStore:
 
 
 class FakeBackend:
-    def __init__(self, backend_id: str, healthy: bool = True) -> None:
+    def __init__(
+        self,
+        backend_id: str,
+        healthy: bool = True,
+        content: str | None = None,
+        finish_reason: str = "stop",
+        error: BackendError | None = None,
+        stream_chunks: list[BackendChunk] | None = None,
+    ) -> None:
         self.backend_id = backend_id
         self.healthy = healthy
+        self._content = content
+        self._finish_reason = finish_reason
+        self._error = error
+        self._stream_chunks = stream_chunks or []
 
     async def complete(self, request):
+        if self._error is not None:
+            raise self._error
         return BackendResponse(
             model=request.model,
-            content=f"hi from {self.backend_id}",
-            finish_reason="stop",
+            content=self._content if self._content is not None else f"hi from {self.backend_id}",
+            finish_reason=self._finish_reason,
             prompt_tokens=1,
             completion_tokens=1,
         )
+
+    async def stream(self, request):
+        for chunk in self._stream_chunks:
+            yield chunk
 
     async def check_health(self):
         return BackendHealth(healthy=self.healthy, detail="ok" if self.healthy else "down")
@@ -116,3 +134,55 @@ def test_no_healthy_backends_returns_a_service_unavailable_gateway_error():
 
     assert response.status_code == 503
     assert response.json()["error"]["type"] == "backend_error"
+
+
+def test_repeated_empty_completions_exclude_the_backend_and_reroute():
+    primary = FakeBackend("primary", content="")
+    secondary = FakeBackend("secondary")
+    client = TestClient(_app_for(primary, secondary), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.json()["choices"][0]["message"]["content"] == "hi from secondary"
+
+
+def test_a_non_stop_finish_reason_also_excludes_the_backend():
+    primary = FakeBackend("primary", content="truncated answer", finish_reason="length")
+    secondary = FakeBackend("secondary")
+    client = TestClient(_app_for(primary, secondary), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.json()["choices"][0]["message"]["content"] == "hi from secondary"
+
+
+def test_a_backend_error_from_complete_also_excludes_the_backend():
+    primary = FakeBackend("primary", error=BackendError("boom"))
+    secondary = FakeBackend("secondary")
+    client = TestClient(_app_for(primary, secondary), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.json()["choices"][0]["message"]["content"] == "hi from secondary"
+
+
+def test_streaming_empty_chunks_exclude_the_backend_and_reroute():
+    primary = FakeBackend("primary", stream_chunks=[BackendChunk(content="", finish_reason="stop")])
+    secondary = FakeBackend("secondary")
+    client = TestClient(_app_for(primary, secondary), headers=AUTH_HEADERS)
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+    }
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.headers["X-Backend-Id"] == "secondary"
