@@ -32,7 +32,7 @@ from llm_home_lab.tui.rates import compute_token_rates
 
 logger = logging.getLogger(__name__)
 
-# Mirrors BACKEND_FACTORIES' keys (src/llm_home_lab/api/app.py) — extend when a new backend
+# Mirrors BACKEND_FACTORIES' keys (src/llm_home_lab/main.py) — extend when a new backend
 # factory is registered there.
 _KNOWN_BACKEND_TYPES = ["lmstudio", "llamaserver"]
 

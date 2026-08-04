@@ -1,12 +1,13 @@
 # llm-home-lab
 
 A local LLM orchestrator: one OpenAI-compatible API endpoint (`/v1/chat/completions`) that
-routes requests across one or more local model backends (LM Studio, with more backends possible
-later). Point your agent/tool at the orchestrator instead of directly at a model server, and it
-handles routing, failover, capacity limits, and auth for you.
+routes requests across one or more local model backends (LM Studio and llama.cpp's
+`llama-server`, with more backends possible later). Point your agent/tool at the orchestrator
+instead of directly at a model server, and it handles routing, failover, capacity limits, and
+auth for you.
 
 ```text
-Agent (OpenCode / other)  --Bearer key-->  Orchestrator  -->  LM Studio (one or more hosts)
+Agent (OpenCode / other)  --Bearer key-->  Orchestrator  -->  LM Studio / llama-server (one or more hosts)
 ```
 
 ## Quickstart
@@ -106,6 +107,14 @@ The orchestrator then routes and load-balances across every registered, healthy 
 `GET /v1/nodes` to list registered hosts, `POST /v1/nodes/{host_id}/heartbeat` to keep one alive,
 and `DELETE /v1/nodes/{host_id}` to remove one.
 
+**Backend types**: `backend_type` is `"lmstudio"` or `"llamaserver"` (for a llama.cpp
+`llama-server` host, standard default port `8080`). Both implement the same routing, health,
+capacity, and auth contract — see
+[docs/specs/20260804-llamaserver-backend-adapter.md](docs/specs/20260804-llamaserver-backend-adapter.md)
+for what differs under the hood. There's no env var to auto-register a default `llamaserver` host
+at startup (unlike `LMSTUDIO_BASE_URL` below) — register one explicitly via the API above or the
+TUI.
+
 **Changing a parameter on an already-registered host** doesn't require re-sending the whole
 payload above — `PATCH /v1/nodes/{host_id}` accepts just the fields you're changing and leaves
 everything else as-is:
@@ -169,6 +178,9 @@ This is entirely optional — everything else works without it, and a missing or
 `lms` binary just makes `external_load` report `unavailable` rather than failing any request. See
 [docs/adr/0005-lms-cli-for-external-node-load-visibility.md](docs/adr/0005-lms-cli-for-external-node-load-visibility.md)
 for why `lms` is required (LM Studio's REST API doesn't expose load/queue data itself).
+
+`llamaserver` nodes get the same `ext_load` visibility with no extra install: llama-server
+exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly.
 
 ## Running one model as multiple parallel instances (full context each)
 
@@ -235,6 +247,9 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 | `LMSTUDIO_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives — see note below |
 | `LMSTUDIO_CONTEXT_WINDOW` | `8192` | Context window advertised for routing |
 | `LMSTUDIO_MAX_CONCURRENT_REQUESTS` | `4` | Capacity used by the scheduling queue |
+| `LLAMASERVER_TIMEOUT` | `120` | Per-chunk read timeout to a `llamaserver` host (seconds) — same gap-timeout semantics as `LMSTUDIO_TIMEOUT` above |
+| `LLAMASERVER_CONNECT_TIMEOUT` | `10` | TCP connect timeout to a `llamaserver` host (seconds) |
+| `LLAMASERVER_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives, for `llamaserver` hosts |
 | `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` | `120` | How long a queued request waits for a free host slot before failing with `503` |
 | `ORCHESTRATOR_LMS_BINARY_PATH` | `lms` | Path to the optional `lms` CLI for external node load visibility — see below |
 | `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` | `2` | Cache TTL (seconds) for external load probes — matches the TUI's default poll interval so its sparkline stays responsive; raise it if the `lms` subprocess overhead matters more than freshness for your setup |
