@@ -544,7 +544,7 @@ def create_app(
             async def _chunks() -> AsyncIterator[str]:
                 try:
                     async for chunk in _stream_chunks(
-                        backend, request, metrics_registry, decision.backend_id
+                        backend, request, metrics_registry, health_monitor, decision.backend_id
                     ):
                         yield chunk
                 finally:
@@ -561,6 +561,7 @@ def create_app(
         except BackendError:
             if failover_in_play:
                 metrics_registry.record_failover_outcome(False, datetime.now(UTC))
+            health_monitor.record_probe(decision.backend_id, healthy=False, at=datetime.now(UTC))
             raise
         finally:
             registry.release_slot(decision.backend_id)
@@ -569,6 +570,11 @@ def create_app(
             metrics_registry.record_failover_outcome(True, datetime.now(UTC))
         metrics_registry.record_token_usage(
             decision.backend_id, result.prompt_tokens, result.completion_tokens, datetime.now(UTC)
+        )
+        health_monitor.record_probe(
+            decision.backend_id,
+            healthy=not _is_degenerate_completion(result.content, result.finish_reason),
+            at=datetime.now(UTC),
         )
 
         response.headers["X-Backend-Id"] = decision.backend_id
@@ -594,19 +600,30 @@ def create_app(
     return app
 
 
+def _is_degenerate_completion(content: str, finish_reason: str | None) -> bool:
+    return not content.strip() or finish_reason != "stop"
+
+
 async def _stream_chunks(
     backend: ChatBackend,
     request: ChatCompletionRequest,
     metrics_registry: MetricsRegistry,
+    health_monitor: HealthMonitor,
     backend_id: str,
 ) -> AsyncIterator[str]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     usage: dict[str, int] | None = None
+    saw_content = False
+    last_finish_reason: str | None = None
 
     async for chunk in backend.stream(request):
         if chunk.usage is not None:
             usage = chunk.usage
+        if chunk.content.strip():
+            saw_content = True
+        if chunk.finish_reason is not None:
+            last_finish_reason = chunk.finish_reason
         if not chunk.content and chunk.finish_reason is None:
             # A usage-only accounting chunk (no content, no finish_reason) — consumed for
             # metrics below, not forwarded as a delta to the external client.
@@ -631,5 +648,8 @@ async def _stream_chunks(
         metrics_registry.record_token_usage(
             backend_id, usage["prompt_tokens"], usage["completion_tokens"], datetime.now(UTC)
         )
+    health_monitor.record_probe(
+        backend_id, healthy=saw_content and last_finish_reason == "stop", at=datetime.now(UTC)
+    )
 
     yield "data: [DONE]\n\n"
