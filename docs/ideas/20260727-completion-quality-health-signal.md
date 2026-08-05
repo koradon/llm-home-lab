@@ -109,12 +109,16 @@ same PR as A/B.
   `HealthMonitor`'s existing state machine and `health_score()`, both reused as-is by this idea
 - Plan: [completion-quality-health-signal](../plans/20260804-completion-quality-health-signal.md) —
   Option A, implemented
+- Spec: [per-host-failure-visibility](../specs/20260804-per-host-failure-visibility.md) —
+  Option B, implemented
+- Plan: [per-host-failure-visibility](../plans/20260804-per-host-failure-visibility.md) —
+  Option B, implemented
 - ADR: [0006-background-health-poller](../adr/0006-background-health-poller.md) — establishes the
   periodic liveness probe this idea adds a second, request-driven signal alongside
 - Idea: [operator-observability-dashboards](operator-observability-dashboards.md) — the TUI/API
   surface part (2) extends
 - Spec: [tui-operator-dashboard](../specs/20260719-tui-operator-dashboard.md) — Nodes table this
-  idea would add an `errors` column to
+  idea added an `errors` column to
 - Module: `src/llm_home_lab/api/app.py` (`chat_completions`, `_stream_chunks`,
   `_eligible_candidates`), `src/llm_home_lab/health/monitor.py`,
   `src/llm_home_lab/backends/lmstudio.py` (`check_health`)
