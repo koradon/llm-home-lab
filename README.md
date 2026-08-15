@@ -242,12 +242,12 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 | `ORCHESTRATOR_API_KEYS_FILE` | `./config/api_keys.json` | Client/key/authorization config |
 | `ORCHESTRATOR_AUTH_ENABLED` | `true` | Set `false` to disable auth entirely (local testing only) |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Default LM Studio host registered at startup |
-| `LMSTUDIO_TIMEOUT` | `120` | Per-chunk read timeout to LM Studio (seconds) — see note below |
+| `LMSTUDIO_TIMEOUT` | unbounded | Per-chunk read timeout to LM Studio (seconds) — see note below |
 | `LMSTUDIO_CONNECT_TIMEOUT` | `10` | TCP connect timeout to LM Studio (seconds) — separate from `LMSTUDIO_TIMEOUT`, see note below |
 | `LMSTUDIO_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives — see note below |
 | `LMSTUDIO_CONTEXT_WINDOW` | `8192` | Context window advertised for routing |
 | `LMSTUDIO_MAX_CONCURRENT_REQUESTS` | `4` | Capacity used by the scheduling queue |
-| `LLAMASERVER_TIMEOUT` | `120` | Per-chunk read timeout to a `llamaserver` host (seconds) — same gap-timeout semantics as `LMSTUDIO_TIMEOUT` above |
+| `LLAMASERVER_TIMEOUT` | unbounded | Per-chunk read timeout to a `llamaserver` host (seconds) — same gap-timeout semantics as `LMSTUDIO_TIMEOUT` above |
 | `LLAMASERVER_CONNECT_TIMEOUT` | `10` | TCP connect timeout to a `llamaserver` host (seconds) |
 | `LLAMASERVER_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives, for `llamaserver` hosts |
 | `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` | `120` | How long a queued request waits for a free host slot before failing with `503` |
@@ -260,9 +260,15 @@ protocol internally, even for a non-streaming caller — so `LMSTUDIO_TIMEOUT` i
 produce (not stuck) is never retried: once the backend has started responding, a timeout means
 "still generating," not "transient failure," and resending the same prompt would only compound
 the wait. `LMSTUDIO_MAX_RETRIES` only covers a connection failure before any output has arrived at
-all (e.g. LM Studio not running yet). If you still regularly see `504 backend_timeout` for very
-long-form output, raise `LMSTUDIO_TIMEOUT` further — it only needs to cover the longest gap
-between two tokens, not the whole response.
+all (e.g. LM Studio not running yet).
+
+`LMSTUDIO_TIMEOUT` is **unbounded by default** — unset, `""`, `"0"`, and `"none"` (any case) all
+mean "never time out on a gap between chunks." A trusted local/LAN backend either keeps streaming
+or is dead/hung, and `GET /health/ready` already detects the hung case independently, so there's
+no fixed number of seconds that's safe to assume across every prompt size, model, and host's
+hardware — a large prompt's prefill alone can legitimately take minutes. Set an explicit numeric
+value only if you specifically want a hard ceiling (e.g. to fail fast in front of an unreliable or
+untrusted network path); `LLAMASERVER_TIMEOUT` follows the same rule.
 
 **Connect vs. gap timeout**: `LMSTUDIO_CONNECT_TIMEOUT` bounds only the initial TCP connect (is
 this host even reachable?), kept short so a powered-off or network-unreachable host fails fast

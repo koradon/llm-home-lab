@@ -47,6 +47,22 @@ def _load_key_store() -> ApiKeyStore:
     return ApiKeyStore.from_file(path)
 
 
+def _parse_gap_timeout(raw: str | None) -> float | None:
+    """Per-chunk read timeout: unbounded (`None`) unless *raw* holds a number.
+
+    Unset, `""`, `"0"`, and `"none"` (case-insensitive) all mean unbounded — the default,
+    per ADR-0003's revisit trigger: this is a *gap* timeout (max silence between tokens), and
+    a trusted local/LAN backend either keeps streaming or is dead/hung, which
+    `GET /health/ready` already detects independently. Any other fixed value chosen here would
+    eventually be wrong for some prompt/model/hardware combination (a large prompt's prefill can
+    legitimately exceed a couple of minutes), so operators who want a ceiling set one explicitly
+    rather than inheriting an assumed-safe default.
+    """
+    if raw is None or raw.strip().lower() in ("", "0", "none"):
+        return None
+    return float(raw)
+
+
 def _load_alert_evaluator() -> AlertEvaluator:
     path = os.environ.get("ORCHESTRATOR_ALERT_RULES_FILE", DEFAULT_ALERT_RULES_FILE)
     if not os.path.exists(path):
@@ -59,16 +75,18 @@ def _load_alert_evaluator() -> AlertEvaluator:
 BACKEND_FACTORIES: Mapping[str, Callable[[HostCapabilities], ChatBackend]] = {
     "lmstudio": lambda caps: LMStudioBackend(
         base_url=caps.base_url,
-        timeout=float(os.environ.get("LMSTUDIO_TIMEOUT", "120")),
+        timeout=_parse_gap_timeout(os.environ.get("LMSTUDIO_TIMEOUT")),
         max_retries=int(os.environ.get("LMSTUDIO_MAX_RETRIES", "2")),
         connect_timeout=float(os.environ.get("LMSTUDIO_CONNECT_TIMEOUT", "10")),
+        health_timeout=float(os.environ.get("LMSTUDIO_HEALTH_TIMEOUT", "10")),
         model_aliases=caps.model_aliases,
     ),
     "llamaserver": lambda caps: LlamaCPPServerBackend(
         base_url=caps.base_url,
-        timeout=float(os.environ.get("LLAMASERVER_TIMEOUT", "120")),
+        timeout=_parse_gap_timeout(os.environ.get("LLAMASERVER_TIMEOUT")),
         max_retries=int(os.environ.get("LLAMASERVER_MAX_RETRIES", "2")),
         connect_timeout=float(os.environ.get("LLAMASERVER_CONNECT_TIMEOUT", "10")),
+        health_timeout=float(os.environ.get("LLAMASERVER_HEALTH_TIMEOUT", "10")),
     ),
 }
 

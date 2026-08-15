@@ -50,6 +50,16 @@ _BANNER_MESSAGES = {
 _ERROR_KIND_PRIORITY = ("unauthorized", "connection", "server_error")
 
 
+def _format_avg_metric(avg: float | None) -> str:
+    return "—" if avg is None else f"{avg:.0f}"
+
+
+def _format_avg_min_max(avg: float | None, minimum: int | None, maximum: int | None) -> str:
+    if avg is None or minimum is None or maximum is None:
+        return "—"
+    return f"{avg:.0f} ({minimum}–{maximum})"
+
+
 def _pick_error(errors: list[DiagnosticsClientError]) -> DiagnosticsClientError:
     for kind in _ERROR_KIND_PRIORITY:
         for error in errors:
@@ -501,6 +511,8 @@ class DashboardApp(App[None]):
         self._node_row_order: list[str] = []
         self._nodes_by_id: dict[str, dict[str, object]] = {}
         self._metric_max: dict[str, float] = {}
+        self._last_completions_total: dict[str, int] = {}
+        self._last_completions_total_at: datetime | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -524,6 +536,11 @@ class DashboardApp(App[None]):
             "backend_type",
             "in_flight/max",
             "last_seen",
+            "reqs",
+            "reqs/min",
+            "avg_lat_ms",
+            "prompt_tok",
+            "compl_tok",
         )
         nodes_table.border_title = "Nodes"
 
@@ -572,10 +589,12 @@ class DashboardApp(App[None]):
                 return
 
             self._show_banner("")
+            now = self._clock()
             nodes_dict = cast("dict[str, object]", nodes)
-            self._render_nodes(nodes_dict)
+            metrics_text_str = cast(str, metrics_text)
+            self._render_nodes(nodes_dict, metrics_text_str, now)
             self._render_alerts(cast("dict[str, object]", alerts))
-            self._render_queue_tokens(cast(str, metrics_text))
+            self._render_queue_tokens(metrics_text_str, now)
             await self._render_load_sparklines(nodes_dict)
         except Exception:
             logger.exception("dashboard render failed for this poll cycle")
@@ -587,14 +606,25 @@ class DashboardApp(App[None]):
         text = Text(message, style="bold red") if message else Text("")
         self.query_one("#banner", Static).update(text)
 
-    def _render_nodes(self, nodes: dict[str, object]) -> None:
+    def _render_nodes(self, nodes: dict[str, object], metrics_text: str, now: datetime) -> None:
         table = self.query_one("#nodes-table", DataTable)
         table.clear()
         self._node_row_order = []
         self._nodes_by_id = {}
+        parsed = parse_metrics_text(metrics_text)
+        completions_rate_per_s = compute_token_rates(
+            previous=self._last_completions_total,
+            previous_at=self._last_completions_total_at,
+            current=parsed.host_completions_total,
+            now=now,
+        )
+        self._last_completions_total = dict(parsed.host_completions_total)
+        self._last_completions_total_at = now
+
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
             health = cast("dict[str, object]", host.get("health") or {})
+            rate_per_s = completions_rate_per_s.get(host_id)
             table.add_row(
                 host_id,
                 _styled_node_status(host["status"]),
@@ -603,6 +633,19 @@ class DashboardApp(App[None]):
                 host["backend_type"],
                 f"{host['in_flight']}/{host['max_concurrent_requests']}",
                 host["last_seen"],
+                str(parsed.host_completions_total.get(host_id, 0)),
+                "—" if rate_per_s is None else f"{rate_per_s * 60:.1f}/min",
+                _format_avg_metric(parsed.host_latency_ms_avg.get(host_id)),
+                _format_avg_min_max(
+                    parsed.host_prompt_tokens_avg.get(host_id),
+                    parsed.host_prompt_tokens_min.get(host_id),
+                    parsed.host_prompt_tokens_max.get(host_id),
+                ),
+                _format_avg_min_max(
+                    parsed.host_completion_tokens_avg.get(host_id),
+                    parsed.host_completion_tokens_min.get(host_id),
+                    parsed.host_completion_tokens_max.get(host_id),
+                ),
             )
             self._node_row_order.append(host_id)
             self._nodes_by_id[host_id] = host
@@ -674,11 +717,10 @@ class DashboardApp(App[None]):
                 alert["runbook_url"],
             )
 
-    def _render_queue_tokens(self, metrics_text: str) -> None:
+    def _render_queue_tokens(self, metrics_text: str, now: datetime) -> None:
         table = self.query_one("#queue-tokens-table", DataTable)
         table.clear()
         parsed = parse_metrics_text(metrics_text)
-        now = self._clock()
         rates = compute_token_rates(
             previous=self._last_token_usage,
             previous_at=self._last_token_usage_at,

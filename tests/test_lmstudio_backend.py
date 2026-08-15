@@ -229,6 +229,20 @@ def test_connect_timeout_is_configurable_independent_of_the_gap_timeout():
     assert backend.connect_timeout == 3.0
 
 
+def test_health_timeout_defaults_to_10_seconds_independent_of_the_gap_timeout():
+    backend = LMStudioBackend(base_url="http://lmstudio.local:1234", timeout=None)
+
+    assert backend.health_timeout == 10.0
+
+
+def test_health_timeout_is_configurable_independent_of_the_gap_timeout():
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234", timeout=None, health_timeout=2.0
+    )
+
+    assert backend.health_timeout == 2.0
+
+
 async def test_check_health_reports_healthy_when_models_endpoint_succeeds():
     def handler(request):
         assert request.url.path == "/v1/models"
@@ -242,6 +256,43 @@ async def test_check_health_reports_healthy_when_models_endpoint_succeeds():
     health = await backend.check_health()
 
     assert health.healthy is True
+
+
+async def test_check_health_applies_its_own_timeout_even_when_the_gap_timeout_is_unbounded():
+    captured_timeout = {}
+
+    def handler(request):
+        captured_timeout.update(request.extensions["timeout"])
+        return httpx.Response(200, json={"data": []})
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234",
+        timeout=None,
+        health_timeout=4.0,
+        transport=transport,
+    )
+
+    await backend.check_health()
+
+    assert captured_timeout["read"] == 4.0
+
+
+async def test_check_health_reports_unhealthy_when_the_health_check_itself_times_out():
+    def handler(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    transport = httpx.MockTransport(handler)
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234",
+        timeout=None,
+        health_timeout=4.0,
+        transport=transport,
+    )
+
+    health = await backend.check_health()
+
+    assert health.healthy is False
 
 
 async def test_list_models_returns_only_the_currently_loaded_model_ids():

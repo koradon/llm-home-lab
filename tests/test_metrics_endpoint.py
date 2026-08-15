@@ -123,6 +123,25 @@ def test_a_successful_chat_completion_records_token_usage():
     assert 'llm_home_lab_token_usage_total{host_id="host-a"} 15' in response.text
 
 
+def test_a_successful_chat_completion_records_host_completion_stats():
+    metrics_registry = MetricsRegistry()
+    client = TestClient(
+        _app_for(metrics_registry=metrics_registry, backend=FakeBackend()), headers=AUTH_HEADERS
+    )
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": False,
+    }
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.get("/metrics")
+
+    assert 'llm_home_lab_host_completions_total{host_id="host-a"} 1' in response.text
+    assert 'llm_home_lab_host_prompt_tokens_avg{host_id="host-a"} 10.0' in response.text
+    assert 'llm_home_lab_host_completion_tokens_avg{host_id="host-a"} 5.0' in response.text
+
+
 class StreamingFakeBackendWithUsage:
     backend_id = "host-a"
 
@@ -130,6 +149,80 @@ class StreamingFakeBackendWithUsage:
         yield BackendChunk(
             content="Hi", finish_reason="stop", usage={"prompt_tokens": 10, "completion_tokens": 5}
         )
+
+
+def test_a_streaming_chat_completion_records_host_completion_stats():
+    metrics_registry = MetricsRegistry()
+    client = TestClient(
+        _app_for(metrics_registry=metrics_registry, backend=StreamingFakeBackendWithUsage()),
+        headers=AUTH_HEADERS,
+    )
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": True,
+    }
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.get("/metrics")
+
+    assert 'llm_home_lab_host_completions_total{host_id="host-a"} 1' in response.text
+    assert 'llm_home_lab_host_prompt_tokens_avg{host_id="host-a"} 10.0' in response.text
+    assert 'llm_home_lab_host_completion_tokens_avg{host_id="host-a"} 5.0' in response.text
+
+
+def test_a_degenerate_completion_does_not_record_host_completion_stats():
+    class EmptyContentBackend:
+        backend_id = "host-a"
+
+        async def complete(self, request):
+            return BackendResponse(
+                model=request.model,
+                content="",
+                finish_reason="stop",
+                prompt_tokens=10,
+                completion_tokens=0,
+            )
+
+    metrics_registry = MetricsRegistry()
+    client = TestClient(
+        _app_for(metrics_registry=metrics_registry, backend=EmptyContentBackend()),
+        headers=AUTH_HEADERS,
+    )
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": False,
+    }
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.get("/metrics")
+
+    assert "llm_home_lab_host_completions_total" not in response.text
+
+
+def test_a_backend_error_does_not_record_host_completion_stats():
+    class UnreachableBackend:
+        backend_id = "host-a"
+
+        async def complete(self, request):
+            raise BackendConnectionError("All connection attempts failed")
+
+    metrics_registry = MetricsRegistry()
+    client = TestClient(
+        _app_for(metrics_registry=metrics_registry, backend=UnreachableBackend()),
+        headers=AUTH_HEADERS,
+    )
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": False,
+    }
+
+    client.post("/v1/chat/completions", json=payload)
+    response = client.get("/metrics")
+
+    assert "llm_home_lab_host_completions_total" not in response.text
 
 
 def test_a_streaming_chat_completion_records_token_usage_when_the_backend_reports_it():

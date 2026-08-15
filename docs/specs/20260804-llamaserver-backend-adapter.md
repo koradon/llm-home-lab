@@ -29,8 +29,8 @@ limits, and auth, with zero changes upstream of backend selection
   `list_models`) from `llm_home_lab.backends.base`, backed by an HTTP client calling a configured
   llama-server host's OpenAI-compatible `/v1/chat/completions` endpoint.
 - Configuration: base URL and a request timeout are required inputs; a maximum retry count has
-  a sane default. Mirrors `LMSTUDIO_*` env var naming: `LLAMASERVER_TIMEOUT` (default `120`),
-  `LLAMASERVER_MAX_RETRIES` (default `2`), `LLAMASERVER_CONNECT_TIMEOUT` (default `10`).
+  a sane default. Mirrors `LMSTUDIO_*` env var naming: `LLAMASERVER_TIMEOUT` (default unbounded,
+  per ADR-0010), `LLAMASERVER_MAX_RETRIES` (default `2`), `LLAMASERVER_CONNECT_TIMEOUT` (default `10`).
   llama-server's standard default port is `8080` (vs. LM Studio's `1234`), though `base_url` is
   always explicit at node registration time.
 - **`complete()` talks to llama-server via its streaming protocol internally**, accumulating

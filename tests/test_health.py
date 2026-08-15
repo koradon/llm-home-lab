@@ -1,3 +1,5 @@
+import asyncio
+import time
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
@@ -78,6 +80,29 @@ class FakeBackend:
 
     async def check_health(self):
         return BackendHealth(healthy=self._healthy, detail=self._detail)
+
+
+class SlowBackend(FakeBackend):
+    def __init__(self, backend_id: str, delay_s: float, healthy: bool = True):
+        super().__init__(healthy=healthy)
+        self.backend_id = backend_id
+        self._delay_s = delay_s
+
+    async def check_health(self):
+        await asyncio.sleep(self._delay_s)
+        return await super().check_health()
+
+
+def test_readiness_probes_multiple_hosts_concurrently_not_sequentially():
+    delay_s = 0.3
+    client = TestClient(_app_for(SlowBackend("slow-a", delay_s), SlowBackend("slow-b", delay_s)))
+
+    started = time.monotonic()
+    response = client.get("/health/ready")
+    elapsed_s = time.monotonic() - started
+
+    assert response.status_code == 200
+    assert elapsed_s < delay_s * 2
 
 
 def test_liveness_always_returns_ok():
