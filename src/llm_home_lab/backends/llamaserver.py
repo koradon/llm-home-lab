@@ -21,14 +21,17 @@ class LlamaCPPServerBackend:
     def __init__(
         self,
         base_url: str,
-        timeout: float,
+        timeout: float | None,
         max_retries: int = 2,
         connect_timeout: float = 10.0,
+        health_timeout: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.backend_id = base_url
+        self.timeout = timeout
         self._max_retries = max_retries
         self.connect_timeout = connect_timeout
+        self.health_timeout = health_timeout
         self._client = httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(timeout, connect=connect_timeout),
@@ -37,9 +40,12 @@ class LlamaCPPServerBackend:
 
     async def check_health(self) -> BackendHealth:
         # llama-server ships a dedicated liveness endpoint (unlike LM Studio, which has none),
-        # so this reads it directly rather than proxying through a chat/model endpoint.
+        # so this reads it directly rather than proxying through a chat/model endpoint. Uses its
+        # own bounded timeout rather than inheriting the (possibly unbounded, per ADR-0010) gap
+        # timeout: ADR-0010 relies on this check to independently catch a hung backend, which
+        # only holds if the check itself can't hang too.
         try:
-            response = await self._client.get("/health")
+            response = await self._client.get("/health", timeout=self.health_timeout)
         except httpx.TransportError as exc:
             return BackendHealth(healthy=False, detail=str(exc))
 

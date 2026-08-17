@@ -90,6 +90,67 @@ def test_token_usage_accumulates_per_host_and_is_not_windowed():
     assert snapshot.token_usage_total == {"host-a": 40, "host-b": 2}
 
 
+def test_a_host_with_no_recorded_completions_has_no_completion_stats():
+    metrics = MetricsRegistry()
+
+    snapshot = metrics.snapshot(T0, HostRegistry(new_registry_db_path()), SchedulingQueue())
+
+    assert snapshot.host_completion_stats == {}
+
+
+def test_a_recorded_host_completion_is_reflected_in_its_stats():
+    metrics = MetricsRegistry()
+    metrics.record_host_completion(
+        "host-a", latency_ms=120.0, prompt_tokens=50, completion_tokens=20, at=T0
+    )
+
+    snapshot = metrics.snapshot(T0, HostRegistry(new_registry_db_path()), SchedulingQueue())
+
+    stats = snapshot.host_completion_stats["host-a"]
+    assert stats.completions_total == 1
+    assert stats.avg_latency_ms == 120.0
+    assert stats.prompt_tokens_avg == 50
+    assert stats.prompt_tokens_min == 50
+    assert stats.prompt_tokens_max == 50
+    assert stats.completion_tokens_avg == 20
+    assert stats.completion_tokens_min == 20
+    assert stats.completion_tokens_max == 20
+
+
+def test_multiple_host_completions_accumulate_averages_and_min_max():
+    metrics = MetricsRegistry()
+    metrics.record_host_completion(
+        "host-a", latency_ms=100.0, prompt_tokens=100, completion_tokens=10, at=T0
+    )
+    metrics.record_host_completion(
+        "host-a", latency_ms=300.0, prompt_tokens=300, completion_tokens=30, at=T0
+    )
+
+    snapshot = metrics.snapshot(T0, HostRegistry(new_registry_db_path()), SchedulingQueue())
+
+    stats = snapshot.host_completion_stats["host-a"]
+    assert stats.completions_total == 2
+    assert stats.avg_latency_ms == 200.0
+    assert stats.prompt_tokens_avg == 200.0
+    assert stats.prompt_tokens_min == 100
+    assert stats.prompt_tokens_max == 300
+    assert stats.completion_tokens_avg == 20.0
+    assert stats.completion_tokens_min == 10
+    assert stats.completion_tokens_max == 30
+
+
+def test_host_completion_stats_do_not_decay_with_the_rolling_window():
+    metrics = MetricsRegistry(window=timedelta(minutes=5))
+    metrics.record_host_completion(
+        "host-a", latency_ms=100.0, prompt_tokens=100, completion_tokens=10, at=T0
+    )
+    much_later = T0 + timedelta(hours=1)
+
+    snapshot = metrics.snapshot(much_later, HostRegistry(new_registry_db_path()), SchedulingQueue())
+
+    assert snapshot.host_completion_stats["host-a"].completions_total == 1
+
+
 def test_host_saturation_reflects_in_flight_over_max_concurrent_requests():
     registry = HostRegistry(new_registry_db_path())
     registry.register(
@@ -135,6 +196,32 @@ def test_render_prometheus_on_a_fresh_registry_has_no_host_or_failover_lines():
         "# TYPE llm_home_lab_queue_depth gauge\n"
         "llm_home_lab_queue_depth 0\n"
     )
+
+
+def test_render_prometheus_omits_host_completion_lines_when_no_completions_recorded():
+    metrics = MetricsRegistry()
+
+    output = metrics.render_prometheus(T0, HostRegistry(new_registry_db_path()), SchedulingQueue())
+
+    assert "llm_home_lab_host_completions_total" not in output
+
+
+def test_render_prometheus_includes_host_completion_lines_when_data_exists():
+    metrics = MetricsRegistry()
+    metrics.record_host_completion(
+        "host-a", latency_ms=120.0, prompt_tokens=50, completion_tokens=20, at=T0
+    )
+
+    output = metrics.render_prometheus(T0, HostRegistry(new_registry_db_path()), SchedulingQueue())
+
+    assert 'llm_home_lab_host_completions_total{host_id="host-a"} 1' in output
+    assert 'llm_home_lab_host_latency_ms_avg{host_id="host-a"} 120.0' in output
+    assert 'llm_home_lab_host_prompt_tokens_avg{host_id="host-a"} 50.0' in output
+    assert 'llm_home_lab_host_prompt_tokens_min{host_id="host-a"} 50' in output
+    assert 'llm_home_lab_host_prompt_tokens_max{host_id="host-a"} 50' in output
+    assert 'llm_home_lab_host_completion_tokens_avg{host_id="host-a"} 20.0' in output
+    assert 'llm_home_lab_host_completion_tokens_min{host_id="host-a"} 20' in output
+    assert 'llm_home_lab_host_completion_tokens_max{host_id="host-a"} 20' in output
 
 
 def test_render_prometheus_includes_failover_host_and_token_lines_when_data_exists():

@@ -514,6 +514,70 @@ async def test_a_node_with_a_missing_health_field_shows_zero_errors():
         assert str(errors_cell) == "0"
 
 
+async def test_a_node_with_no_recorded_completions_shows_zero_reqs_and_unavailable_stats():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        columns = table.ordered_columns
+        assert str(table.get_cell(row_key, columns[7].key)) == "0"
+        assert str(table.get_cell(row_key, columns[8].key)) == "—"
+        assert str(table.get_cell(row_key, columns[9].key)) == "—"
+        assert str(table.get_cell(row_key, columns[10].key)) == "—"
+        assert str(table.get_cell(row_key, columns[11].key)) == "—"
+
+
+async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
+    client = _FakeClient(
+        nodes={"nodes": [_node("host-a", in_flight=0)]},
+        metrics_text=(
+            'llm_home_lab_host_completions_total{host_id="host-a"} 12\n'
+            'llm_home_lab_host_latency_ms_avg{host_id="host-a"} 245.0\n'
+            'llm_home_lab_host_prompt_tokens_avg{host_id="host-a"} 200.0\n'
+            'llm_home_lab_host_prompt_tokens_min{host_id="host-a"} 50\n'
+            'llm_home_lab_host_prompt_tokens_max{host_id="host-a"} 400\n'
+            'llm_home_lab_host_completion_tokens_avg{host_id="host-a"} 20.0\n'
+            'llm_home_lab_host_completion_tokens_min{host_id="host-a"} 5\n'
+            'llm_home_lab_host_completion_tokens_max{host_id="host-a"} 40\n'
+        ),
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        columns = table.ordered_columns
+        assert str(table.get_cell(row_key, columns[7].key)) == "12"
+        assert str(table.get_cell(row_key, columns[9].key)) == "245"
+        assert str(table.get_cell(row_key, columns[10].key)) == "200 (50–400)"
+        assert str(table.get_cell(row_key, columns[11].key)) == "20 (5–40)"
+
+
+async def test_reqs_per_min_is_computed_between_two_polls():
+    clock_values = iter([T0, T0 + timedelta(seconds=30)])
+    client = _FakeClient(
+        nodes={"nodes": [_node("host-a", in_flight=0)]},
+        metrics_text='llm_home_lab_host_completions_total{host_id="host-a"} 10\n',
+    )
+    app = DashboardApp(client=client, interval_s=100.0, clock=lambda: next(clock_values))
+
+    async with app.run_test():
+        await app.poll()
+        client._metrics_text = 'llm_home_lab_host_completions_total{host_id="host-a"} 40\n'
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        column_key = table.ordered_columns[8].key
+        assert str(table.get_cell(row_key, column_key)) == "60.0/min"
+
+
 async def test_a_node_with_unavailable_external_load_is_styled_dim():
     client = _FakeClient(
         nodes={"nodes": [_node("host-a", in_flight=0, external_load={"available": False})]}

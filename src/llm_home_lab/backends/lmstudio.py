@@ -21,15 +21,18 @@ class LMStudioBackend:
     def __init__(
         self,
         base_url: str,
-        timeout: float,
+        timeout: float | None,
         max_retries: int = 2,
         connect_timeout: float = 10.0,
+        health_timeout: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
         model_aliases: dict[str, list[str]] | None = None,
     ) -> None:
         self.backend_id = base_url
+        self.timeout = timeout
         self._max_retries = max_retries
         self.connect_timeout = connect_timeout
+        self.health_timeout = health_timeout
         self._client = httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(timeout, connect=connect_timeout),
@@ -50,8 +53,11 @@ class LMStudioBackend:
         return aliases[index]
 
     async def check_health(self) -> BackendHealth:
+        # Uses its own bounded timeout rather than inheriting the (possibly unbounded, per
+        # ADR-0010) gap timeout: ADR-0010 relies on this check to independently catch a hung
+        # backend, which only holds if the check itself can't hang too.
         try:
-            response = await self._client.get("/v1/models")
+            response = await self._client.get("/v1/models", timeout=self.health_timeout)
         except httpx.TransportError as exc:
             return BackendHealth(healthy=False, detail=str(exc))
 

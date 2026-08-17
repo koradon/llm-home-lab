@@ -5,6 +5,18 @@ from typing import Literal
 
 
 @dataclass
+class HostCompletionStats:
+    completions_total: int
+    avg_latency_ms: float
+    prompt_tokens_avg: float
+    prompt_tokens_min: int
+    prompt_tokens_max: int
+    completion_tokens_avg: float
+    completion_tokens_min: int
+    completion_tokens_max: int
+
+
+@dataclass
 class SliSnapshot:
     availability: float
     p95_latency_ms: float
@@ -12,6 +24,7 @@ class SliSnapshot:
     host_saturation: dict[str, float] = field(default_factory=dict)
     queue_depth: int = 0
     token_usage_total: dict[str, int] = field(default_factory=dict)
+    host_completion_stats: dict[str, HostCompletionStats] = field(default_factory=dict)
 
 
 class AlertSeverity(StrEnum):

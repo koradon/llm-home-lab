@@ -57,6 +57,39 @@ def test_parses_p95_latency():
     assert parsed.p95_latency_ms == 123.5
 
 
+def test_parses_host_completion_stats_from_a_known_good_scrape():
+    body = (
+        'llm_home_lab_host_completions_total{host_id="host-a"} 3\n'
+        'llm_home_lab_host_latency_ms_avg{host_id="host-a"} 120.5\n'
+        'llm_home_lab_host_prompt_tokens_avg{host_id="host-a"} 200.0\n'
+        'llm_home_lab_host_prompt_tokens_min{host_id="host-a"} 50\n'
+        'llm_home_lab_host_prompt_tokens_max{host_id="host-a"} 400\n'
+        'llm_home_lab_host_completion_tokens_avg{host_id="host-a"} 20.0\n'
+        'llm_home_lab_host_completion_tokens_min{host_id="host-a"} 5\n'
+        'llm_home_lab_host_completion_tokens_max{host_id="host-a"} 40\n'
+    )
+
+    parsed = parse_metrics_text(body)
+
+    assert parsed.host_completions_total == {"host-a": 3}
+    assert parsed.host_latency_ms_avg == {"host-a": 120.5}
+    assert parsed.host_prompt_tokens_avg == {"host-a": 200.0}
+    assert parsed.host_prompt_tokens_min == {"host-a": 50}
+    assert parsed.host_prompt_tokens_max == {"host-a": 400}
+    assert parsed.host_completion_tokens_avg == {"host-a": 20.0}
+    assert parsed.host_completion_tokens_min == {"host-a": 5}
+    assert parsed.host_completion_tokens_max == {"host-a": 40}
+
+
+def test_scrape_with_no_host_completion_lines_leaves_dicts_empty():
+    body = "llm_home_lab_queue_depth 0\n"
+
+    parsed = parse_metrics_text(body)
+
+    assert parsed.host_completions_total == {}
+    assert parsed.host_latency_ms_avg == {}
+
+
 def test_unparseable_metric_value_does_not_raise():
     body = (
         'llm_home_lab_queue_depth NaN\nllm_home_lab_token_usage_total{host_id="host-a"} bogus\n'

@@ -48,6 +48,56 @@ def test_default_app_respects_dispatch_wait_timeout_env_override(monkeypatch):
     assert app.state.dispatch_wait_timeout == 90.0
 
 
+def test_lmstudio_backend_factory_has_an_unbounded_gap_timeout_by_default(monkeypatch):
+    monkeypatch.delenv("LMSTUDIO_TIMEOUT", raising=False)
+    caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
+
+    backend = BACKEND_FACTORIES["lmstudio"](caps)
+
+    assert backend.timeout is None
+
+
+@pytest.mark.parametrize("sentinel", ["", "0", "none", "NONE"])
+def test_lmstudio_backend_factory_treats_zero_and_none_as_unbounded(monkeypatch, sentinel):
+    monkeypatch.setenv("LMSTUDIO_TIMEOUT", sentinel)
+    caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
+
+    backend = BACKEND_FACTORIES["lmstudio"](caps)
+
+    assert backend.timeout is None
+
+
+def test_lmstudio_backend_factory_respects_gap_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("LMSTUDIO_TIMEOUT", "45")
+    caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
+
+    backend = BACKEND_FACTORIES["lmstudio"](caps)
+
+    assert backend.timeout == 45.0
+
+
+def test_llamaserver_backend_factory_has_an_unbounded_gap_timeout_by_default(monkeypatch):
+    monkeypatch.delenv("LLAMASERVER_TIMEOUT", raising=False)
+    caps = HostCapabilities(
+        backend_type="llamaserver", context_window=8192, base_url="http://x:8080"
+    )
+
+    backend = BACKEND_FACTORIES["llamaserver"](caps)
+
+    assert backend.timeout is None
+
+
+def test_llamaserver_backend_factory_respects_gap_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("LLAMASERVER_TIMEOUT", "45")
+    caps = HostCapabilities(
+        backend_type="llamaserver", context_window=8192, base_url="http://x:8080"
+    )
+
+    backend = BACKEND_FACTORIES["llamaserver"](caps)
+
+    assert backend.timeout == 45.0
+
+
 def test_lmstudio_backend_factory_uses_a_10_second_connect_timeout_by_default(monkeypatch):
     monkeypatch.delenv("LMSTUDIO_CONNECT_TIMEOUT", raising=False)
     caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
@@ -86,6 +136,46 @@ def test_llamaserver_backend_factory_respects_connect_timeout_env_override(monke
     backend = BACKEND_FACTORIES["llamaserver"](caps)
 
     assert backend.connect_timeout == 3.0
+
+
+def test_lmstudio_backend_factory_uses_a_10_second_health_timeout_by_default(monkeypatch):
+    monkeypatch.delenv("LMSTUDIO_HEALTH_TIMEOUT", raising=False)
+    caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
+
+    backend = BACKEND_FACTORIES["lmstudio"](caps)
+
+    assert backend.health_timeout == 10.0
+
+
+def test_lmstudio_backend_factory_respects_health_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("LMSTUDIO_HEALTH_TIMEOUT", "3")
+    caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
+
+    backend = BACKEND_FACTORIES["lmstudio"](caps)
+
+    assert backend.health_timeout == 3.0
+
+
+def test_llamaserver_backend_factory_uses_a_10_second_health_timeout_by_default(monkeypatch):
+    monkeypatch.delenv("LLAMASERVER_HEALTH_TIMEOUT", raising=False)
+    caps = HostCapabilities(
+        backend_type="llamaserver", context_window=8192, base_url="http://x:8080"
+    )
+
+    backend = BACKEND_FACTORIES["llamaserver"](caps)
+
+    assert backend.health_timeout == 10.0
+
+
+def test_llamaserver_backend_factory_respects_health_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("LLAMASERVER_HEALTH_TIMEOUT", "3")
+    caps = HostCapabilities(
+        backend_type="llamaserver", context_window=8192, base_url="http://x:8080"
+    )
+
+    backend = BACKEND_FACTORIES["llamaserver"](caps)
+
+    assert backend.health_timeout == 3.0
 
 
 def test_default_app_uses_lms_binary_by_default(monkeypatch):

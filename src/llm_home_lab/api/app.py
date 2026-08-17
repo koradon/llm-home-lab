@@ -200,23 +200,27 @@ def create_app(
             )
         return candidates
 
+    async def _probe_one_host(host: HostInfo) -> dict[str, object]:
+        backend = _backend_for(host.host_id, host.capabilities)
+        health = await backend.check_health()
+        health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
+        await external_load_probe.probe(host.host_id, host.capabilities.base_url, datetime.now(UTC))
+        return {"id": host.host_id, "healthy": health.healthy, "detail": health.detail}
+
     async def _probe_all_hosts() -> list[dict[str, object]]:
         """Probe every registered host once, recording results into health_monitor and
         external_load_probe. Shared by /health/ready (on-demand) and the background poll
         loop below (continuous) so health state never depends on which of the two — or
         whether either — happens to run (see docs/adr/0006-background-health-poller.md).
+
+        Hosts are probed concurrently, not sequentially: each backend's check_health() is
+        already individually bounded (see health_timeout in llamaserver.py/lmstudio.py), but
+        one dead-on-arrival host still shouldn't delay every other host's probe behind it —
+        with N unreachable hosts, a sequential loop pays N times the per-host timeout instead
+        of paying it once.
         """
         _prune_backend_cache()
-        reports: list[dict[str, object]] = []
-        for host in registry.hosts():
-            backend = _backend_for(host.host_id, host.capabilities)
-            health = await backend.check_health()
-            health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
-            reports.append({"id": host.host_id, "healthy": health.healthy, "detail": health.detail})
-            await external_load_probe.probe(
-                host.host_id, host.capabilities.base_url, datetime.now(UTC)
-            )
-        return reports
+        return list(await asyncio.gather(*(_probe_one_host(host) for host in registry.hosts())))
 
     async def _health_poll_loop(interval: float) -> None:
         while True:
@@ -560,6 +564,7 @@ def create_app(
                 headers={"X-Backend-Id": decision.backend_id},
             )
 
+        backend_call_start = time.perf_counter()
         try:
             result = await backend.complete(request)
         except BackendError:
@@ -569,16 +574,24 @@ def create_app(
             raise
         finally:
             registry.release_slot(decision.backend_id)
+        backend_call_latency_ms = (time.perf_counter() - backend_call_start) * 1000
 
         if failover_in_play:
             metrics_registry.record_failover_outcome(True, datetime.now(UTC))
         metrics_registry.record_token_usage(
             decision.backend_id, result.prompt_tokens, result.completion_tokens, datetime.now(UTC)
         )
+        is_healthy_completion = not _is_degenerate_completion(result.content, result.finish_reason)
+        if is_healthy_completion:
+            metrics_registry.record_host_completion(
+                decision.backend_id,
+                backend_call_latency_ms,
+                result.prompt_tokens,
+                result.completion_tokens,
+                datetime.now(UTC),
+            )
         health_monitor.record_probe(
-            decision.backend_id,
-            healthy=not _is_degenerate_completion(result.content, result.finish_reason),
-            at=datetime.now(UTC),
+            decision.backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
         )
 
         response.headers["X-Backend-Id"] = decision.backend_id
@@ -621,6 +634,7 @@ async def _stream_chunks(
     saw_content = False
     last_finish_reason: str | None = None
 
+    stream_start = time.perf_counter()
     async for chunk in backend.stream(request):
         if chunk.usage is not None:
             usage = chunk.usage
@@ -648,12 +662,20 @@ async def _stream_chunks(
         }
         yield f"data: {json.dumps(payload)}\n\n"
 
+    stream_latency_ms = (time.perf_counter() - stream_start) * 1000
+    is_healthy_completion = saw_content and last_finish_reason == "stop"
     if usage is not None:
         metrics_registry.record_token_usage(
             backend_id, usage["prompt_tokens"], usage["completion_tokens"], datetime.now(UTC)
         )
-    health_monitor.record_probe(
-        backend_id, healthy=saw_content and last_finish_reason == "stop", at=datetime.now(UTC)
-    )
+        if is_healthy_completion:
+            metrics_registry.record_host_completion(
+                backend_id,
+                stream_latency_ms,
+                usage["prompt_tokens"],
+                usage["completion_tokens"],
+                datetime.now(UTC),
+            )
+    health_monitor.record_probe(backend_id, healthy=is_healthy_completion, at=datetime.now(UTC))
 
     yield "data: [DONE]\n\n"
