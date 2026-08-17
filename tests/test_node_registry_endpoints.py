@@ -40,14 +40,22 @@ class FakeBackend:
         return BackendHealth(healthy=True, detail=self.detail)
 
 
-def _app(db_path=None, backend_factory=None, external_load_probe=None, health_monitor=None):
+def _app(
+    db_path=None,
+    backend_factory=None,
+    external_load_probe=None,
+    health_monitor=None,
+    backend_factories=None,
+):
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
     return create_app(
         registry=HostRegistry(db_path or new_registry_db_path()),
         router=RoutingEngine(policy),
         health_monitor=health_monitor or HealthMonitor(),
         scheduling_queue=SchedulingQueue(),
-        backend_factories={"fake": backend_factory or (lambda caps: FakeBackend())},
+        backend_factories=(
+            backend_factories or {"fake": backend_factory or (lambda caps: FakeBackend())}
+        ),
         metrics_registry=MetricsRegistry(),
         alert_evaluator=AlertEvaluator([]),
         key_store=_permissive_key_store(),
@@ -421,3 +429,76 @@ def test_a_host_with_no_working_lms_binary_reports_external_load_unavailable():
     result = nodes.get("/v1/nodes").json()["nodes"]
 
     assert result[0]["external_load"] == {"available": False, "status": None, "queued": None}
+
+
+class FailingBackend(FakeBackend):
+    async def check_health(self):
+        from llm_home_lab.backends.base import BackendHealth
+
+        return BackendHealth(healthy=False, detail="down")
+
+
+def test_capacity_sums_max_concurrent_requests_over_online_hosts_only():
+    client = TestClient(
+        _app(
+            backend_factories={
+                "ok": lambda caps: FakeBackend(),
+                "fail": lambda caps: FailingBackend(),
+            }
+        ),
+        headers=AUTH_HEADERS,
+    )
+    client.post(
+        "/v1/nodes/register",
+        json={**_register_payload("host-a"), "backend_type": "ok", "max_concurrent_requests": 4},
+    )
+    client.post(
+        "/v1/nodes/register",
+        json={**_register_payload("host-b"), "backend_type": "fail", "max_concurrent_requests": 6},
+    )
+    for _ in range(3):
+        client.get("/health/ready")
+    # Registered after the probes above, so it has no probe history yet — "unknown".
+    client.post(
+        "/v1/nodes/register",
+        json={**_register_payload("host-c"), "backend_type": "ok", "max_concurrent_requests": 2},
+    )
+
+    body = client.get("/v1/capacity").json()
+
+    assert body == {"total_max_concurrent_requests": 4}
+
+
+def test_capacity_with_no_online_hosts_reports_zero_not_an_error():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+
+    response = client.get("/v1/capacity")
+
+    assert response.status_code == 200
+    assert response.json() == {"total_max_concurrent_requests": 0}
+
+
+def test_capacity_from_an_online_zero_capacity_host_contributes_nothing():
+    # Marks hosts online by writing straight into the HealthMonitor rather than via
+    # /health/ready: that endpoint's metrics snapshot divides in_flight by
+    # max_concurrent_requests per host (llm_home_lab/observability/metrics.py), which raises
+    # ZeroDivisionError for a zero-capacity host — a pre-existing bug unrelated to /v1/capacity.
+    health_monitor = HealthMonitor()
+    client = TestClient(
+        _app(backend_factories={"ok": lambda caps: FakeBackend()}, health_monitor=health_monitor),
+        headers=AUTH_HEADERS,
+    )
+    client.post(
+        "/v1/nodes/register",
+        json={**_register_payload("host-d"), "backend_type": "ok", "max_concurrent_requests": 0},
+    )
+    client.post(
+        "/v1/nodes/register",
+        json={**_register_payload("host-e"), "backend_type": "ok", "max_concurrent_requests": 5},
+    )
+    health_monitor.record_probe("host-d", True, datetime.now(UTC))
+    health_monitor.record_probe("host-e", True, datetime.now(UTC))
+
+    body = client.get("/v1/capacity").json()
+
+    assert body == {"total_max_concurrent_requests": 5}

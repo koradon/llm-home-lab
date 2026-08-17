@@ -288,6 +288,7 @@ it runs; register more hosts if you need to run many long generations at once.
 - `POST /v1/chat/completions` — OpenAI-compatible chat completions (streaming and non-streaming).
 - `POST /v1/nodes/register`, `PATCH /v1/nodes/{host_id}`, `POST /v1/nodes/{host_id}/heartbeat`,
   `DELETE /v1/nodes/{host_id}`, `GET /v1/nodes` — manage model hosts.
+- `GET /v1/capacity` — total `max_concurrent_requests` summed across online hosts.
 - `GET /health/live`, `GET /health/ready` — liveness/readiness (no auth required).
 
 ## Terminal dashboard (TUI)
