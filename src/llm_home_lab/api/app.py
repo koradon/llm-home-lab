@@ -446,6 +446,16 @@ def create_app(
             ]
         }
 
+    @app.get("/v1/capacity")
+    async def get_capacity() -> dict[str, int]:
+        at = datetime.now(UTC)
+        total = sum(
+            host.capacity.max_concurrent_requests
+            for host in registry.hosts()
+            if _node_status(host.host_id, at) == "online"
+        )
+        return {"total_max_concurrent_requests": total}
+
     @app.get("/v1/alerts")
     async def list_alerts() -> dict[str, list[dict[str, object]]]:
         return {
