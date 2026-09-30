@@ -23,13 +23,13 @@ Describe expected behavior, inputs, outputs, and edge cases.
 
 ## Acceptance scenarios (BDD)
 
-Keep scenarios in a sibling Gherkin file: `docs/specs/<spec-slug>.feature` (copy `docs/llm/templates/acceptance.feature`).
+Keep scenarios in a Gherkin file: `docs/specs/features/<spec-slug>.feature` (copy `docs/llm/templates/acceptance.feature`).
 
 ## Related
 
 - Idea: (link when promoted from an idea)
 - Active plan: (link when a plan exists)
-- Acceptance: `docs/specs/<spec-slug>.feature`
+- Acceptance: `docs/specs/features/<spec-slug>.feature`
 
 ## Open Questions
 
