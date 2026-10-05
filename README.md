@@ -257,7 +257,7 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 | `LLAMASERVER_CONNECT_TIMEOUT` | `10` | TCP connect timeout to a `llamaserver` host (seconds) |
 | `LLAMASERVER_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives, for `llamaserver` hosts |
 | `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` | `120` | How long a queued request waits for a free host slot before failing with `503` |
-| `ORCHESTRATOR_THROUGHPUT_WINDOW_S` | `3600` | Rolling window (seconds) behind the `tasks/h` and `tasks/h/slot` columns; kept in memory, so the window starts empty after an orchestrator restart and the rate reads low until it fills |
+| `ORCHESTRATOR_THROUGHPUT_WINDOW_S` | `3600` | Rolling window (seconds) behind the `tasks/h` and `tasks/h/slot` columns; kept in memory; after an orchestrator restart the rate is computed over the time observed so far (at least 60 s, at most the window), so it is usable from the first completions |
 | `ORCHESTRATOR_LMS_BINARY_PATH` | `lms` | Path to the optional `lms` CLI for external node load visibility — see below |
 | `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` | `2` | Cache TTL (seconds) for external load probes — matches the TUI's default poll interval so its sparkline stays responsive; raise it if the `lms` subprocess overhead matters more than freshness for your setup |
 

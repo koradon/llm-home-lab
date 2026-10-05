@@ -39,7 +39,10 @@ count). Both are exposed on `GET /v1/nodes`.
 - **Window:** the trailing `window` (default 1 hour, `ORCHESTRATOR_THROUGHPUT_WINDOW_S`) ending
   at the query time, half-open: a completion at exactly `now - window` is out, one at `now` is in.
   Completions older than the window are dropped on write.
-- `tasks_per_hour = count_in_window * 1h / window`.
+- `tasks_per_hour = count_in_window * 1h / observed`, where `observed = min(window, max(now - started_at,
+  MIN_OBSERVED))`: `started_at` is when the orchestrator created the log (tracking started),
+  `MIN_OBSERVED` is 60 s, and the window cap wins for windows shorter than 60 s. After a full window
+  it equals `count * 1h / window`.
 - `tasks_per_hour_per_slot = tasks_per_hour / total_slots`, or `null` (rendered `n/a`) when
   `total_slots` is unknown (`None`) or zero.
 - `GET /v1/nodes` adds, per node, `throughput: {window_s, tasks_per_hour,
@@ -56,10 +59,13 @@ and it is guarded.
 rate is `n/a`; `max_concurrent_requests` is a routing cap, not a slot count, and is not
 substituted.
 
-**The window starts empty after an orchestrator restart.** The log is in memory only, so a
-freshly restarted orchestrator reports `0.0` and the rate reads low until the window fills. A
-window longer than the log's history is still divided by the full window, so a new host's rate is
-likewise a lower bound until the window fills.
+**Early window after a restart.** The log is in memory only, so a restarted orchestrator starts
+with no completions and reports `0.0` (not `n/a`) from the moment it is tracking. The rate divides
+by the time observed since start rather than the full window, so it is usable from the first
+completions. The observed time is floored at 60 s to avoid extrapolating a single completion
+seconds after start; below that floor the rate is a lower bound. Tracking starts at orchestrator
+start for every host, so a host registered later reads low until a window has passed. The per-slot
+rate stays `n/a` when the slot count is unknown.
 
 ## Acceptance scenarios (BDD)
 
@@ -77,5 +83,5 @@ likewise a lower bound until the window fills.
 ## Open Questions
 
 - Follow-up: per-slot rate for LM Studio hosts, if a slot-like count becomes available.
-- Follow-up: warm the window after a restart (e.g. from a durable log) so the rate does not read low.
+- Follow-up: warm the window after a restart (e.g. from a durable log) so history survives restarts.
 - Follow-up: windowed token throughput (tokens per hour) from the same log.

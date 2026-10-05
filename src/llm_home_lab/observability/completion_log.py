@@ -1,7 +1,9 @@
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 DEFAULT_THROUGHPUT_WINDOW = timedelta(hours=1)
+MIN_OBSERVED = timedelta(seconds=60)
 
 
 class CompletionLog:
@@ -14,14 +16,24 @@ class CompletionLog:
 
     The window is the trailing `window` ending at the query time, half-open: a completion exactly
     `window` old is already out. Completions older than the window are dropped on each write. The
-    log is not persisted: after an orchestrator restart the window starts empty, so the rate reads
-    low until it fills.
+    log is not persisted: after an orchestrator restart the window starts empty.
+
+    The rate divides the completions in the window by the time actually observed — the time since
+    the log was created (tracking started), floored at `MIN_OBSERVED` so the first completion right
+    after start is not extrapolated to an absurd hourly rate, and capped at the window (the cap
+    wins over the floor for windows shorter than `MIN_OBSERVED`). Once a full window has elapsed
+    this is the plain `count * 1h / window`.
     """
 
-    def __init__(self, window: timedelta = DEFAULT_THROUGHPUT_WINDOW) -> None:
+    def __init__(
+        self,
+        window: timedelta = DEFAULT_THROUGHPUT_WINDOW,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
         if window <= timedelta(0):
             raise ValueError("window must be positive")
         self._window = window
+        self._started_at = clock()
         self._completions: dict[str, deque[datetime]] = defaultdict(deque)
 
     @property
@@ -42,7 +54,10 @@ class CompletionLog:
         )
 
     def tasks_per_hour(self, host_id: str, at: datetime) -> float:
-        return self.count(host_id, at) * timedelta(hours=1) / self._window
+        return self.count(host_id, at) * timedelta(hours=1) / self._observed(at)
+
+    def _observed(self, at: datetime) -> timedelta:
+        return min(self._window, max(at - self._started_at, MIN_OBSERVED))
 
     def tasks_per_hour_per_slot(
         self, host_id: str, at: datetime, total_slots: int | None

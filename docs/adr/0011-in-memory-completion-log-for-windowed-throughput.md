@@ -24,5 +24,6 @@ the request path.
 ## Consequences
 
 Recording a completion is a cheap in-memory append that cannot fail the request. The rate is exact
-for the window while the orchestrator runs, but the window starts empty after a restart, so the
-rate reads low until it fills. Warming the window across restarts is a possible follow-up.
+for the window while the orchestrator runs. After a restart the rate divides by the time observed
+since start (floored at 60 s, capped at the window), so it is usable immediately. Warming the
+window across restarts is a possible follow-up.
