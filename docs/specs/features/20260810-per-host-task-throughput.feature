@@ -46,7 +46,14 @@ Feature: Per-host task throughput and busy/total slot display
     When throughput is computed for "host-a"
     Then tasks_per_hour is 0.0
 
-  Scenario: The window starts empty after an orchestrator restart
-    Given "host-a" completed 2 tasks within the window
-    When the orchestrator restarts
-    Then tasks_per_hour for "host-a" is 0.0 until new completions arrive
+  Scenario: The rate is usable before a full window has elapsed
+    Given the orchestrator started 10 minutes ago
+    And "host-a" completed 5 tasks since
+    When throughput is computed for "host-a"
+    Then tasks_per_hour is 30.0
+
+  Scenario: A very short observed time is floored at 60 seconds
+    Given the orchestrator started 5 seconds ago
+    And "host-a" completed 1 task since
+    When throughput is computed for "host-a"
+    Then tasks_per_hour is 60.0

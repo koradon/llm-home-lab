@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from registry_test_helpers import inert_external_load_probe, new_registry_db_path
@@ -557,7 +557,7 @@ def test_throughput_per_slot_is_reported_for_a_host_with_a_known_slot_count():
     from llm_home_lab.observability.completion_log import CompletionLog
 
     slots = [{"id": i, "is_processing": False} for i in range(4)]
-    log = CompletionLog()
+    log = CompletionLog(clock=lambda: datetime.now(UTC) - timedelta(hours=1))
     for _ in range(8):
         log.record("host-a", datetime.now(UTC))
     app = _app(external_load_probe=_llamaserver_probe(slots), completion_log=log)
