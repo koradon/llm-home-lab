@@ -11,6 +11,7 @@ from llm_home_lab.backends.llamaserver import LlamaCPPServerBackend
 from llm_home_lab.backends.lmstudio import LMStudioBackend
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
+from llm_home_lab.observability.completion_log import CompletionLog
 from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.external_load import ExternalLoadProbe
 from llm_home_lab.registry.llamaserver_load import LlamaCPPServerLoadProbe
@@ -151,6 +152,11 @@ def create_default_app() -> FastAPI:
             },
         ),
         health_poll_interval=float(os.environ.get("ORCHESTRATOR_HEALTH_POLL_INTERVAL_S", "5")),
+        completion_log=CompletionLog(
+            window=timedelta(
+                seconds=float(os.environ.get("ORCHESTRATOR_THROUGHPUT_WINDOW_S", "3600"))
+            ),
+        ),
     )
 
 

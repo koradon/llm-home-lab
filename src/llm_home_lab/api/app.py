@@ -17,6 +17,7 @@ from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBackend
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
+from llm_home_lab.observability.completion_log import CompletionLog
 from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.external_load import ExternalLoadProbe, LoadProbe
 from llm_home_lab.registry.models import (
@@ -102,11 +103,13 @@ def create_app(
     dispatch_poll_interval: float = 0.1,
     external_load_probe: LoadProbe | None = None,
     health_poll_interval: float | None = None,
+    completion_log: CompletionLog | None = None,
 ) -> FastAPI:
     if auth_enabled and key_store is None:
         raise ValueError("key_store is required when auth_enabled is True")
 
     external_load_probe = external_load_probe or ExternalLoadProbe()
+    completion_log = completion_log or CompletionLog()
     backends_by_id: dict[str, ChatBackend] = {}
     backend_capabilities_by_id: dict[str, HostCapabilities] = {}
 
@@ -440,6 +443,15 @@ def create_app(
                         "available": load.available,
                         "status": load.status,
                         "queued": load.queued,
+                        "total_slots": load.total_slots,
+                        "busy_slots": load.busy_slots,
+                    },
+                    "throughput": {
+                        "window_s": completion_log.window.total_seconds(),
+                        "tasks_per_hour": completion_log.tasks_per_hour(host.host_id, at),
+                        "tasks_per_hour_per_slot": completion_log.tasks_per_hour_per_slot(
+                            host.host_id, at, load.total_slots
+                        ),
                     },
                 }
                 for host, load in zip(hosts, external_loads, strict=True)
@@ -562,7 +574,12 @@ def create_app(
             async def _chunks() -> AsyncIterator[str]:
                 try:
                     async for chunk in _stream_chunks(
-                        backend, request, metrics_registry, health_monitor, decision.backend_id
+                        backend,
+                        request,
+                        metrics_registry,
+                        completion_log,
+                        health_monitor,
+                        decision.backend_id,
                     ):
                         yield chunk
                 finally:
@@ -600,6 +617,7 @@ def create_app(
                 result.completion_tokens,
                 datetime.now(UTC),
             )
+            completion_log.record(decision.backend_id, datetime.now(UTC))
         health_monitor.record_probe(
             decision.backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
         )
@@ -635,6 +653,7 @@ async def _stream_chunks(
     backend: ChatBackend,
     request: ChatCompletionRequest,
     metrics_registry: MetricsRegistry,
+    completion_log: CompletionLog,
     health_monitor: HealthMonitor,
     backend_id: str,
 ) -> AsyncIterator[str]:
@@ -686,6 +705,8 @@ async def _stream_chunks(
                 usage["completion_tokens"],
                 datetime.now(UTC),
             )
+    if is_healthy_completion:
+        completion_log.record(backend_id, datetime.now(UTC))
     health_monitor.record_probe(backend_id, healthy=is_healthy_completion, at=datetime.now(UTC))
 
     yield "data: [DONE]\n\n"

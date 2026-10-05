@@ -524,11 +524,11 @@ async def test_a_node_with_no_recorded_completions_shows_zero_reqs_and_unavailab
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[7].key)) == "0"
-        assert str(table.get_cell(row_key, columns[8].key)) == "—"
-        assert str(table.get_cell(row_key, columns[9].key)) == "—"
+        assert str(table.get_cell(row_key, columns[9].key)) == "0"
         assert str(table.get_cell(row_key, columns[10].key)) == "—"
         assert str(table.get_cell(row_key, columns[11].key)) == "—"
+        assert str(table.get_cell(row_key, columns[12].key)) == "—"
+        assert str(table.get_cell(row_key, columns[13].key)) == "—"
 
 
 async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
@@ -553,10 +553,10 @@ async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[7].key)) == "12"
-        assert str(table.get_cell(row_key, columns[9].key)) == "245"
-        assert str(table.get_cell(row_key, columns[10].key)) == "200 (50–400)"
-        assert str(table.get_cell(row_key, columns[11].key)) == "20 (5–40)"
+        assert str(table.get_cell(row_key, columns[9].key)) == "12"
+        assert str(table.get_cell(row_key, columns[11].key)) == "245"
+        assert str(table.get_cell(row_key, columns[12].key)) == "200 (50–400)"
+        assert str(table.get_cell(row_key, columns[13].key)) == "20 (5–40)"
 
 
 async def test_reqs_per_min_is_computed_between_two_polls():
@@ -574,7 +574,7 @@ async def test_reqs_per_min_is_computed_between_two_polls():
 
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[8].key
+        column_key = table.ordered_columns[10].key
         assert str(table.get_cell(row_key, column_key)) == "60.0/min"
 
 
@@ -643,6 +643,132 @@ async def test_a_node_with_busy_external_load_is_styled_yellow_with_queued_count
         ext_load_cell = table.get_cell(row_key, column_key)
         assert str(ext_load_cell) == "processingPrompt (2 queued)"
         assert "yellow" in ext_load_cell.style
+
+
+async def test_a_llamaserver_node_shows_busy_over_total_slots_instead_of_a_queued_count():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={
+                        "available": True,
+                        "status": "busy",
+                        "queued": 7,
+                        "busy_slots": 7,
+                        "total_slots": 8,
+                    },
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        ext_load_cell = table.get_cell(row_key, table.ordered_columns[3].key)
+        assert str(ext_load_cell) == "busy (7/8 slots)"
+        assert "yellow" in ext_load_cell.style
+
+
+async def test_an_idle_llamaserver_node_shows_plain_idle():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node(
+                    "host-a",
+                    in_flight=0,
+                    external_load={
+                        "available": True,
+                        "status": "idle",
+                        "queued": 0,
+                        "busy_slots": 0,
+                        "total_slots": 8,
+                    },
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        assert str(table.get_cell(row_key, table.ordered_columns[3].key)) == "idle"
+
+
+async def test_throughput_columns_show_tasks_per_hour_and_per_slot():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                {
+                    **_node("host-a", in_flight=0),
+                    "throughput": {
+                        "window_s": 3600.0,
+                        "tasks_per_hour": 24.0,
+                        "tasks_per_hour_per_slot": 3.0,
+                    },
+                }
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        columns = table.ordered_columns
+        assert str(table.get_cell(row_key, columns[4].key)) == "24.0"
+        assert str(table.get_cell(row_key, columns[5].key)) == "3.0"
+
+
+async def test_throughput_per_slot_shows_na_when_the_slot_count_is_unknown():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                {
+                    **_node("host-a", in_flight=0),
+                    "throughput": {
+                        "window_s": 3600.0,
+                        "tasks_per_hour": 0.0,
+                        "tasks_per_hour_per_slot": None,
+                    },
+                }
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        columns = table.ordered_columns
+        assert str(table.get_cell(row_key, columns[4].key)) == "0.0"
+        assert str(table.get_cell(row_key, columns[5].key)) == "n/a"
+
+
+async def test_throughput_columns_show_na_when_the_payload_has_no_throughput():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        row_key, _ = table.coordinate_to_cell_key((0, 0))
+        columns = table.ordered_columns
+        assert str(table.get_cell(row_key, columns[4].key)) == "n/a"
+        assert str(table.get_cell(row_key, columns[5].key)) == "n/a"
 
 
 def _full_node(host_id, **overrides):

@@ -96,8 +96,13 @@ CLI subprocess, since llama-server exposes this natively:
 - Each slot reports `is_processing: bool`. Status is `"busy"` if any slot is processing, else
   `"idle"`.
 - llama-server exposes no true queue-depth metric (unlike LM Studio's `queued` count from
-  `lms ps`), so `queued` is **approximated** as the count of currently-processing slots — a
-  proxy for "how backed up is this host," not a precise pending-request backlog.
+  `lms ps`). `ExternalLoadStatus` therefore carries `total_slots` (the length of the `/slots`
+  list) and `busy_slots` (slots with `is_processing: true`), surfaced as
+  `external_load.total_slots` / `external_load.busy_slots` on `GET /v1/nodes`. `queued` is kept
+  for backward compatibility with the same value as `busy_slots` — it is **not** a backlog.
+- The TUI's `ext_load` column renders a llama-server host as `busy (7/8 slots)` (plain `idle`
+  when no slot is busy) rather than `N queued`. LM Studio hosts, whose `queued` is a real
+  queue depth, still render `<status> (N queued)`.
 - A `404` (an operator disabled `/slots` via a flag), any other non-2xx response, an unreachable
   host, or unparseable output all report `available: false` — the same "informational,
   never an error" degrade contract as `ExternalLoadProbe`. Verified against llama.cpp's own
@@ -153,8 +158,10 @@ Keep scenarios in a sibling Gherkin file:
   `POST /v1/nodes/register`. Left as-is deliberately; `create_default_app()`'s
   single-hardcoded-host approach will likely need a redesign once it has to default-register
   more than one backend type, and this is a known gap to revisit then, not now.
-- Whether `/slots`' approximated `queued` (busy-slot count rather than a real backlog) is precise
-  enough to be useful in the TUI, or whether it should instead be labeled more conservatively
-  (e.g. `busy_slots`/`total_slots`) once there's real operator feedback on it.
+- ~~Whether `/slots`' approximated `queued` (busy-slot count rather than a real backlog) is
+  precise enough to be useful in the TUI.~~ Resolved: it is not a backlog, so the TUI shows
+  `busy (busy_slots/total_slots slots)` for llama-server hosts and `total_slots`/`busy_slots`
+  are carried through `ExternalLoadStatus` and `/v1/nodes`; `queued` stays only for backward
+  compatibility. See [per-host-task-throughput](20260810-per-host-task-throughput.md).
 - Same open questions as `LMStudioBackend`'s spec around retry backoff shape and concurrency-slot
   duration for long generations — unchanged by this addition.

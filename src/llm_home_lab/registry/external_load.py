@@ -16,6 +16,10 @@ class ExternalLoadStatus:
     status: str | None
     queued: int | None
     checked_at: datetime
+    # Only backends with a fixed slot pool (llama-server) report these; `queued` there is the busy
+    # count kept for backward compatibility, so consumers wanting the real picture read these two.
+    total_slots: int | None = None
+    busy_slots: int | None = None
 
 
 class LoadProbe(Protocol):

@@ -180,7 +180,13 @@ This is entirely optional — everything else works without it, and a missing or
 for why `lms` is required (LM Studio's REST API doesn't expose load/queue data itself).
 
 `llamaserver` nodes get the same `ext_load` visibility with no extra install: llama-server
-exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly.
+exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly. The
+column shows busy over total slots (e.g. `busy (7/8 slots)`), not a queue depth.
+
+The Nodes table also shows `tasks/h` (completed tasks per hour over a rolling window, 1 hour by
+default) and `tasks/h/slot` (that rate divided by the host's slot count, `n/a` when the slot
+count is unknown). A task is one successful completion; failed and degenerate completions are
+not counted. See [docs/specs/20260810-per-host-task-throughput.md](docs/specs/20260810-per-host-task-throughput.md).
 
 ## Running one model as multiple parallel instances (full context each)
 
@@ -251,6 +257,7 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 | `LLAMASERVER_CONNECT_TIMEOUT` | `10` | TCP connect timeout to a `llamaserver` host (seconds) |
 | `LLAMASERVER_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives, for `llamaserver` hosts |
 | `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` | `120` | How long a queued request waits for a free host slot before failing with `503` |
+| `ORCHESTRATOR_THROUGHPUT_WINDOW_S` | `3600` | Rolling window (seconds) behind the `tasks/h` and `tasks/h/slot` columns; kept in memory, so the window starts empty after an orchestrator restart and the rate reads low until it fills |
 | `ORCHESTRATOR_LMS_BINARY_PATH` | `lms` | Path to the optional `lms` CLI for external node load visibility — see below |
 | `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` | `2` | Cache TTL (seconds) for external load probes — matches the TUI's default poll interval so its sparkline stays responsive; raise it if the `lms` subprocess overhead matters more than freshness for your setup |
 
