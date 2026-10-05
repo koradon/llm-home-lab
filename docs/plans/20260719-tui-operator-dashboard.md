@@ -69,7 +69,7 @@ Out of scope for this plan:
        `--interval`, reading `ORCHESTRATOR_BASE_URL`/`ORCHESTRATOR_API_KEY` as fallbacks; exits
        with a clear error if no API key is available from either source (no insecure default).
 4. **Packaging** (`pyproject.toml`):
-   - `[project.optional-dependencies] tui = ["textual>=0.60"]`.
+   - `[project.optional-dependencies] tui` group (dependencies per the spec).
    - `[project.scripts] llm-home-lab-tui = "llm_home_lab.tui.app:run"`.
 5. **Tests**:
    - `test_metrics_parser.py` — known-good scrape text → expected `ParsedMetrics`; missing lines →
