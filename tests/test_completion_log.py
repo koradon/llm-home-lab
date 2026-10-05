@@ -1,7 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from registry_test_helpers import new_registry_db_path
 
 from llm_home_lab.observability.completion_log import CompletionLog
 
@@ -96,33 +95,3 @@ def test_hosts_are_counted_independently():
 def test_a_non_positive_window_is_rejected():
     with pytest.raises(ValueError):
         CompletionLog(window=timedelta(0))
-
-
-def test_completions_survive_a_restart_when_backed_by_a_database():
-    db_path = new_registry_db_path()
-    CompletionLog(db_path=db_path).record("host-a", T0)
-    CompletionLog(db_path=db_path).record("host-a", T0 + timedelta(minutes=5))
-
-    restarted = CompletionLog(db_path=db_path)
-
-    assert restarted.count("host-a", T0 + timedelta(minutes=10)) == 2
-
-
-def test_the_database_log_applies_the_same_window_edges():
-    log = CompletionLog(db_path=new_registry_db_path())
-    log.record("host-a", T0)
-    log.record("host-a", T0 + timedelta(seconds=1))
-
-    result = log.count("host-a", T0 + timedelta(hours=1))
-
-    assert result == 1
-
-
-def test_the_database_log_prunes_rows_older_than_the_window_on_write():
-    db_path = new_registry_db_path()
-    log = CompletionLog(db_path=db_path)
-    log.record("host-a", T0)
-
-    log.record("host-a", T0 + timedelta(hours=2))
-
-    assert log.count("host-a", T0 + timedelta(minutes=30)) == 0

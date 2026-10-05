@@ -34,11 +34,11 @@ count). Both are exposed on `GET /v1/nodes`.
   `MetricsRegistry.record_host_completion`. A `BackendError`, an empty or truncated completion,
   and a stream without a clean stop are **not** counted. A streaming completion counts even if
   the backend reported no usage.
-- Completions are recorded in a durable `CompletionLog` (SQLite table `host_completions`:
-  `host_id`, `completed_at` in UTC), at the same call sites as `record_host_completion`.
+- Completions are recorded in an in-memory `CompletionLog` (a per-host deque of completion
+  timestamps), at the same call sites as `record_host_completion`. Nothing is persisted.
 - **Window:** the trailing `window` (default 1 hour, `ORCHESTRATOR_THROUGHPUT_WINDOW_S`) ending
   at the query time, half-open: a completion at exactly `now - window` is out, one at `now` is in.
-  Rows older than the window are pruned on write.
+  Completions older than the window are dropped on write.
 - `tasks_per_hour = count_in_window * 1h / window`.
 - `tasks_per_hour_per_slot = tasks_per_hour / total_slots`, or `null` (rendered `n/a`) when
   `total_slots` is unknown (`None`) or zero.
@@ -56,9 +56,10 @@ and it is guarded.
 rate is `n/a`; `max_concurrent_requests` is a routing cap, not a slot count, and is not
 substituted.
 
-**The rate survives restarts** because the log is on disk; a freshly restarted orchestrator
-reports the last window's completions straight away. A window longer than the log's history is
-still divided by the full window, so a new host's rate is a lower bound until the window fills.
+**The window starts empty after an orchestrator restart.** The log is in memory only, so a
+freshly restarted orchestrator reports `0.0` and the rate reads low until the window fills. A
+window longer than the log's history is still divided by the full window, so a new host's rate is
+likewise a lower bound until the window fills.
 
 ## Acceptance scenarios (BDD)
 
@@ -69,11 +70,12 @@ still divided by the full window, so a new host's rate is a lower bound until th
 - Spec: [llamaserver-backend-adapter](20260804-llamaserver-backend-adapter.md) — load probe
   whose open question this resolves
 - Spec: [per-node-throughput-and-token-metrics](2026-08-10-per-node-throughput-and-token-metrics.md)
-  — the cumulative in-memory counters; this spec adds the durable windowed rate beside them
-- ADR: [0011-durable-completion-log-for-windowed-throughput](../adr/0011-durable-completion-log-for-windowed-throughput.md)
+  — the cumulative in-memory counters; this spec adds the in-memory windowed rate beside them
+- ADR: [0011-in-memory-completion-log-for-windowed-throughput](../adr/0011-in-memory-completion-log-for-windowed-throughput.md)
 - Module: `src/llm_home_lab/observability/completion_log.py`
 
 ## Open Questions
 
 - Follow-up: per-slot rate for LM Studio hosts, if a slot-like count becomes available.
+- Follow-up: warm the window after a restart (e.g. from a durable log) so the rate does not read low.
 - Follow-up: windowed token throughput (tokens per hour) from the same log.
