@@ -300,7 +300,7 @@ it runs; register more hosts if you need to run many long generations at once.
 
 ## Terminal dashboard (TUI)
 
-An optional terminal dashboard shows live node health, firing alerts, and queue/token usage —
+A terminal dashboard shows live node health, firing alerts, and queue/token usage —
 comparable to `docker stats`. It's a separate client that doesn't need to run on the same machine
 as the orchestrator. The Nodes panel is a full registration UI, not just a viewer: press `n` or
 click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
@@ -309,7 +309,7 @@ place, or press `x` to deregister it (after a confirmation dialog). Every field
 `model_aliases`/`model_sizes_gb` as repeatable model-name/value rows.
 
 ```bash
-uv sync --extra tui
+uv sync
 uv run llm-home-lab-tui --base-url http://localhost:8080 --api-key sk-dev-changeme
 ```
 

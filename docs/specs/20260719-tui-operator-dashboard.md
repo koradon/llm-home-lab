@@ -61,8 +61,8 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 - CLI flags / env vars: `--base-url`/`ORCHESTRATOR_BASE_URL` (default `http://localhost:8080`),
   `--api-key`/`ORCHESTRATOR_API_KEY` (required, no insecure default — matches this repo's
   auth-required-by-default posture), `--interval`.
-- New optional dependency group `tui` (`textual`) in `pyproject.toml` — not a core dependency, since
-  running the orchestrator itself never requires a terminal UI.
+- `textual`, plus `rich` because `tui/app.py` imports `rich.text.Text` directly, are regular
+  dependencies in `pyproject.toml` `[project].dependencies` — the TUI is not optional.
 - New entry point: `[project.scripts] llm-home-lab-tui = "llm_home_lab.tui.app:run"`.
 - Operators wanting to use the TUI add a client entry to `config/api_keys.json` scoped via
   `allowed_path_prefixes: ["/v1/nodes", "/v1/alerts"]` (`/metrics` is already auth-exempt) — no
@@ -125,6 +125,6 @@ Keep scenarios in a sibling Gherkin file:
 - Whether queue depth/token usage eventually deserve a small dedicated JSON diagnostics endpoint
   instead of parsing Prometheus text — deferred; parsing text is proposed as the simpler starting
   point since it needs no orchestrator change.
-- Distribution: shipped inside this repo as an optional dependency group (proposed) vs. a separate
+- Distribution: shipped inside this repo as part of the core package (decided) vs. a separate
   installable package — revisit if operators want the TUI without installing the orchestrator
   itself.
