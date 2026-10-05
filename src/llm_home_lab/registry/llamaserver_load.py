@@ -71,10 +71,20 @@ class LlamaCPPServerLoadProbe:
 
 def _summarize(slots: list[dict[str, object]], at: datetime) -> ExternalLoadStatus:
     if not slots:
-        return ExternalLoadStatus(available=True, status="idle", queued=0, checked_at=at)
+        return ExternalLoadStatus(
+            available=True, status="idle", queued=0, checked_at=at, total_slots=0, busy_slots=0
+        )
 
-    # llama-server has a fixed pool of slots and no native queue-depth metric — the count of
-    # slots currently generating is the closest available proxy for "how backed up is this host."
+    # llama-server has a fixed pool of slots and no native queue-depth metric — `queued` keeps the
+    # busy-slot count for backward compatibility, but it is not a backlog: the TUI shows
+    # `busy_slots`/`total_slots` instead.
     busy = sum(1 for slot in slots if slot.get("is_processing"))
     status = "busy" if busy else "idle"
-    return ExternalLoadStatus(available=True, status=status, queued=busy, checked_at=at)
+    return ExternalLoadStatus(
+        available=True,
+        status=status,
+        queued=busy,
+        checked_at=at,
+        total_slots=len(slots),
+        busy_slots=busy,
+    )

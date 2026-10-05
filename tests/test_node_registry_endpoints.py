@@ -46,6 +46,7 @@ def _app(
     external_load_probe=None,
     health_monitor=None,
     backend_factories=None,
+    completion_log=None,
 ):
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
     return create_app(
@@ -60,6 +61,7 @@ def _app(
         alert_evaluator=AlertEvaluator([]),
         key_store=_permissive_key_store(),
         external_load_probe=external_load_probe or inert_external_load_probe(),
+        completion_log=completion_log,
     )
 
 
@@ -419,6 +421,8 @@ def test_a_registered_host_reports_external_load_from_the_probe():
         "available": True,
         "status": "processingPrompt",
         "queued": 2,
+        "total_slots": None,
+        "busy_slots": None,
     }
 
 
@@ -428,7 +432,13 @@ def test_a_host_with_no_working_lms_binary_reports_external_load_unavailable():
 
     result = nodes.get("/v1/nodes").json()["nodes"]
 
-    assert result[0]["external_load"] == {"available": False, "status": None, "queued": None}
+    assert result[0]["external_load"] == {
+        "available": False,
+        "status": None,
+        "queued": None,
+        "total_slots": None,
+        "busy_slots": None,
+    }
 
 
 class FailingBackend(FakeBackend):
@@ -502,3 +512,59 @@ def test_capacity_from_an_online_zero_capacity_host_contributes_nothing():
     body = client.get("/v1/capacity").json()
 
     assert body == {"total_max_concurrent_requests": 5}
+
+
+def _llamaserver_probe(slots):
+    import httpx
+
+    from llm_home_lab.registry.llamaserver_load import LlamaCPPServerLoadProbe
+
+    return LlamaCPPServerLoadProbe(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=slots))
+    )
+
+
+def test_a_llamaserver_host_reports_busy_and_total_slots_in_external_load():
+    slots = [{"id": i, "is_processing": i < 7} for i in range(8)]
+    client = TestClient(_app(external_load_probe=_llamaserver_probe(slots)), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+
+    assert nodes[0]["external_load"] == {
+        "available": True,
+        "status": "busy",
+        "queued": 7,
+        "total_slots": 8,
+        "busy_slots": 7,
+    }
+
+
+def test_a_host_with_no_completions_reports_zero_throughput_and_na_per_slot_without_slots():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+
+    assert nodes[0]["throughput"] == {
+        "window_s": 3600.0,
+        "tasks_per_hour": 0.0,
+        "tasks_per_hour_per_slot": None,
+    }
+
+
+def test_throughput_per_slot_is_reported_for_a_host_with_a_known_slot_count():
+    from llm_home_lab.observability.completion_log import CompletionLog
+
+    slots = [{"id": i, "is_processing": False} for i in range(4)]
+    log = CompletionLog()
+    for _ in range(8):
+        log.record("host-a", datetime.now(UTC))
+    app = _app(external_load_probe=_llamaserver_probe(slots), completion_log=log)
+    client = TestClient(app, headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+
+    assert nodes[0]["throughput"]["tasks_per_hour"] == 8.0
+    assert nodes[0]["throughput"]["tasks_per_hour_per_slot"] == 2.0

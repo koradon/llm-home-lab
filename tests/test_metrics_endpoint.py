@@ -7,6 +7,7 @@ from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendChunk, BackendConnectionError, BackendResponse
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
+from llm_home_lab.observability.completion_log import CompletionLog
 from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.models import HostCapabilities, HostCapacity
 from llm_home_lab.registry.registry import HostRegistry
@@ -52,6 +53,7 @@ def _app_for(
     backend_factory=None,
     health_monitor=None,
     extra_hosts=(),
+    completion_log=None,
 ):
     registry = registry or HostRegistry(new_registry_db_path())
     registry.register(
@@ -84,6 +86,7 @@ def _app_for(
         metrics_registry=metrics_registry or MetricsRegistry(),
         alert_evaluator=alert_evaluator or AlertEvaluator([]),
         external_load_probe=inert_external_load_probe(),
+        completion_log=completion_log,
     )
 
 
@@ -396,3 +399,81 @@ def test_a_dispatch_timeout_with_an_unhealthy_candidate_records_failover_failure
 
     assert response.status_code == 503
     assert "llm_home_lab_failover_success_ratio 0.0" in metrics_response.text
+
+
+_CHAT_PAYLOAD = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]}
+
+
+def _tasks_in_window(completion_log):
+    return completion_log.count("host-a", datetime.now(UTC))
+
+
+def test_a_healthy_completion_is_recorded_in_the_completion_log():
+    completion_log = CompletionLog()
+    client = TestClient(
+        _app_for(backend=FakeBackend(), completion_log=completion_log), headers=AUTH_HEADERS
+    )
+
+    client.post("/v1/chat/completions", json={**_CHAT_PAYLOAD, "stream": False})
+
+    assert _tasks_in_window(completion_log) == 1
+
+
+def test_a_healthy_stream_is_recorded_in_the_completion_log_even_without_usage():
+    class StreamWithoutUsage:
+        backend_id = "host-a"
+
+        async def stream(self, request):
+            yield BackendChunk(content="Hi", finish_reason="stop")
+
+    completion_log = CompletionLog()
+    client = TestClient(
+        _app_for(backend=StreamWithoutUsage(), completion_log=completion_log),
+        headers=AUTH_HEADERS,
+    )
+
+    client.post("/v1/chat/completions", json={**_CHAT_PAYLOAD, "stream": True})
+
+    assert _tasks_in_window(completion_log) == 1
+
+
+def test_a_degenerate_completion_is_not_recorded_in_the_completion_log():
+    class EmptyContentBackend:
+        backend_id = "host-a"
+
+        async def complete(self, request):
+            return BackendResponse(
+                model=request.model,
+                content="",
+                finish_reason="stop",
+                prompt_tokens=10,
+                completion_tokens=0,
+            )
+
+    completion_log = CompletionLog()
+    client = TestClient(
+        _app_for(backend=EmptyContentBackend(), completion_log=completion_log),
+        headers=AUTH_HEADERS,
+    )
+
+    client.post("/v1/chat/completions", json={**_CHAT_PAYLOAD, "stream": False})
+
+    assert _tasks_in_window(completion_log) == 0
+
+
+def test_a_backend_error_is_not_recorded_in_the_completion_log():
+    class UnreachableBackend:
+        backend_id = "host-a"
+
+        async def complete(self, request):
+            raise BackendConnectionError("All connection attempts failed")
+
+    completion_log = CompletionLog()
+    client = TestClient(
+        _app_for(backend=UnreachableBackend(), completion_log=completion_log),
+        headers=AUTH_HEADERS,
+    )
+
+    client.post("/v1/chat/completions", json={**_CHAT_PAYLOAD, "stream": False})
+
+    assert _tasks_in_window(completion_log) == 0

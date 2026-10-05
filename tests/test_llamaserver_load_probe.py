@@ -26,6 +26,8 @@ async def test_a_busy_slot_reports_busy_status_and_queued_count():
     assert result.available is True
     assert result.status == "busy"
     assert result.queued == 1
+    assert result.busy_slots == 1
+    assert result.total_slots == 2
 
 
 async def test_no_busy_slots_reports_idle():
@@ -43,6 +45,8 @@ async def test_no_busy_slots_reports_idle():
     assert result.available is True
     assert result.status == "idle"
     assert result.queued == 0
+    assert result.busy_slots == 0
+    assert result.total_slots == 1
 
 
 async def test_no_slots_reports_idle_not_unavailable():
