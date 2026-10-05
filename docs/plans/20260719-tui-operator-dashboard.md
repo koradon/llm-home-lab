@@ -17,7 +17,7 @@ completed
 ## Scope
 
 Build `src/llm_home_lab/diagnostics/metrics_parser.py` (shared with the future web UI plan) and
-`src/llm_home_lab/tui/` (`client.py`, `app.py`), a new `tui` optional dependency group, and a new
+`src/llm_home_lab/tui/` (`client.py`, `app.py`), a core dependency on `textual`/`rich`, and a new
 `llm-home-lab-tui` entry point. No orchestrator endpoint changes — this plan is a pure client.
 
 Concrete decisions for this plan (resolving the spec's deferred questions):
@@ -28,8 +28,8 @@ Concrete decisions for this plan (resolving the spec's deferred questions):
 - **Shared parser location**: `metrics_parser.py` lives in a new `src/llm_home_lab/diagnostics/`
   package (not inside `tui/`) from the start, since the web UI plan will import the same module —
   avoids a later move/rename once M6 starts.
-- **Distribution**: ships inside this repo as the `tui` optional dependency group (`uv sync
-  --extra tui`), not a separate package — matches the spec's proposed default.
+- **Distribution**: ships inside this repo as part of the core package (`textual`/`rich` are regular
+  dependencies, installed by `uv sync`), not a separate package.
 
 Out of scope for this plan:
 
@@ -69,7 +69,7 @@ Out of scope for this plan:
        `--interval`, reading `ORCHESTRATOR_BASE_URL`/`ORCHESTRATOR_API_KEY` as fallbacks; exits
        with a clear error if no API key is available from either source (no insecure default).
 4. **Packaging** (`pyproject.toml`):
-   - `[project.optional-dependencies] tui` group (dependencies per the spec).
+   - `textual` and `rich` in `[project].dependencies`.
    - `[project.scripts] llm-home-lab-tui = "llm_home_lab.tui.app:run"`.
 5. **Tests**:
    - `test_metrics_parser.py` — known-good scrape text → expected `ParsedMetrics`; missing lines →
@@ -83,7 +83,7 @@ Out of scope for this plan:
      text and clears on the next successful poll; a missing metric renders "unavailable" in the
      Queue & Tokens table without affecting the other two tables.
 6. **Docs**: add a "Terminal dashboard" section to the root `README.md`'s Quickstart (installation
-   via `uv sync --extra tui`, example `llm-home-lab-tui --base-url ... --api-key ...` invocation,
+   via `uv sync`, example `llm-home-lab-tui --base-url ... --api-key ...` invocation,
    and a one-line note on adding the `config/api_keys.json` client entry) — per the "README is
    user-facing" convention, concrete usage steps only, no milestone/issue references.
 7. **Verification** — `uv run pytest --cov=llm_home_lab`, `uv run ruff check .`, `uv run ruff

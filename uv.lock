@@ -494,13 +494,9 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-tui = [
     { name = "rich" },
     { name = "textual" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.dev-dependencies]
@@ -518,11 +514,10 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pydantic", specifier = ">=2.10" },
-    { name = "rich", marker = "extra == 'tui'", specifier = ">=13" },
-    { name = "textual", marker = "extra == 'tui'", specifier = ">=0.60" },
+    { name = "rich", specifier = ">=13" },
+    { name = "textual", specifier = ">=0.60" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
-provides-extras = ["tui"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -12,10 +12,9 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "httpx>=0.28",
     "pydantic>=2.10",
+    "rich>=13",
+    "textual>=0.60",
 ]
-
-[project.optional-dependencies]
-tui = ["rich>=13", "textual>=0.60"]
 
 [project.scripts]
 llm-home-lab = "llm_home_lab.main:run"
