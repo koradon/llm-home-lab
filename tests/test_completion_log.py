@@ -140,6 +140,16 @@ def test_a_tiny_observed_time_is_floored_at_sixty_seconds():
     assert result == 60.0
 
 
+def test_a_window_shorter_than_the_floor_still_divides_by_the_window():
+    log = _log(window=timedelta(seconds=30))
+    for seconds in (80, 90, 100):
+        log.record("host-a", T0 + timedelta(seconds=seconds))
+
+    result = log.tasks_per_hour("host-a", T0 + timedelta(seconds=100))
+
+    assert result == 360.0
+
+
 def test_no_completions_right_after_start_reads_zero():
     log = _log()
 

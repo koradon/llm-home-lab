@@ -19,9 +19,10 @@ class CompletionLog:
     log is not persisted: after an orchestrator restart the window starts empty.
 
     The rate divides the completions in the window by the time actually observed — the time since
-    the log was created (tracking started), capped at the window and floored at `MIN_OBSERVED` so
-    the first completion right after start is not extrapolated to an absurd hourly rate. Once a
-    full window has elapsed this is the plain `count * 1h / window`.
+    the log was created (tracking started), floored at `MIN_OBSERVED` so the first completion right
+    after start is not extrapolated to an absurd hourly rate, and capped at the window (the cap
+    wins over the floor for windows shorter than `MIN_OBSERVED`). Once a full window has elapsed
+    this is the plain `count * 1h / window`.
     """
 
     def __init__(
@@ -56,7 +57,7 @@ class CompletionLog:
         return self.count(host_id, at) * timedelta(hours=1) / self._observed(at)
 
     def _observed(self, at: datetime) -> timedelta:
-        return max(min(at - self._started_at, self._window), MIN_OBSERVED)
+        return min(self._window, max(at - self._started_at, MIN_OBSERVED))
 
     def tasks_per_hour_per_slot(
         self, host_id: str, at: datetime, total_slots: int | None
