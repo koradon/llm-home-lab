@@ -39,9 +39,10 @@ count). Both are exposed on `GET /v1/nodes`.
 - **Window:** the trailing `window` (default 1 hour, `ORCHESTRATOR_THROUGHPUT_WINDOW_S`) ending
   at the query time, half-open: a completion at exactly `now - window` is out, one at `now` is in.
   Completions older than the window are dropped on write.
-- `tasks_per_hour = count_in_window * 1h / observed`, where `observed = clamp(now - started_at,
-  MIN_OBSERVED, window)`: `started_at` is when the orchestrator created the log (tracking started),
-  `MIN_OBSERVED` is 60 s. After a full window it equals `count * 1h / window`.
+- `tasks_per_hour = count_in_window * 1h / observed`, where `observed = min(window, max(now - started_at,
+  MIN_OBSERVED))`: `started_at` is when the orchestrator created the log (tracking started),
+  `MIN_OBSERVED` is 60 s, and the window cap wins for windows shorter than 60 s. After a full window
+  it equals `count * 1h / window`.
 - `tasks_per_hour_per_slot = tasks_per_hour / total_slots`, or `null` (rendered `n/a`) when
   `total_slots` is unknown (`None`) or zero.
 - `GET /v1/nodes` adds, per node, `throughput: {window_s, tasks_per_hour,
