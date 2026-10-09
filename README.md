@@ -85,6 +85,27 @@ reachable at `LMSTUDIO_BASE_URL` — check step 1. If you get `400 model_not_ava
 you named isn't currently loaded in LM Studio — see the note on `allowed_models` below for why the
 orchestrator won't just load it for you.
 
+### Generation parameters
+
+Besides `model` and `messages`, the request accepts four optional parameters that are forwarded
+to the backend unchanged when you set them (and omitted when you do not):
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `temperature` | number, 0–2 | Sampling temperature. |
+| `max_tokens` | integer > 0 | Generation cap (a runaway guard); no upper bound. |
+| `chat_template_kwargs` | object | llama-server nodes only, e.g. `{"enable_thinking": false}` to switch Gemma-4 thinking off per call. Never sent to LM Studio nodes. |
+| `response_format` | object | e.g. `{"type": "json_object"}` or a `json_schema` format. |
+
+Invalid values return `400 invalid_request_error`. Other fields (`top_p`, `stop`, …) are still
+ignored. The response exposes the backend's `finish_reason` (`choices[0].finish_reason`, or on the
+final streamed delta), so a generation cut off by `max_tokens` shows `"length"`.
+
+> **Deploying this change:** clients that already send `temperature`/`max_tokens` (facts-service
+> sends `0.2` and `8000`) had them silently ignored before; they take effect the moment the
+> orchestrator is restarted with this version. Deploy such a client's own parameter change first,
+> or restart both together. See [ADR-0012](docs/adr/0012-forward-generation-parameters-to-backends.md).
+
 ## Adding more model hosts
 
 Once the orchestrator is running, register additional LM Studio instances (other machines on

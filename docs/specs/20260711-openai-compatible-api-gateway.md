@@ -57,7 +57,9 @@ shape, per the backend adapter's error classification.
 - Empty `messages` array → validation error, not forwarded.
 - `stream` omitted → defaults to non-streaming (`false`), matching OpenAI's default.
 - Unsupported/unrecognized top-level fields → ignored rather than rejected, to tolerate
-  forward-compatible OpenAI clients.
+  forward-compatible OpenAI clients. The exceptions are `temperature`, `max_tokens`,
+  `chat_template_kwargs` and `response_format`, which are validated and forwarded to the backend
+  (see [generation parameter forwarding](20261009-generation-parameter-forwarding.md)).
 
 ## Acceptance scenarios (BDD)
 
