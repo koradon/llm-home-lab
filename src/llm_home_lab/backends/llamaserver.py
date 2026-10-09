@@ -169,7 +169,7 @@ class LlamaCPPServerBackend:
 
 
 def _to_llamaserver_payload(request: ChatCompletionRequest) -> dict[str, object]:
-    return request.model_dump(exclude={"stream"}) | {
+    return request.model_dump(exclude={"stream"} | request.unset_generation_fields()) | {
         "stream": True,
         "stream_options": {"include_usage": True},
     }

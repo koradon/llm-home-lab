@@ -396,3 +396,75 @@ async def test_model_is_forwarded_unchanged():
     await backend.complete(_request())
 
     assert captured_models == ["test-model"]
+
+
+def _captured_payload(request: ChatCompletionRequest) -> dict:
+    captured = []
+
+    def handler(http_request):
+        captured.append(json.loads(http_request.content))
+        return _sse_response(*SUCCESSFUL_SSE_LINES)
+
+    backend = LlamaCPPServerBackend(
+        base_url="http://llamaserver.local:8080",
+        timeout=5.0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    async def run():
+        await backend.complete(request)
+
+    return run, captured
+
+
+async def test_payload_is_unchanged_when_no_generation_parameters_are_set():
+    run, captured = _captured_payload(_request())
+
+    await run()
+
+    assert captured == [
+        {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "session_id": None,
+            "task_type": None,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+    ]
+
+
+async def test_generation_parameters_are_forwarded_unchanged_when_set():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[Message(role="user", content="Hi")],
+        temperature=0.0,
+        max_tokens=20000,
+        chat_template_kwargs={"enable_thinking": False},
+        response_format={"type": "json_object"},
+    )
+    run, captured = _captured_payload(request)
+
+    await run()
+
+    (payload,) = captured
+    assert payload["temperature"] == 0.0
+    assert payload["max_tokens"] == 20000
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["stream"] is True
+
+
+async def test_only_the_generation_parameters_that_are_set_are_forwarded():
+    request = ChatCompletionRequest(
+        model="test-model", messages=[Message(role="user", content="Hi")], max_tokens=100
+    )
+    run, captured = _captured_payload(request)
+
+    await run()
+
+    (payload,) = captured
+    assert payload["max_tokens"] == 100
+    assert "temperature" not in payload
+    assert "chat_template_kwargs" not in payload
+    assert "response_format" not in payload

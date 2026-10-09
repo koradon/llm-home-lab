@@ -183,7 +183,9 @@ class LMStudioBackend:
 
 
 def _to_lmstudio_payload(request: ChatCompletionRequest, model: str) -> dict[str, object]:
-    return request.model_dump(exclude={"stream"}) | {
+    # chat_template_kwargs is a llama.cpp extension, never forwarded to LM Studio (ADR-0012).
+    excluded = {"stream", "chat_template_kwargs"} | request.unset_generation_fields()
+    return request.model_dump(exclude=excluded) | {
         "model": model,
         "stream": True,
         "stream_options": {"include_usage": True},

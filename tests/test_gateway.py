@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
@@ -227,3 +228,92 @@ def test_streaming_request_returns_sse_chunks_ending_in_done():
     assert first_chunk["choices"][0]["delta"] == {"role": "assistant", "content": "Hel"}
     last_data_chunk = json.loads(lines[-2].removeprefix("data: "))
     assert last_data_chunk["choices"][0]["finish_reason"] == "stop"
+
+
+class CapturingBackend(FakeBackend):
+    def __init__(self):
+        self.requests = []
+
+    async def complete(self, request):
+        self.requests.append(request)
+        return await super().complete(request)
+
+    async def stream(self, request):
+        self.requests.append(request)
+        async for chunk in super().stream(request):
+            yield chunk
+
+
+FACTS_SERVICE_GENERATION_PARAMS = {
+    "temperature": 1.0,
+    "max_tokens": 20000,
+    "chat_template_kwargs": {"enable_thinking": False},
+    "response_format": {
+        "type": "json_schema",
+        "json_schema": {"name": "facts", "schema": {"type": "object"}},
+    },
+}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_generation_parameters_reach_the_backend_request(stream):
+    backend = CapturingBackend()
+    client = TestClient(_app_for(backend), headers=AUTH_HEADERS)
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": stream,
+    } | FACTS_SERVICE_GENERATION_PARAMS
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200
+    (request,) = backend.requests
+    assert request.temperature == 1.0
+    assert request.max_tokens == 20000
+    assert request.chat_template_kwargs == {"enable_thinking": False}
+    assert request.response_format == FACTS_SERVICE_GENERATION_PARAMS["response_format"]
+
+
+def test_generation_parameters_default_to_unset():
+    backend = CapturingBackend()
+    client = TestClient(_app_for(backend), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]}
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200
+    (request,) = backend.requests
+    assert request.unset_generation_fields() == {
+        "temperature",
+        "max_tokens",
+        "chat_template_kwargs",
+        "response_format",
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"max_tokens": 0},
+        {"max_tokens": -5},
+        {"max_tokens": "many"},
+        {"max_tokens": 1.5},
+        {"temperature": -0.1},
+        {"temperature": 2.5},
+        {"temperature": "hot"},
+        {"chat_template_kwargs": "enable_thinking"},
+        {"chat_template_kwargs": ["enable_thinking"]},
+        {"response_format": "json"},
+    ],
+)
+def test_invalid_generation_parameters_are_rejected_before_dispatch(invalid):
+    backend = CapturingBackend()
+    client = TestClient(_app_for(backend), headers=AUTH_HEADERS)
+    payload = {"model": "test-model", "messages": [{"role": "user", "content": "Hi"}]} | invalid
+
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "invalid_request_error"
+    assert backend.requests == []

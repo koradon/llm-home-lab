@@ -436,3 +436,75 @@ async def test_check_health_reports_unhealthy_when_backend_is_unreachable():
 
     assert health.healthy is False
     assert "connection refused" in health.detail.lower()
+
+
+async def _lmstudio_payload_for(request: ChatCompletionRequest) -> dict:
+    captured = []
+
+    def handler(http_request):
+        if http_request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "test-model"}]})
+        captured.append(json.loads(http_request.content))
+        body = (
+            'data: {"choices": [{"delta": {"content": "Hi"}, "finish_reason": "stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200, content=body.encode(), headers={"content-type": "text/event-stream"}
+        )
+
+    backend = LMStudioBackend(
+        base_url="http://lmstudio.local:1234",
+        timeout=5.0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    await backend.complete(request)
+
+    (payload,) = captured
+    return payload
+
+
+async def test_lmstudio_forwards_standard_openai_generation_parameters():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[Message(role="user", content="Hi")],
+        temperature=0.5,
+        max_tokens=256,
+        response_format={"type": "json_object"},
+    )
+
+    payload = await _lmstudio_payload_for(request)
+
+    assert payload["temperature"] == 0.5
+    assert payload["max_tokens"] == 256
+    assert payload["response_format"] == {"type": "json_object"}
+
+
+async def test_lmstudio_never_forwards_chat_template_kwargs():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[Message(role="user", content="Hi")],
+        chat_template_kwargs={"enable_thinking": False},
+    )
+
+    payload = await _lmstudio_payload_for(request)
+
+    assert "chat_template_kwargs" not in payload
+
+
+async def test_lmstudio_payload_omits_unset_generation_parameters():
+    request = ChatCompletionRequest(
+        model="test-model", messages=[Message(role="user", content="Hi")]
+    )
+
+    payload = await _lmstudio_payload_for(request)
+
+    assert set(payload) == {
+        "model",
+        "messages",
+        "session_id",
+        "task_type",
+        "stream",
+        "stream_options",
+    }
