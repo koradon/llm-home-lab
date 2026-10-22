@@ -213,3 +213,29 @@ async def test_a_refused_connection_still_raises_connection_kind():
     with pytest.raises(DiagnosticsClientError) as exc_info:
         await client.list_nodes()
     assert exc_info.value.kind == "connection"
+
+
+@pytest.mark.parametrize(
+    "operation,args",
+    [
+        ("list_nodes", ()),
+        ("list_alerts", ()),
+        ("fetch_metrics_text", ()),
+        ("register_node", ({"host_id": "host-a"},)),
+        ("update_node", ("host-a", {"max_concurrent_requests": 8})),
+        ("deregister_node", ("host-a",)),
+    ],
+)
+@pytest.mark.parametrize(
+    "error,kind", [(httpx.ConnectTimeout, "connection"), (httpx.ReadTimeout, "timeout")]
+)
+async def test_timeout_classification_across_operations(operation, args, error, kind):
+    def handler(request):
+        raise error("timed out", request=request)
+
+    client = _client(handler)
+
+    with pytest.raises(DiagnosticsClientError) as exc_info:
+        await getattr(client, operation)(*args)
+
+    assert exc_info.value.kind == kind

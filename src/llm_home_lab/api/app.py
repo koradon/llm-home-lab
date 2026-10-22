@@ -232,7 +232,12 @@ def create_app(
         of paying it once.
         """
         _prune_backend_cache()
-        return list(await asyncio.gather(*(_probe_one_host(host) for host in registry.hosts())))
+        reports = list(await asyncio.gather(*(_probe_one_host(host) for host in registry.hosts())))
+        alert_now = datetime.now(UTC)
+        alert_evaluator.evaluate(
+            metrics_registry.snapshot(alert_now, registry, scheduling_queue), alert_now
+        )
+        return reports
 
     async def _health_poll_loop(interval: float) -> None:
         while True:
@@ -503,10 +508,6 @@ def create_app(
     async def health_ready() -> JSONResponse:
         reports = await _probe_all_hosts()
         all_healthy = all(report["healthy"] for report in reports)
-        alert_now = datetime.now(UTC)
-        alert_evaluator.evaluate(
-            metrics_registry.snapshot(alert_now, registry, scheduling_queue), alert_now
-        )
         return JSONResponse(
             status_code=200 if all_healthy else 503,
             content={

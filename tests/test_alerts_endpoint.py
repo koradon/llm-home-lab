@@ -1,3 +1,4 @@
+import time
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
@@ -39,7 +40,7 @@ def _permissive_key_store() -> ApiKeyStore:
     )
 
 
-def _app_for(alert_evaluator=None, registry=None):
+def _app_for(alert_evaluator=None, registry=None, health_poll_interval=None):
     registry = registry or HostRegistry(new_registry_db_path())
     if not registry.hosts():
         registry.register(
@@ -59,6 +60,7 @@ def _app_for(alert_evaluator=None, registry=None):
         metrics_registry=MetricsRegistry(),
         alert_evaluator=alert_evaluator or AlertEvaluator([]),
         external_load_probe=inert_external_load_probe(),
+        health_poll_interval=health_poll_interval,
     )
 
 
@@ -128,3 +130,54 @@ def test_health_ready_triggers_alert_evaluation():
     alerts = response.json()["alerts"]
     assert len(alerts) == 1
     assert alerts[0]["rule_name"] == "host-saturation-threshold:host-a"
+
+
+def test_background_sweeps_fire_and_resolve_alerts_without_readiness_requests():
+    registry = HostRegistry(new_registry_db_path())
+    registry.register(
+        "host-a",
+        HostCapabilities(backend_type="fake", context_window=8192, base_url="unused"),
+        HostCapacity(max_concurrent_requests=1),
+        at=datetime.now(UTC),
+    )
+    registry.acquire_slot("host-a")
+    evaluator = AlertEvaluator(
+        [
+            AlertRule(
+                name="host-saturation-threshold",
+                kind="threshold",
+                metric="host_saturation",
+                comparison="gt",
+                threshold_value=0.9,
+                window=timedelta(minutes=5),
+                severity=AlertSeverity.CRITICAL,
+                runbook_url="docs/runbooks/host-saturation-threshold.md",
+            )
+        ]
+    )
+    app = _app_for(evaluator, registry, health_poll_interval=0.01)
+
+    with TestClient(app, headers=AUTH_HEADERS) as client:
+        deadline = time.monotonic() + 2
+        while True:
+            response = client.get("/v1/alerts")
+            assert response.status_code == 200
+            alerts = response.json()["alerts"]
+            if alerts or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert len(alerts) == 1
+        assert alerts[0]["rule_name"] == "host-saturation-threshold:host-a"
+
+        assert client.portal is not None
+        client.portal.call(registry.release_slot, "host-a")
+
+        deadline = time.monotonic() + 2
+        while True:
+            response = client.get("/v1/alerts")
+            assert response.status_code == 200
+            alerts = response.json()["alerts"]
+            if not alerts or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert alerts == []

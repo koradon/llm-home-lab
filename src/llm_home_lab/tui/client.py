@@ -13,10 +13,10 @@ class DiagnosticsClientError(Exception):
 
 
 def _transport_error(exc: httpx.TransportError) -> DiagnosticsClientError:
-    # A timeout means the orchestrator accepted the connection but answered too slowly — it is
-    # up, so it must not be reported as unreachable.
     kind: Literal["connection", "timeout"] = (
-        "timeout" if isinstance(exc, httpx.TimeoutException) else "connection"
+        "timeout"
+        if isinstance(exc, httpx.TimeoutException) and not isinstance(exc, httpx.ConnectTimeout)
+        else "connection"
     )
     return DiagnosticsClientError(kind, str(exc) or type(exc).__name__)
 
