@@ -26,7 +26,7 @@ class OrchestratorDiagnosticsClient:
         self,
         base_url: str,
         api_key: str,
-        timeout: float = 15.0,
+        timeout: float = 5.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._client = httpx.AsyncClient(
