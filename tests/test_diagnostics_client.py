@@ -193,31 +193,23 @@ async def test_deregister_node_raises_connection_kind_on_transport_failure():
     assert exc_info.value.kind == "connection"
 
 
-async def test_trigger_health_check_calls_health_ready():
+async def test_a_request_timeout_raises_timeout_kind_not_connection():
     def handler(request):
-        assert request.url.path == "/health/ready"
-        return httpx.Response(200, json={"status": "ok", "backends": []})
+        raise httpx.ReadTimeout("slow", request=request)
 
     client = _client(handler)
 
-    await client.trigger_health_check()
+    with pytest.raises(DiagnosticsClientError) as exc_info:
+        await client.list_nodes()
+    assert exc_info.value.kind == "timeout"
 
 
-async def test_trigger_health_check_does_not_raise_on_503():
-    def handler(request):
-        return httpx.Response(503, json={"status": "unavailable", "backends": []})
-
-    client = _client(handler)
-
-    await client.trigger_health_check()
-
-
-async def test_trigger_health_check_raises_connection_kind_on_transport_failure():
+async def test_a_refused_connection_still_raises_connection_kind():
     def handler(request):
         raise httpx.ConnectError("refused", request=request)
 
     client = _client(handler)
 
     with pytest.raises(DiagnosticsClientError) as exc_info:
-        await client.trigger_health_check()
+        await client.list_nodes()
     assert exc_info.value.kind == "connection"

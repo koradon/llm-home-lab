@@ -5,11 +5,20 @@ import httpx
 
 class DiagnosticsClientError(Exception):
     def __init__(
-        self, kind: Literal["connection", "unauthorized", "server_error"], detail: str
+        self, kind: Literal["connection", "timeout", "unauthorized", "server_error"], detail: str
     ) -> None:
         super().__init__(f"{kind}: {detail}")
         self.kind = kind
         self.detail = detail
+
+
+def _transport_error(exc: httpx.TransportError) -> DiagnosticsClientError:
+    # A timeout means the orchestrator accepted the connection but answered too slowly — it is
+    # up, so it must not be reported as unreachable.
+    kind: Literal["connection", "timeout"] = (
+        "timeout" if isinstance(exc, httpx.TimeoutException) else "connection"
+    )
+    return DiagnosticsClientError(kind, str(exc) or type(exc).__name__)
 
 
 class OrchestratorDiagnosticsClient:
@@ -17,7 +26,7 @@ class OrchestratorDiagnosticsClient:
         self,
         base_url: str,
         api_key: str,
-        timeout: float = 5.0,
+        timeout: float = 15.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._client = httpx.AsyncClient(
@@ -48,44 +57,32 @@ class OrchestratorDiagnosticsClient:
     async def deregister_node(self, host_id: str) -> None:
         await self._delete(f"/v1/nodes/{host_id}")
 
-    async def trigger_health_check(self) -> None:
-        # GET /v1/nodes reports a host's status from HealthMonitor's probe history, but nothing
-        # populates that history unless something calls /health/ready — that endpoint is the only
-        # place a probe gets recorded (see ADR/plan notes on failover-and-health-policy). Without
-        # a caller, every node stays "unknown" forever. The dashboard is exactly the kind of
-        # external prober that design expects, so it drives the cadence itself. A 503 here is a
-        # normal "some backend is unhealthy" outcome, not an error — only a transport failure is.
-        try:
-            await self._client.get("/health/ready")
-        except httpx.TransportError as exc:
-            raise DiagnosticsClientError("connection", str(exc)) from exc
-
     async def _get(self, path: str) -> httpx.Response:
         try:
             response = await self._client.get(path)
         except httpx.TransportError as exc:
-            raise DiagnosticsClientError("connection", str(exc)) from exc
+            raise _transport_error(exc) from exc
         return self._raise_for_error_status(response)
 
     async def _post(self, path: str, json: dict[str, object]) -> httpx.Response:
         try:
             response = await self._client.post(path, json=json)
         except httpx.TransportError as exc:
-            raise DiagnosticsClientError("connection", str(exc)) from exc
+            raise _transport_error(exc) from exc
         return self._raise_for_error_status(response)
 
     async def _patch(self, path: str, json: dict[str, object]) -> httpx.Response:
         try:
             response = await self._client.patch(path, json=json)
         except httpx.TransportError as exc:
-            raise DiagnosticsClientError("connection", str(exc)) from exc
+            raise _transport_error(exc) from exc
         return self._raise_for_error_status(response)
 
     async def _delete(self, path: str) -> httpx.Response:
         try:
             response = await self._client.delete(path)
         except httpx.TransportError as exc:
-            raise DiagnosticsClientError("connection", str(exc)) from exc
+            raise _transport_error(exc) from exc
         return self._raise_for_error_status(response)
 
     def _raise_for_error_status(self, response: httpx.Response) -> httpx.Response:
