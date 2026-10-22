@@ -153,11 +153,9 @@ Keep scenarios in a sibling Gherkin file:
 
 ## Open Questions
 
-- No boot-time auto-registration: unlike LM Studio, `create_default_app()` does not
-  auto-register a default llama-server host at startup — nodes register only via
-  `POST /v1/nodes/register`. Left as-is deliberately; `create_default_app()`'s
-  single-hardcoded-host approach will likely need a redesign once it has to default-register
-  more than one backend type, and this is a known gap to revisit then, not now.
+- No boot-time auto-registration for llama-server: register nodes via
+  `POST /v1/nodes/register`. See the [README configuration reference](../../README.md#configuration-reference)
+  for the supported startup registration configuration.
 - ~~Whether `/slots`' approximated `queued` (busy-slot count rather than a real backlog) is
   precise enough to be useful in the TUI.~~ Resolved: it is not a backlog, so the TUI shows
   `busy (busy_slots/total_slots slots)` for llama-server hosts and `total_slots`/`busy_slots`

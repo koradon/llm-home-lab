@@ -46,7 +46,7 @@ outside your own machine.
 
 ### 3. Start the orchestrator
 
-Both of these are equally supported — pick whichever fits your setup.
+Both options explicitly set `LMSTUDIO_BASE_URL` to register an LM Studio host; leave it unset to use only persisted or API-registered hosts.
 
 **Option A — uv (runs natively on your machine):**
 
@@ -268,7 +268,7 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 | `ORCHESTRATOR_PORT` | `8080` | Gateway port |
 | `ORCHESTRATOR_API_KEYS_FILE` | `./config/api_keys.json` | Client/key/authorization config |
 | `ORCHESTRATOR_AUTH_ENABLED` | `true` | Set `false` to disable auth entirely (local testing only) |
-| `LMSTUDIO_BASE_URL` | `http://localhost:1234` | Default LM Studio host registered at startup |
+| `LMSTUDIO_BASE_URL` | unset | LM Studio host registered at startup only when explicitly set |
 | `LMSTUDIO_TIMEOUT` | unbounded | Per-chunk read timeout to LM Studio (seconds) — see note below |
 | `LMSTUDIO_CONNECT_TIMEOUT` | `10` | TCP connect timeout to LM Studio (seconds) — separate from `LMSTUDIO_TIMEOUT`, see note below |
 | `LMSTUDIO_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives — see note below |

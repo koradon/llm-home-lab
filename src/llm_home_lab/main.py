@@ -96,19 +96,20 @@ def create_default_app() -> FastAPI:
     registry = HostRegistry(
         os.environ.get("ORCHESTRATOR_HOST_REGISTRY_DB_PATH", DEFAULT_HOST_REGISTRY_DB_PATH)
     )
-    base_url = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234")
-    registry.register(
-        base_url,
-        HostCapabilities(
-            backend_type="lmstudio",
-            context_window=int(os.environ.get("LMSTUDIO_CONTEXT_WINDOW", "131072")),
-            base_url=base_url,
-        ),
-        HostCapacity(
-            max_concurrent_requests=int(os.environ.get("LMSTUDIO_MAX_CONCURRENT_REQUESTS", "1"))
-        ),
-        at=datetime.now(UTC),
-    )
+    base_url = os.environ.get("LMSTUDIO_BASE_URL")
+    if base_url is not None:
+        registry.register(
+            base_url,
+            HostCapabilities(
+                backend_type="lmstudio",
+                context_window=int(os.environ.get("LMSTUDIO_CONTEXT_WINDOW", "131072")),
+                base_url=base_url,
+            ),
+            HostCapacity(
+                max_concurrent_requests=int(os.environ.get("LMSTUDIO_MAX_CONCURRENT_REQUESTS", "1"))
+            ),
+            at=datetime.now(UTC),
+        )
     policy = RoutingPolicy(
         rules=[PolicyRule(name="prefer-lower-latency", score_fn=lambda c, ctx: -c.latency_ms)]
     )
