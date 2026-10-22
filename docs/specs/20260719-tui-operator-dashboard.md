@@ -35,7 +35,7 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 - `client.py` — `OrchestratorDiagnosticsClient(base_url: str, api_key: str)`, an async `httpx`
   wrapper originally scoped to `list_nodes()`, `list_alerts()`, `fetch_metrics_text()` — one call
   per existing GET endpoint — and since extended with `register_node()`, `update_node()`,
-  `deregister_node()`, and `trigger_health_check()` as the Nodes panel grew mutation support.
+  `deregister_node()` as the Nodes panel grew mutation support.
   `Authorization: Bearer <api_key>` header on each, matching how any other client authenticates
   against `enforce_auth`.
 - `metrics_parser.py` — a minimal Prometheus text-exposition parser that extracts only the metric
@@ -73,6 +73,11 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 **Polling is fixed-interval, not event-driven.** No websocket/SSE surface is added to the
 orchestrator for this — matches home-lab scale and keeps the orchestrator's API contract unchanged.
 
+Dashboard refreshes call only the three diagnostic GET endpoints, never `/health/ready`.
+Host health comes from the background poller described in
+[ADR-0006](../adr/0006-background-health-poller.md). With polling disabled, health stays
+unknown until an on-demand readiness check records it.
+
 **The TUI is no longer strictly read-only.** The original design limited it to the three GET
 diagnostic endpoints; it has since grown a Nodes panel that also edits (`PATCH`), registers
 (`POST /v1/nodes/register`), and deregisters (`DELETE`) nodes, gated by explicit user action
@@ -80,8 +85,10 @@ diagnostic endpoints; it has since grown a Nodes panel that also edits (`PATCH`)
 [per-alias-completion-metrics](20260730-per-alias-completion-metrics.md) for context on one field
 (`model_aliases`) this mutation surface edits.
 
-**A failed poll shows an inline error, not a crash.** Connection errors, `401`/`403` (bad or
-missing key), and `5xx` responses are rendered as a status banner in the running TUI; the next
+**A failed poll shows an inline error, not a crash.** Connection errors (including connect
+timeouts) show "cannot reach orchestrator, retrying"; other transport timeouts show
+"orchestrator slow to respond, retrying". `401`/`403` (bad or missing key) and `5xx` responses
+also produce status banners. The client keeps its 5-second default timeout, and the next
 scheduled poll retries automatically. The TUI never exits on a single failed poll.
 
 **Missing/expired API key produces a clear auth-error state**, not a silent hang — the first failed

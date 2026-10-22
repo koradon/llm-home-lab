@@ -96,6 +96,10 @@ persists data for.
 - New endpoint `GET /metrics`: returns `MetricsRegistry.render_prometheus(...)`, `text/plain;
   version=0.0.4`. Exempt from auth like `/health/live`/`/health/ready` (a scrape target, not a
   client-data endpoint) — added to `AUTH_EXEMPT_PATHS`.
+- `AlertEvaluator.evaluate` runs after each completed shared health sweep, both in the
+  background poller ([ADR-0006](../adr/0006-background-health-poller.md)) and in on-demand
+  `/health/ready` calls. `GET /v1/alerts` and `GET /metrics` only read current state; neither
+  triggers evaluation. With the poller disabled, alert transitions require readiness calls.
 - New endpoint `GET /v1/alerts`: JSON diagnostic listing of currently-firing alerts (mirrors the
   `/v1/nodes` diagnostic style) — `{"alerts": [{"rule": ..., "severity": ..., "state": "firing",
   "value": ..., "threshold": ..., "runbook_url": ...}, ...]}`. Authenticated like `/v1/nodes`
@@ -171,9 +175,6 @@ Keep scenarios in a sibling Gherkin file:
 
 ## Open Questions
 
-- Who calls `AlertEvaluator.evaluate` and on what cadence — piggy-backed on the `/health/ready`
-  sweep (already runs periodically-ish via readiness probes) vs. a dedicated background task — is
-  left to the plan, matching how the multi-node spec deferred "who calls `expire_stale`."
 - Whether the rolling window (default 5 minutes) should be configurable per-deployment or fixed —
   deferred; fixed is simplest and matches this codebase's other fixed-with-override defaults
   (`HealthMonitor`'s cooldown, `heartbeat_ttl`).

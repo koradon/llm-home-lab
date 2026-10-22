@@ -29,16 +29,8 @@ per default critical rule under `docs/runbooks/`.
 
 Concrete decisions for this plan (resolving the spec's deferred wiring questions):
 
-- **Alert evaluation cadence**: piggy-back on the existing `/health/ready` handler — the same
-  place `registry.expire_stale` was added for #10 — rather than introducing a background poller.
-  `/health/ready` already runs a health probe for every host on each call; add one
-  `alert_evaluator.evaluate(metrics_registry.snapshot(now, registry, scheduling_queue), now)` call
-  there. This means alert freshness is tied to how often something calls `/health/ready` (an
-  external prober, cron, or manual check) — the same operational assumption `expire_stale` already
-  makes. `GET /v1/alerts` and `GET /metrics` read the evaluator's/registry's *current* state on
-  every call; they do not themselves trigger evaluation, so repeatedly hitting them between
-  `/health/ready` calls is safe (idempotent reads) but won't surface a transition that hasn't been
-  evaluated yet.
+- **Alert evaluation cadence**: follow the
+  [monitoring spec](../specs/20260719-monitoring-slos-and-alerting.md#requirements).
 - **Rolling window**: fixed at 5 minutes, not configurable per-deployment (matches
   `HealthMonitor`'s fixed-with-constructor-override defaults). `MetricsRegistry.__init__` accepts
   a `window: timedelta = timedelta(minutes=5)` constructor param for tests to shrink it, the same
@@ -149,9 +141,7 @@ Out of scope for this plan (per the spec's Open Questions):
      registry, scheduling_queue), media_type="text/plain; version=0.0.4")`.
    - New `GET /v1/alerts` endpoint (authenticated, like `/v1/nodes`) — returns
      `{"alerts": [asdict(event) for event in alert_evaluator.current_state()]}`.
-   - `/health/ready` handler additionally calls
-     `alert_evaluator.evaluate(metrics_registry.snapshot(now, registry, scheduling_queue), now)`
-     after its existing per-host probe loop.
+   - Wire alert evaluation into the shared health sweep per the monitoring spec above.
 9. **Entry point** (`src/llm_home_lab/main.py`) — `create_default_app` constructs one shared
    `MetricsRegistry()` and loads
    `AlertEvaluator.from_file(os.environ.get("ORCHESTRATOR_ALERT_RULES_FILE",
@@ -182,11 +172,8 @@ evaluate hook, the `chat_completions` recording hooks) → runbooks/docs last.
 
 ## Risks
 
-- **Alert freshness depends on something calling `/health/ready`**: if no external prober or cron
-  hits that endpoint, `AlertEvaluator` never re-evaluates and `GET /v1/alerts` reports stale
-  state. This is the same operational assumption `expire_stale` already relies on (documented
-  there, not solved here) — worth calling out to the operator in the runbook docs rather than
-  silently assumed.
+- **Alert freshness** follows the sweep cadence and disabled-poller constraint in the
+  [monitoring spec](../specs/20260719-monitoring-slos-and-alerting.md#requirements).
 - ~~**Token usage isn't recorded for streaming responses**~~ — resolved by
   [ADR-0003](../adr/0003-lmstudio-backend-always-streams-internally.md): `LMStudioBackend` now
   requests `stream_options.include_usage` and `_stream_chunks` records token usage from the
