@@ -9,7 +9,7 @@ def _isolated_host_registry_db(monkeypatch, tmp_path):
     monkeypatch.setenv("ORCHESTRATOR_HOST_REGISTRY_DB_PATH", str(tmp_path / "host_registry.db"))
 
 
-def test_default_app_wires_lmstudio_backend_with_default_config(monkeypatch):
+def test_default_app_registers_no_host_without_lmstudio_base_url(monkeypatch):
     monkeypatch.delenv("LMSTUDIO_BASE_URL", raising=False)
     monkeypatch.delenv("LMSTUDIO_TIMEOUT", raising=False)
     monkeypatch.delenv("LMSTUDIO_MAX_RETRIES", raising=False)
@@ -17,8 +17,7 @@ def test_default_app_wires_lmstudio_backend_with_default_config(monkeypatch):
     app = create_default_app()
 
     hosts = app.state.registry.hosts()
-    assert [host.host_id for host in hosts] == ["http://localhost:1234"]
-    assert hosts[0].capabilities.backend_type == "lmstudio"
+    assert hosts == []
 
 
 def test_default_app_respects_lmstudio_env_overrides(monkeypatch):
@@ -30,6 +29,7 @@ def test_default_app_respects_lmstudio_env_overrides(monkeypatch):
 
     hosts = app.state.registry.hosts()
     assert [host.host_id for host in hosts] == ["http://gpu-box.home:1234"]
+    assert hosts[0].capabilities.backend_type == "lmstudio"
 
 
 def test_default_app_uses_a_120_second_dispatch_wait_timeout_by_default(monkeypatch):
