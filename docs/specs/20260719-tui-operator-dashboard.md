@@ -70,6 +70,12 @@ height; 0.0 is empty. Equal histories render identically at equal chart dimensio
 dip from 1.0 to 0.875 remains a small drop rather than spanning the full chart height.
 When multiple samples share a terminal column, that column shows their maximum load.
 
+**Node Load labels show current capacity.** Above each chart, a plain-text label reads
+`<host name> · <in_flight>/<max> · <percent>%`, with the percentage rounded to a whole
+number from the current poll, for example `Mac Mini · 8/8 · 100%`. When the maximum is
+zero or unknown, the percentage is `n/a`; an unknown maximum is shown as `?`
+(for example `host-b · 2/? · n/a`). Labels update on every successful poll.
+
 **Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
 it is the operator's manual order: an optional integer `position` on the node record (stored with
 the node's capabilities, exposed by `GET /v1/nodes`, settable via `POST /v1/nodes/register` and
