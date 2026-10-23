@@ -943,7 +943,10 @@ def _table_host_ids(app):
 
 
 def _sparkline_labels(app):
-    return [str(label.render()) for label in app.query("#load-sparklines .node-load-group Label")]
+    return [
+        str(label.render()).split(" · ")[0]
+        for label in app.query("#load-sparklines .node-load-group Label")
+    ]
 
 
 def _three_nodes():
@@ -1232,3 +1235,52 @@ async def test_a_small_dip_from_full_load_stays_visually_small():
         assert dipped[1:] == ["█", "█"]
         assert dipped[0] in "▄▅▆▇"
         assert {line[0] for line in lines} == {"█"}
+
+
+def _load_labels(app):
+    return [str(label.render()) for label in app.query("#load-sparklines .node-load-group Label")]
+
+
+async def test_each_load_chart_label_shows_name_in_flight_over_max_and_percent():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("Mac Mini", in_flight=8, max_concurrent_requests=8),
+                _node("Studio", in_flight=1, max_concurrent_requests=3),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        assert _load_labels(app) == ["Mac Mini · 8/8 · 100%", "Studio · 1/3 · 33%"]
+
+
+async def test_a_load_chart_label_updates_on_the_next_poll():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=4, max_concurrent_requests=8)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        client._nodes = {"nodes": [_node("host-a", in_flight=6, max_concurrent_requests=8)]}
+        await app.poll()
+        await pilot.pause()
+
+        assert _load_labels(app) == ["host-a · 6/8 · 75%"]
+
+
+async def test_a_load_chart_label_shows_na_when_max_is_zero_or_unknown():
+    unknown = _node("host-b", in_flight=2, max_concurrent_requests=None)
+    client = _FakeClient(
+        nodes={"nodes": [_node("host-a", in_flight=0, max_concurrent_requests=0), unknown]}
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        assert _load_labels(app) == ["host-a · 0/0 · n/a", "host-b · 2/? · n/a"]

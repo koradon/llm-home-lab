@@ -69,6 +69,13 @@ def _pick_error(errors: list[DiagnosticsClientError]) -> DiagnosticsClientError:
     return errors[0]
 
 
+def _load_label(host_id: str, in_flight: object, max_concurrent: object) -> str:
+    if not isinstance(in_flight, int) or not isinstance(max_concurrent, int) or max_concurrent <= 0:
+        shown_max = max_concurrent if isinstance(max_concurrent, int) else "?"
+        return f"{host_id} · {in_flight}/{shown_max} · n/a"
+    return f"{host_id} · {in_flight}/{max_concurrent} · {round(in_flight / max_concurrent * 100)}%"
+
+
 def _sparkline_widget_id(host_id: str, prefix: str, used_ids: set[str]) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", host_id)
     if not sanitized or not (sanitized[0].isalpha() or sanitized[0] == "_"):
@@ -778,9 +785,13 @@ class DashboardApp(App[None]):
 
     async def _render_load_sparklines(self, nodes: dict[str, object]) -> None:
         ratios: dict[str, float] = {}
+        labels: dict[str, str] = {}
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
-            max_concurrent = cast(int, host["max_concurrent_requests"]) or 1
+            labels[host_id] = _load_label(
+                host_id, host.get("in_flight"), host.get("max_concurrent_requests")
+            )
+            max_concurrent = cast(int, host.get("max_concurrent_requests")) or 1
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
 
         self._load_history = update_load_history(self._load_history, ratios)
@@ -800,12 +811,13 @@ class DashboardApp(App[None]):
                 self._node_group_ids[host_id] = group_id
                 await container.mount(
                     Vertical(
-                        Label(host_id),
+                        Label(labels[host_id]),
                         LoadChart(id=load_id),
                         id=group_id,
                         classes="node-load-group",
                     )
                 )
+            self.query_one(f"#{self._node_group_ids[host_id]} Label", Label).update(labels[host_id])
             self.query_one(f"#{self._sparkline_ids[host_id]}", LoadChart).data = self._load_history[
                 host_id
             ]
