@@ -188,7 +188,7 @@ free something up manually).
 `in_flight` on `GET /v1/nodes` only counts requests the orchestrator itself dispatched — it can't
 see load on a node caused by something else hitting LM Studio directly (another tool, a manual
 `curl`, LM Studio's own UI playground). If you install LM Studio's `lms` CLI on the machine
-running the orchestrator, `GET /v1/nodes` and the TUI's `ext_load` column additionally report each
+running the orchestrator, `GET /v1/nodes` additionally reports each
 node's *actual* queue/status straight from LM Studio, regardless of who caused it:
 
 ```bash
@@ -280,7 +280,7 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 | `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` | `120` | How long a queued request waits for a free host slot before failing with `503` |
 | `ORCHESTRATOR_THROUGHPUT_WINDOW_S` | `3600` | Rolling window (seconds) behind the `tasks/h` and `tasks/h/slot` columns; kept in memory; after an orchestrator restart the rate is computed over the time observed so far (at least 60 s, at most the window), so it is usable from the first completions |
 | `ORCHESTRATOR_LMS_BINARY_PATH` | `lms` | Path to the optional `lms` CLI for external node load visibility — see below |
-| `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` | `2` | Cache TTL (seconds) for external load probes — matches the TUI's default poll interval so its sparkline stays responsive; raise it if the `lms` subprocess overhead matters more than freshness for your setup |
+| `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` | `2` | Cache TTL (seconds) for external load probes; raise it if the `lms` subprocess overhead matters more than freshness for your setup |
 
 **Long-running generations**: the orchestrator always talks to LM Studio via its streaming
 protocol internally, even for a non-streaming caller — so `LMSTUDIO_TIMEOUT` is a *gap* timeout
@@ -321,7 +321,7 @@ it runs; register more hosts if you need to run many long generations at once.
 
 ## Terminal dashboard (TUI)
 
-A terminal dashboard shows live node health, firing alerts, and queue/token usage —
+A terminal dashboard shows live node health, completion metrics, and node load —
 comparable to `docker stats`. It's a separate client that doesn't need to run on the same machine
 as the orchestrator. The Nodes panel is a full registration UI, not just a viewer: press `n` or
 click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
@@ -339,7 +339,7 @@ Add a client entry to `config/api_keys.json` scoped to what the dashboard reads:
 ```json
 {
   "client_id": "tui-dashboard",
-  "allowed_path_prefixes": ["/v1/nodes", "/v1/alerts"],
+  "allowed_path_prefixes": ["/v1/nodes"],
   "keys": [{"key": "sk-dev-changeme", "expires_at": null}]
 }
 ```
@@ -350,12 +350,12 @@ scope to add.
 
 `--base-url`/`ORCHESTRATOR_BASE_URL` and `--api-key`/`ORCHESTRATOR_API_KEY` are interchangeable
 (flag or env var); `--interval` controls the poll frequency in seconds (default `2`). The Node
-Load panel charts two sparklines per node: green for the orchestrator's own `in_flight` ratio,
-orange for external load (busy/queued, from `lms`) when it's installed — see above.
+Load panel charts one green sparkline per node: `in_flight / max_concurrent_requests`.
+Full utilization is the desired lab state. Alerts and Queue & Tokens panels are not displayed.
 
 Refreshes read recorded state without triggering host probes. Keep the orchestrator's
 [background health poller](docs/adr/0006-background-health-poller.md) enabled for fresh health
-and external-load readings; the dashboard no longer drives readiness checks. For refresh errors
+readings; the dashboard no longer drives readiness checks. For refresh errors
 and timeouts, see the [TUI behavior reference](docs/specs/20260719-tui-operator-dashboard.md#behavior).
 
 ## Demo workload script

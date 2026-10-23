@@ -87,4 +87,4 @@ async def test_dashboard_poll_shows_status_recorded_by_the_background_poller_wit
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         column_key = table.ordered_columns[1].key
         assert str(table.get_cell(row_key, column_key)) == "online"
-        assert "/health/ready" not in paths
+        assert sorted(paths) == ["/metrics", "/v1/nodes"]

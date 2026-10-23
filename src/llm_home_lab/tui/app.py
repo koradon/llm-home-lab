@@ -85,14 +85,6 @@ def _sparkline_widget_id(host_id: str, prefix: str, used_ids: set[str]) -> str:
     return candidate
 
 
-_SEVERITY_STYLES = {"critical": "bold red", "warning": "bold yellow"}
-
-
-def _styled_severity(severity: object) -> Text:
-    style = _SEVERITY_STYLES.get(str(severity), "")
-    return Text(str(severity), style=style)
-
-
 _NODE_STATUS_STYLES = {"online": "bold green", "offline": "bold red", "unknown": "bold yellow"}
 
 
@@ -108,38 +100,6 @@ def _styled_failure_count(recent_failures: object) -> Text:
     return Text(str(count), style="bold red")
 
 
-def _styled_external_load(external_load: object) -> Text:
-    load = external_load if isinstance(external_load, dict) else {}
-    if not load.get("available"):
-        return Text("unavailable", style="dim")
-
-    status = str(load.get("status") or "idle")
-    total_slots = load.get("total_slots")
-    if isinstance(total_slots, int) and total_slots > 0:
-        # A slot-pool backend (llama-server): `queued` there is just the busy-slot count, not a
-        # backlog, so show what is actually happening instead.
-        busy_slots = load.get("busy_slots") or 0
-        label = status if not busy_slots else f"{status} ({busy_slots}/{total_slots} slots)"
-        return Text(label, style="" if status == "idle" else "bold yellow")
-
-    queued = load.get("queued") or 0
-    label = status if not queued else f"{status} ({queued} queued)"
-    return Text(label, style="" if status == "idle" else "bold yellow")
-
-
-def _external_load_value(external_load: object) -> float:
-    # `queued` alone is almost always 0 for a single caller hitting a node directly (it only
-    # counts requests waiting behind another), so a busy status must contribute even with no
-    # backlog — otherwise a genuinely busy node charts as a flat, empty line.
-    load = external_load if isinstance(external_load, dict) else {}
-    if not load.get("available"):
-        return 0.0
-    status = load.get("status")
-    busy = 0.0 if status in (None, "idle") else 1.0
-    queued = load.get("queued") or 0
-    return busy + (float(queued) if isinstance(queued, int | float) else 0.0)
-
-
 def _format_tasks_per_hour(throughput: object, key: str) -> str:
     value = throughput.get(key) if isinstance(throughput, dict) else None
     if not isinstance(value, int | float):
@@ -149,7 +109,6 @@ def _format_tasks_per_hour(throughput: object, key: str) -> str:
 
 class DiagnosticsClient(Protocol):
     async def list_nodes(self) -> dict[str, object]: ...
-    async def list_alerts(self) -> dict[str, object]: ...
     async def fetch_metrics_text(self) -> str: ...
     async def register_node(self, fields: dict[str, object]) -> None: ...
     async def update_node(self, host_id: str, fields: dict[str, object]) -> None: ...
@@ -495,14 +454,6 @@ class DashboardApp(App[None]):
     .node-load-group {
         height: auto;
     }
-    .spark-row {
-        height: 3;
-    }
-    .spark-label {
-        width: 5;
-        content-align: left middle;
-        padding: 0 1;
-    }
     """
 
     def __init__(
@@ -515,17 +466,12 @@ class DashboardApp(App[None]):
         self._client = client
         self._interval_s = interval_s
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._last_token_usage: dict[str, int] = {}
-        self._last_token_usage_at: datetime | None = None
         self._load_history: dict[str, list[float]] = {}
         self._sparkline_ids: dict[str, str] = {}
-        self._ext_load_history: dict[str, list[float]] = {}
-        self._ext_load_sparkline_ids: dict[str, str] = {}
         self._node_group_ids: dict[str, str] = {}
         self._poll_in_progress = False
         self._node_row_order: list[str] = []
         self._nodes_by_id: dict[str, dict[str, object]] = {}
-        self._metric_max: dict[str, float] = {}
         self._last_completions_total: dict[str, int] = {}
         self._last_completions_total_at: datetime | None = None
 
@@ -536,8 +482,6 @@ class DashboardApp(App[None]):
             yield Button("+ New Node", id="new-node-button")
             yield Button("✕ Remove Node", id="remove-node-button", variant="error")
         yield DataTable(id="nodes-table", zebra_stripes=True)
-        yield DataTable(id="alerts-table", zebra_stripes=True)
-        yield DataTable(id="queue-tokens-table", zebra_stripes=True)
         yield Vertical(id="load-sparklines")
         yield Footer()
 
@@ -547,7 +491,6 @@ class DashboardApp(App[None]):
             "host_id",
             "status",
             "errors",
-            "ext_load",
             "tasks/h",
             "tasks/h/slot",
             "backend_type",
@@ -561,17 +504,7 @@ class DashboardApp(App[None]):
         )
         nodes_table.border_title = "Nodes"
 
-        alerts_table = self.query_one("#alerts-table", DataTable)
-        alerts_table.add_columns("rule_name", "severity", "value/threshold", "runbook_url")
-        alerts_table.border_title = "Alerts"
-
-        queue_table = self.query_one("#queue-tokens-table", DataTable)
-        queue_table.add_columns("metric", "value", "max")
-        queue_table.border_title = "Queue & Tokens"
-
-        self.query_one(
-            "#load-sparklines", Vertical
-        ).border_title = "Node Load — green: own, orange: external"
+        self.query_one("#load-sparklines", Vertical).border_title = "Node Load"
 
         self.set_interval(self._interval_s, self.poll)
 
@@ -587,15 +520,14 @@ class DashboardApp(App[None]):
             # Host status comes from the orchestrator's background health poller
             # (ORCHESTRATOR_HEALTH_POLL_INTERVAL_S); with it disabled, hosts stay "unknown"
             # until something else calls /health/ready.
-            nodes, alerts, metrics_text = await asyncio.gather(
+            nodes, metrics_text = await asyncio.gather(
                 self._client.list_nodes(),
-                self._client.list_alerts(),
                 self._client.fetch_metrics_text(),
                 return_exceptions=True,
             )
             errors = [
                 result
-                for result in (nodes, alerts, metrics_text)
+                for result in (nodes, metrics_text)
                 if isinstance(result, DiagnosticsClientError)
             ]
             if errors:
@@ -607,8 +539,6 @@ class DashboardApp(App[None]):
             nodes_dict = cast("dict[str, object]", nodes)
             metrics_text_str = cast(str, metrics_text)
             self._render_nodes(nodes_dict, metrics_text_str, now)
-            self._render_alerts(cast("dict[str, object]", alerts))
-            self._render_queue_tokens(metrics_text_str, now)
             await self._render_load_sparklines(nodes_dict)
         except Exception:
             logger.exception("dashboard render failed for this poll cycle")
@@ -643,7 +573,6 @@ class DashboardApp(App[None]):
                 host_id,
                 _styled_node_status(host["status"]),
                 _styled_failure_count(health.get("recent_failures")),
-                _styled_external_load(host.get("external_load")),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour"),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour_per_slot"),
                 host["backend_type"],
@@ -722,104 +651,32 @@ class DashboardApp(App[None]):
         elif event.button.id == "remove-node-button":
             self.action_remove_node()
 
-    def _render_alerts(self, alerts: dict[str, object]) -> None:
-        table = self.query_one("#alerts-table", DataTable)
-        table.clear()
-        for alert in cast("list[dict[str, object]]", alerts.get("alerts", [])):
-            table.add_row(
-                alert["rule_name"],
-                _styled_severity(alert["severity"]),
-                f"{alert['value']}/{alert['threshold_value']}",
-                alert["runbook_url"],
-            )
-
-    def _render_queue_tokens(self, metrics_text: str, now: datetime) -> None:
-        table = self.query_one("#queue-tokens-table", DataTable)
-        table.clear()
-        parsed = parse_metrics_text(metrics_text)
-        rates = compute_token_rates(
-            previous=self._last_token_usage,
-            previous_at=self._last_token_usage_at,
-            current=parsed.token_usage_total,
-            now=now,
-        )
-        self._last_token_usage = dict(parsed.token_usage_total)
-        self._last_token_usage_at = now
-
-        if parsed.queue_depth is None:
-            table.add_row("queue_depth", "unavailable", "unavailable")
-        else:
-            max_queue_depth = self._track_max("queue_depth", parsed.queue_depth)
-            table.add_row("queue_depth", str(parsed.queue_depth), str(max_queue_depth))
-
-        if parsed.p95_latency_ms is None:
-            table.add_row("p95_latency_ms", "unavailable", "unavailable")
-        else:
-            max_p95 = self._track_max("p95_latency_ms", parsed.p95_latency_ms)
-            table.add_row("p95_latency_ms", f"{parsed.p95_latency_ms:.0f}", f"{max_p95:.0f}")
-
-        for host_id, total in parsed.token_usage_total.items():
-            # A cumulative counter's max is always its current value — showing it would be
-            # redundant, not informative, unlike the fluctuating metrics tracked below.
-            table.add_row(f"tokens[{host_id}]", str(total), "—")
-            rate = rates.get(host_id)
-            rate_key = f"tokens/s[{host_id}]"
-            if rate is None:
-                table.add_row(rate_key, "-", "-")
-            else:
-                max_rate = self._track_max(rate_key, rate)
-                table.add_row(rate_key, f"{rate:.1f}/s", f"{max_rate:.1f}/s")
-
-    def _track_max(self, key: str, value: float) -> float:
-        updated = max(self._metric_max.get(key, value), value)
-        self._metric_max[key] = updated
-        return updated
-
     async def _render_load_sparklines(self, nodes: dict[str, object]) -> None:
         ratios: dict[str, float] = {}
-        ext_loads: dict[str, float] = {}
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
             max_concurrent = cast(int, host["max_concurrent_requests"]) or 1
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
-            ext_loads[host_id] = _external_load_value(host.get("external_load"))
 
         self._load_history = update_load_history(self._load_history, ratios)
-        self._ext_load_history = update_load_history(self._ext_load_history, ext_loads)
 
         container = self.query_one("#load-sparklines", Vertical)
         for stale_host_id in [hid for hid in self._node_group_ids if hid not in ratios]:
             stale_group_id = self._node_group_ids.pop(stale_host_id)
             self._sparkline_ids.pop(stale_host_id, None)
-            self._ext_load_sparkline_ids.pop(stale_host_id, None)
             await self.query_one(f"#{stale_group_id}").remove()
 
-        used_ids = (
-            set(self._node_group_ids.values())
-            | set(self._sparkline_ids.values())
-            | set(self._ext_load_sparkline_ids.values())
-        )
+        used_ids = set(self._node_group_ids.values()) | set(self._sparkline_ids.values())
         for host_id in ratios:
             if host_id not in self._node_group_ids:
-                own_id = _sparkline_widget_id(host_id, "load", used_ids)
-                ext_id = _sparkline_widget_id(host_id, "extload", used_ids)
+                load_id = _sparkline_widget_id(host_id, "load", used_ids)
                 group_id = _sparkline_widget_id(host_id, "group", used_ids)
-                self._sparkline_ids[host_id] = own_id
-                self._ext_load_sparkline_ids[host_id] = ext_id
+                self._sparkline_ids[host_id] = load_id
                 self._node_group_ids[host_id] = group_id
                 await container.mount(
                     Vertical(
                         Label(host_id),
-                        Horizontal(
-                            Label("own", classes="spark-label"),
-                            Sparkline(id=own_id, min_color="green", max_color="green"),
-                            classes="spark-row",
-                        ),
-                        Horizontal(
-                            Label("ext", classes="spark-label"),
-                            Sparkline(id=ext_id, min_color="orange", max_color="orange"),
-                            classes="spark-row",
-                        ),
+                        Sparkline(id=load_id, min_color="green", max_color="green"),
                         id=group_id,
                         classes="node-load-group",
                     )
@@ -827,9 +684,6 @@ class DashboardApp(App[None]):
             self.query_one(f"#{self._sparkline_ids[host_id]}", Sparkline).data = self._load_history[
                 host_id
             ]
-            self.query_one(
-                f"#{self._ext_load_sparkline_ids[host_id]}", Sparkline
-            ).data = self._ext_load_history[host_id]
 
 
 def run(argv: list[str] | None = None) -> None:
