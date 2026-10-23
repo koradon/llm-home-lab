@@ -98,12 +98,17 @@ def create_default_app() -> FastAPI:
     )
     base_url = os.environ.get("LMSTUDIO_BASE_URL")
     if base_url is not None:
+        position = next(
+            (host.capabilities.position for host in registry.hosts() if host.host_id == base_url),
+            None,
+        )
         registry.register(
             base_url,
             HostCapabilities(
                 backend_type="lmstudio",
                 context_window=int(os.environ.get("LMSTUDIO_CONTEXT_WINDOW", "131072")),
                 base_url=base_url,
+                position=position,
             ),
             HostCapacity(
                 max_concurrent_requests=int(os.environ.get("LMSTUDIO_MAX_CONCURRENT_REQUESTS", "1"))

@@ -1,7 +1,11 @@
+from datetime import UTC, datetime
+
 import pytest
+from fastapi.testclient import TestClient
 
 from llm_home_lab.main import BACKEND_FACTORIES, _load_alert_evaluator, create_default_app
-from llm_home_lab.registry.models import HostCapabilities
+from llm_home_lab.registry.models import HostCapabilities, HostCapacity
+from llm_home_lab.registry.registry import HostRegistry
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +34,39 @@ def test_default_app_respects_lmstudio_env_overrides(monkeypatch):
     hosts = app.state.registry.hosts()
     assert [host.host_id for host in hosts] == ["http://gpu-box.home:1234"]
     assert hosts[0].capabilities.backend_type == "lmstudio"
+
+
+@pytest.mark.parametrize("position", [0, 3, None])
+def test_default_app_preserves_saved_node_order_on_startup(monkeypatch, tmp_path, position):
+    base_url = "http://gpu-box.home:1234"
+    monkeypatch.setenv("LMSTUDIO_BASE_URL", base_url)
+    monkeypatch.setenv("LMSTUDIO_CONTEXT_WINDOW", "16384")
+    monkeypatch.setenv("ORCHESTRATOR_AUTH_ENABLED", "false")
+    registry = HostRegistry(str(tmp_path / "host_registry.db"))
+    for host_id, saved_position in [(base_url, position), ("other", 4)]:
+        registry.register(
+            host_id,
+            HostCapabilities(
+                backend_type="lmstudio",
+                context_window=8192,
+                base_url=host_id,
+                position=saved_position,
+            ),
+            HostCapacity(max_concurrent_requests=1),
+            at=datetime.now(UTC),
+        )
+
+    for _ in range(2):
+        app = create_default_app()
+        host = app.state.registry.get(base_url)
+        assert host.capabilities.position == position
+        assert host.capabilities.context_window == 16384
+        persisted = HostRegistry(str(tmp_path / "host_registry.db"))
+        assert persisted.get(base_url).capabilities.position == position
+        response = TestClient(app).get("/v1/nodes")
+        assert response.status_code == 200
+        expected_order = [base_url, "other"] if position is not None else ["other", base_url]
+        assert [node["host_id"] for node in response.json()["nodes"]] == expected_order
 
 
 def test_default_app_uses_a_120_second_dispatch_wait_timeout_by_default(monkeypatch):
