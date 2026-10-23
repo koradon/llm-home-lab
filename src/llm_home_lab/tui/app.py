@@ -21,12 +21,12 @@ from textual.widgets import (
     Input,
     Label,
     Select,
-    Sparkline,
     Static,
 )
 
 from llm_home_lab.diagnostics.metrics_parser import ParsedMetrics, parse_metrics_text
 from llm_home_lab.tui.client import DiagnosticsClientError, OrchestratorDiagnosticsClient
+from llm_home_lab.tui.load_chart import LoadChart
 from llm_home_lab.tui.load_history import update_load_history
 from llm_home_lab.tui.rates import compute_token_rates
 
@@ -465,7 +465,7 @@ class DashboardApp(App[None]):
     #nodes-toolbar Button {
         margin-right: 1;
     }
-    Sparkline {
+    LoadChart {
         height: 3;
         margin: 0 1;
     }
@@ -801,12 +801,12 @@ class DashboardApp(App[None]):
                 await container.mount(
                     Vertical(
                         Label(host_id),
-                        Sparkline(id=load_id, min_color="green", max_color="green"),
+                        LoadChart(id=load_id),
                         id=group_id,
                         classes="node-load-group",
                     )
                 )
-            self.query_one(f"#{self._sparkline_ids[host_id]}", Sparkline).data = self._load_history[
+            self.query_one(f"#{self._sparkline_ids[host_id]}", LoadChart).data = self._load_history[
                 host_id
             ]
 

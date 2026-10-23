@@ -1162,3 +1162,36 @@ async def test_nodes_without_a_position_field_still_render_in_server_order():
         await pilot.pause()
 
         assert _table_host_ids(app) == ["host-a", "host-b"]
+
+
+def _chart_lines(app, host_id):
+    chart = app.query_one(f"#load-{host_id}", Sparkline)
+    return [chart.render_line(y).text for y in range(chart.size.height)]
+
+
+async def test_a_saturated_node_load_chart_is_full_height_not_a_flat_line():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=8, max_concurrent_requests=8)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await app.poll()
+        await app.poll()
+        await pilot.pause()
+
+        lines = _chart_lines(app, "host-a")
+        assert len(lines) == 3
+        assert all(set(line) == {"█"} for line in lines)
+
+
+async def test_an_idle_node_load_chart_is_empty():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, max_concurrent_requests=5)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await app.poll()
+        await pilot.pause()
+
+        lines = _chart_lines(app, "host-a")
+        assert all(line.strip() == "" for line in lines)
