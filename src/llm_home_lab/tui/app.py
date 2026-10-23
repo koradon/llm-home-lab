@@ -88,15 +88,35 @@ def _sparkline_widget_id(host_id: str, prefix: str, used_ids: set[str]) -> str:
 _NODE_STATUS_STYLES = {"online": "bold green", "offline": "bold red", "unknown": "bold yellow"}
 
 
+def _styled_load_counter(status: object, in_flight: object, max_concurrent: object) -> Text:
+    # Dim when the node is not reachable, bold yellow while busy, plain when idle.
+    if status != "online":
+        style = "dim"
+    else:
+        style = "bold yellow" if in_flight else ""
+    return Text(f"{in_flight}/{max_concurrent}", style=style)
+
+
 def _styled_node_status(status: object, in_flight: object, max_concurrent: object) -> Text:
     style = _NODE_STATUS_STYLES.get(str(status), "")
-    # The counter is dim when the node is not reachable, bold yellow while busy, plain when idle.
-    if status != "online":
-        counter_style = "dim"
-    else:
-        counter_style = "bold yellow" if in_flight else ""
     return Text.assemble(
-        (str(status), style), " ", (f"{in_flight}/{max_concurrent}", counter_style)
+        (str(status), style), " ", _styled_load_counter(status, in_flight, max_concurrent)
+    )
+
+
+def _load_label(host: dict[str, object]) -> Text:
+    in_flight = host["in_flight"]
+    max_concurrent = host["max_concurrent_requests"]
+    if isinstance(in_flight, int) and isinstance(max_concurrent, int) and max_concurrent > 0:
+        percent = f"{round(in_flight / max_concurrent * 100)}%"
+    else:
+        percent = "n/a"
+    return Text.assemble(
+        str(host["host_id"]),
+        " · ",
+        _styled_load_counter(host["status"], in_flight, max_concurrent),
+        " · ",
+        percent,
     )
 
 
@@ -493,6 +513,7 @@ class DashboardApp(App[None]):
         self._clock = clock or (lambda: datetime.now(UTC))
         self._load_history: dict[str, list[float]] = {}
         self._sparkline_ids: dict[str, str] = {}
+        self._label_ids: dict[str, str] = {}
         self._node_group_ids: dict[str, str] = {}
         self._poll_in_progress = False
         self._node_row_order: list[str] = []
@@ -785,8 +806,10 @@ class DashboardApp(App[None]):
 
     async def _render_load_sparklines(self, nodes: dict[str, object]) -> None:
         ratios: dict[str, float] = {}
+        hosts: dict[str, dict[str, object]] = {}
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
+            hosts[host_id] = host
             max_concurrent = cast(int, host["max_concurrent_requests"]) or 1
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
 
@@ -796,23 +819,33 @@ class DashboardApp(App[None]):
         for stale_host_id in [hid for hid in self._node_group_ids if hid not in ratios]:
             stale_group_id = self._node_group_ids.pop(stale_host_id)
             self._sparkline_ids.pop(stale_host_id, None)
+            self._label_ids.pop(stale_host_id, None)
             await self.query_one(f"#{stale_group_id}").remove()
 
-        used_ids = set(self._node_group_ids.values()) | set(self._sparkline_ids.values())
+        used_ids = (
+            set(self._node_group_ids.values())
+            | set(self._sparkline_ids.values())
+            | set(self._label_ids.values())
+        )
         for host_id in ratios:
             if host_id not in self._node_group_ids:
                 load_id = _sparkline_widget_id(host_id, "load", used_ids)
                 group_id = _sparkline_widget_id(host_id, "group", used_ids)
+                label_id = _sparkline_widget_id(host_id, "label", used_ids)
+                self._label_ids[host_id] = label_id
                 self._sparkline_ids[host_id] = load_id
                 self._node_group_ids[host_id] = group_id
                 await container.mount(
                     Vertical(
-                        Label(host_id),
+                        Label(_load_label(hosts[host_id]), id=label_id),
                         Sparkline(id=load_id, min_color="green", max_color="green"),
                         id=group_id,
                         classes="node-load-group",
                     )
                 )
+            self.query_one(f"#{self._label_ids[host_id]}", Label).update(
+                _load_label(hosts[host_id])
+            )
             self.query_one(f"#{self._sparkline_ids[host_id]}", Sparkline).data = self._load_history[
                 host_id
             ]

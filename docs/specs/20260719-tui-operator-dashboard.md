@@ -47,7 +47,8 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     `model_sizes_gb` and `model_aliases`, each edited as repeating name/value input rows, not
     free text. Display order is managed separately (see **Node order** below).
   - **Node Load** — one green sparkline per node, charting
-    `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
+    `in_flight / max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
+    (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours. Full utilization is the desired lab state.
     There is no own/external split or external-load column in Nodes.
   - The `status` cell carries the load counter after the styled status word, e.g. `online 8/8` or
     `offline 0/5` (`in_flight`/`max_concurrent_requests`). The counter is bold yellow while the node

@@ -1,9 +1,9 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from textual.widgets import Button, DataTable, Input, Select, Sparkline, Static
+from textual.widgets import Button, DataTable, Input, Label, Select, Sparkline, Static
 
-from llm_home_lab.tui.app import DashboardApp, NodeFormScreen, RemoveNodeConfirmScreen
+from llm_home_lab.tui.app import DashboardApp, NodeFormScreen, RemoveNodeConfirmScreen, _load_label
 from llm_home_lab.tui.client import DiagnosticsClientError
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -1014,7 +1014,10 @@ def _table_host_ids(app):
 
 
 def _sparkline_labels(app):
-    return [str(label.render()) for label in app.query("#load-sparklines .node-load-group Label")]
+    return [
+        str(label.render()).split(" · ")[0]
+        for label in app.query("#load-sparklines .node-load-group Label")
+    ]
 
 
 def _three_nodes():
@@ -1233,3 +1236,50 @@ async def test_nodes_without_a_position_field_still_render_in_server_order():
         await pilot.pause()
 
         assert _table_host_ids(app) == ["host-a", "host-b"]
+
+
+async def test_the_load_label_shows_host_counter_and_rounded_percent():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("host-a", in_flight=1, max_concurrent_requests=3),
+                _node("host-b", in_flight=8, max_concurrent_requests=8),
+                _node("host-c", in_flight=0, max_concurrent_requests=0),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        labels = [
+            str(app.query_one(f"#label-{h}", Label).render())
+            for h in ("host-a", "host-b", "host-c")
+        ]
+        assert labels == ["host-a · 1/3 · 33%", "host-b · 8/8 · 100%", "host-c · 0/0 · n/a"]
+
+
+async def test_the_load_label_follows_the_next_poll():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+        client._nodes = {"nodes": [_node("host-a", in_flight=2)]}
+
+        await app.poll()
+
+        assert str(app.query_one("#label-host-a", Label).render()) == "host-a · 2/4 · 50%"
+
+
+def test_the_load_label_counter_uses_the_status_cell_colours():
+    def counter_style(host):
+        label = _load_label(host)
+        counter = f"{host['in_flight']}/{host['max_concurrent_requests']}"
+        return {label.plain[s.start : s.end]: str(s.style) for s in label.spans}.get(counter, "")
+
+    assert counter_style(_node("busy", in_flight=2)) == "bold yellow"
+    assert counter_style(_node("idle", in_flight=0)) == ""
+    assert counter_style(_node("off", in_flight=0, status="offline")) == "dim"
+    assert counter_style(_node("unk", in_flight=2, status="unknown")) == "dim"

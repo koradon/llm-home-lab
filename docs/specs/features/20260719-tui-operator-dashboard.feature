@@ -31,6 +31,11 @@ Feature: TUI operator dashboard
     And the offline and unknown counters are dim
     And each status word keeps its own colour
 
+  Scenario: The load chart label shows the counter and percent
+    Given "host-a" has 1 in-flight request and capacity 3, and "host-c" has capacity 0
+    When the dashboard refreshes
+    Then the labels read "host-a · 1/3 · 33%" and "host-c · 0/0 · n/a"
+
   Scenario: Node Load has one series per node
     Given a node has 8 in-flight requests and capacity 8
     When the dashboard refreshes
