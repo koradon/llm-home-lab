@@ -1195,3 +1195,40 @@ async def test_an_idle_node_load_chart_is_empty():
 
         lines = _chart_lines(app, "host-a")
         assert all(line.strip() == "" for line in lines)
+
+
+async def test_nodes_with_the_same_load_history_render_identical_charts():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("host-a", in_flight=8, max_concurrent_requests=8),
+                _node("host-b", in_flight=4, max_concurrent_requests=4),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        for _ in range(3):
+            await app.poll()
+        await pilot.pause()
+
+        assert _chart_lines(app, "host-a") == _chart_lines(app, "host-b")
+
+
+async def test_a_small_dip_from_full_load_stays_visually_small():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=8, max_concurrent_requests=8)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        for _ in range(3):
+            await app.poll()
+        client._nodes = {"nodes": [_node("host-a", in_flight=7, max_concurrent_requests=8)]}
+        await app.poll()
+        await pilot.pause()
+
+        lines = _chart_lines(app, "host-a")
+        dipped = [line[-1] for line in lines]
+        assert dipped[1:] == ["█", "█"]
+        assert dipped[0] in "▄▅▆▇"
+        assert {line[0] for line in lines} == {"█"}
