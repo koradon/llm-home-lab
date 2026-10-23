@@ -1,7 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from textual.widgets import Button, DataTable, Input, Select, Sparkline, Static
 
 from llm_home_lab.tui.app import DashboardApp, NodeFormScreen, RemoveNodeConfirmScreen
@@ -51,9 +50,7 @@ async def test_successful_poll_shows_only_nodes_and_one_load_series_per_node():
         assert table.row_count == 1
         assert len(app.query(DataTable)) == 1
         assert not app.query("#alerts-table, #queue-tokens-table")
-        labels = [str(column.label) for column in table.ordered_columns]
-        assert "slots" in labels
-        assert "ext_load" not in labels
+        assert "ext_load" not in [str(column.label) for column in table.ordered_columns]
         assert len(app.query(Sparkline)) == 1
         assert list(app.query_one(Sparkline).data) == [1.0]
         panel = app.query_one("#load-sparklines")
@@ -103,7 +100,6 @@ def _node(
     max_concurrent_requests=4,
     status="online",
     recent_failures=None,
-    external_load=None,
 ):
     node = {
         "host_id": host_id,
@@ -115,8 +111,6 @@ def _node(
     }
     if recent_failures is not None:
         node["health"] = {"recent_failures": recent_failures}
-    if external_load is not None:
-        node["external_load"] = external_load
     return node
 
 
@@ -208,6 +202,40 @@ async def test_overlapping_polls_do_not_crash_the_app():
         assert len(app.query(Sparkline)) == 3
 
 
+def _status_span_style(cell):
+    # The styled status word is the first span; the counter after it stays plain text.
+    return str(cell.spans[0].style) if cell.spans else ""
+
+
+async def test_the_status_cell_shows_load_counter_next_to_the_status():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("host-a", in_flight=8, max_concurrent_requests=8),
+                _node("host-b", in_flight=0, max_concurrent_requests=5, status="offline"),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        labels = [str(column.label) for column in table.ordered_columns]
+        cells = [
+            str(
+                table.get_cell(
+                    table.coordinate_to_cell_key((row, 0))[0], table.ordered_columns[1].key
+                )
+            )
+            for row in range(2)
+        ]
+        assert cells == ["online 8/8", "offline 0/5"]
+        assert "in_flight/max" not in labels
+        assert "slots" not in labels
+
+
 async def test_an_offline_node_status_is_styled_red_and_stays_listed():
     client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, status="offline")]})
     app = DashboardApp(client=client, interval_s=100.0)
@@ -220,7 +248,8 @@ async def test_an_offline_node_status_is_styled_red_and_stays_listed():
         column_key = table.ordered_columns[1].key
         status_cell = table.get_cell(row_key, column_key)
         assert table.row_count == 1
-        assert "red" in status_cell.style
+        assert str(status_cell) == "offline 0/4"
+        assert "red" in _status_span_style(status_cell)
 
 
 async def test_an_unknown_node_status_is_styled_distinctly_from_online():
@@ -234,7 +263,7 @@ async def test_an_unknown_node_status_is_styled_distinctly_from_online():
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         column_key = table.ordered_columns[1].key
         status_cell = table.get_cell(row_key, column_key)
-        assert "yellow" in status_cell.style
+        assert "yellow" in _status_span_style(status_cell)
 
 
 async def test_an_online_node_status_has_no_alarming_style():
@@ -248,8 +277,8 @@ async def test_an_online_node_status_has_no_alarming_style():
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         column_key = table.ordered_columns[1].key
         status_cell = table.get_cell(row_key, column_key)
-        assert "red" not in status_cell.style
-        assert "yellow" not in status_cell.style
+        assert "red" not in _status_span_style(status_cell)
+        assert "yellow" not in _status_span_style(status_cell)
 
 
 async def test_a_node_with_recent_failures_shows_a_red_highlighted_count():
@@ -306,11 +335,11 @@ async def test_a_node_with_no_recorded_completions_shows_zero_reqs_and_unavailab
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[9].key)) == "0"
+        assert str(table.get_cell(row_key, columns[7].key)) == "0"
+        assert str(table.get_cell(row_key, columns[8].key)) == "—"
+        assert str(table.get_cell(row_key, columns[9].key)) == "—"
         assert str(table.get_cell(row_key, columns[10].key)) == "—"
         assert str(table.get_cell(row_key, columns[11].key)) == "—"
-        assert str(table.get_cell(row_key, columns[12].key)) == "—"
-        assert str(table.get_cell(row_key, columns[13].key)) == "—"
 
 
 async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
@@ -335,10 +364,10 @@ async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[9].key)) == "12"
-        assert str(table.get_cell(row_key, columns[11].key)) == "245"
-        assert str(table.get_cell(row_key, columns[12].key)) == "200 (50–400)"
-        assert str(table.get_cell(row_key, columns[13].key)) == "20 (5–40)"
+        assert str(table.get_cell(row_key, columns[7].key)) == "12"
+        assert str(table.get_cell(row_key, columns[9].key)) == "245"
+        assert str(table.get_cell(row_key, columns[10].key)) == "200 (50–400)"
+        assert str(table.get_cell(row_key, columns[11].key)) == "20 (5–40)"
 
 
 async def test_reqs_per_min_is_computed_between_two_polls():
@@ -356,7 +385,7 @@ async def test_reqs_per_min_is_computed_between_two_polls():
 
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[10].key
+        column_key = table.ordered_columns[8].key
         assert str(table.get_cell(row_key, column_key)) == "60.0/min"
 
 
@@ -383,8 +412,8 @@ async def test_throughput_columns_show_tasks_per_hour_and_per_slot():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[4].key)) == "24.0"
-        assert str(table.get_cell(row_key, columns[5].key)) == "3.0"
+        assert str(table.get_cell(row_key, columns[3].key)) == "24.0"
+        assert str(table.get_cell(row_key, columns[4].key)) == "3.0"
 
 
 async def test_throughput_per_slot_shows_na_when_the_slot_count_is_unknown():
@@ -410,8 +439,8 @@ async def test_throughput_per_slot_shows_na_when_the_slot_count_is_unknown():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[4].key)) == "0.0"
-        assert str(table.get_cell(row_key, columns[5].key)) == "n/a"
+        assert str(table.get_cell(row_key, columns[3].key)) == "0.0"
+        assert str(table.get_cell(row_key, columns[4].key)) == "n/a"
 
 
 async def test_throughput_columns_show_na_when_the_payload_has_no_throughput():
@@ -424,8 +453,8 @@ async def test_throughput_columns_show_na_when_the_payload_has_no_throughput():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
+        assert str(table.get_cell(row_key, columns[3].key)) == "n/a"
         assert str(table.get_cell(row_key, columns[4].key)) == "n/a"
-        assert str(table.get_cell(row_key, columns[5].key)) == "n/a"
 
 
 def _full_node(host_id, **overrides):
@@ -1168,148 +1197,3 @@ async def test_nodes_without_a_position_field_still_render_in_server_order():
         await pilot.pause()
 
         assert _table_host_ids(app) == ["host-a", "host-b"]
-
-
-def _slots_cell(table, row=0):
-    column_index = [str(column.label) for column in table.ordered_columns].index("slots")
-    row_key, _ = table.coordinate_to_cell_key((row, 0))
-    return table.get_cell(row_key, table.ordered_columns[column_index].key)
-
-
-async def test_a_node_with_unavailable_external_load_is_styled_dim():
-    client = _FakeClient(
-        nodes={"nodes": [_node("host-a", in_flight=0, external_load={"available": False})]}
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        cell = _slots_cell(app.query_one("#nodes-table", DataTable))
-        assert str(cell) == "unavailable"
-        assert "dim" in cell.style
-
-
-async def test_a_node_with_idle_external_load_has_no_alarming_style():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "idle", "queued": 0},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        cell = _slots_cell(app.query_one("#nodes-table", DataTable))
-        assert str(cell) == "idle"
-        assert "yellow" not in cell.style
-
-
-async def test_a_node_with_busy_external_load_is_styled_yellow_with_queued_count():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "processingPrompt", "queued": 2},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        cell = _slots_cell(app.query_one("#nodes-table", DataTable))
-        assert str(cell) == "processingPrompt (2 queued)"
-        assert "yellow" in cell.style
-
-
-async def test_a_llamaserver_node_shows_busy_over_total_slots_instead_of_a_queued_count():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={
-                        "available": True,
-                        "status": "busy",
-                        "queued": 7,
-                        "busy_slots": 7,
-                        "total_slots": 8,
-                    },
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        cell = _slots_cell(app.query_one("#nodes-table", DataTable))
-        assert str(cell) == "busy (7/8 slots)"
-        assert "yellow" in cell.style
-
-
-@pytest.mark.parametrize("total_slots", [0, 8])
-async def test_an_idle_llamaserver_node_shows_busy_over_total_slots(total_slots):
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={
-                        "available": True,
-                        "status": "idle",
-                        "queued": 0,
-                        "busy_slots": 0,
-                        "total_slots": total_slots,
-                    },
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        cell = _slots_cell(app.query_one("#nodes-table", DataTable))
-        assert str(cell) == f"idle (0/{total_slots} slots)"
-        assert not cell.style
-
-
-async def test_the_slots_cell_stays_with_its_node_when_rows_are_reordered():
-    busy = {"available": True, "status": "busy", "busy_slots": 3, "total_slots": 8}
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node("host-a", in_flight=0, external_load={"available": False}),
-                _node("host-b", in_flight=0, external_load=busy),
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-        await app.action_cycle_sort()
-        await app.action_toggle_sort_direction()
-
-        table = app.query_one("#nodes-table", DataTable)
-        assert [str(_slots_cell(table, row)) for row in range(2)] == [
-            "busy (3/8 slots)",
-            "unavailable",
-        ]

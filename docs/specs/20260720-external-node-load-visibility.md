@@ -59,8 +59,7 @@ request-serving path if the `lms` binary is missing, times out, or the target ho
   [ADR-0006](../adr/0006-background-health-poller.md)). `GET /v1/nodes` performs no probe I/O.
   Before a host has a recorded result it reports `available=false` with null status/queue;
   subsequent reads retain the last result until a sweep updates it, even after probe-cache expiry.
-- Dashboard presentation is owned by
-  [tui-operator-dashboard](20260719-tui-operator-dashboard.md#behavior).
+- Dashboard presentation is owned by [tui-operator-dashboard](20260719-tui-operator-dashboard.md).
 
 ## Behavior
 

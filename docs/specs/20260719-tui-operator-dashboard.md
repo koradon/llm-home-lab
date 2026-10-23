@@ -41,16 +41,17 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   hand-rolled already (see the monitoring spec).
 - `app.py` — a Textual `App` with a fixed-interval polling loop (default 2s, `--interval`) driving
   two panels:
-  - **Nodes** — `host_id`, `backend_type`, `in_flight`/`max_concurrent_requests`, `last_seen`, a
-    `slots` column (the node's own `external_load`: status plus busy/total slots, or queued count), one
-    row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
+  - **Nodes** — `host_id`, `backend_type`, `status`, `last_seen`, one row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
     buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
     row currently selected via cursor, or deregister it after a confirm dialog. The form includes
     `model_sizes_gb` and `model_aliases`, each edited as repeating name/value input rows, not
     free text. Display order is managed separately (see **Node order** below).
   - **Node Load** — one green sparkline per node, charting
     `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
-    There is no own/external split.
+    There is no own/external split or external-load column in Nodes.
+  - The `status` cell carries the load counter as plain text after the styled status, e.g.
+    `online 8/8` or `offline 0/5` (`in_flight`/`max_concurrent_requests`); there is no separate
+    in-flight/capacity column. Sorting by `status` orders by the status word.
   - Alerts and Queue & Tokens are removed entirely, with no replacement panel or folded-in
     queue/token summary. The existing Nodes completion metrics remain.
 - CLI flags / env vars: `--base-url`/`ORCHESTRATOR_BASE_URL` (default `http://localhost:8080`),
@@ -64,16 +65,6 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   change to `ApiKeyStore`/`ClientConfig` needed, this is purely a new client entry.
 
 ## Behavior
-
-**Slots display.** The Nodes table renders each host's `external_load` in its `slots` column.
-Unavailable or missing probe data renders dim `unavailable`. When `total_slots` is known,
-render `<status> (busy_slots/total_slots slots)`, including `idle (0/8 slots)` and
-`idle (0/0 slots)`. Otherwise, append `(N queued)` only for a nonzero queue count;
-an idle LM Studio host with no queue renders `idle`. Missing status defaults to `idle`,
-and missing busy/queued counts default to zero. Idle cells have no warning styling;
-other available statuses are bold yellow. Slot counts describe processing slots, not queue depth.
-The slot-display acceptance scenarios are in
-[the throughput feature](features/20260810-per-host-task-throughput.feature).
 
 **Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
 it is the operator's manual order: an optional integer `position` on the node record (stored with

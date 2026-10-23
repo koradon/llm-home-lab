@@ -88,9 +88,9 @@ def _sparkline_widget_id(host_id: str, prefix: str, used_ids: set[str]) -> str:
 _NODE_STATUS_STYLES = {"online": "bold green", "offline": "bold red", "unknown": "bold yellow"}
 
 
-def _styled_node_status(status: object) -> Text:
+def _styled_node_status(status: object, in_flight: object, max_concurrent: object) -> Text:
     style = _NODE_STATUS_STYLES.get(str(status), "")
-    return Text(str(status), style=style)
+    return Text.assemble((str(status), style), f" {in_flight}/{max_concurrent}")
 
 
 def _styled_failure_count(recent_failures: object) -> Text:
@@ -98,25 +98,6 @@ def _styled_failure_count(recent_failures: object) -> Text:
     if count == 0:
         return Text("0", style="dim")
     return Text(str(count), style="bold red")
-
-
-def _styled_external_load(external_load: object) -> Text:
-    load = external_load if isinstance(external_load, dict) else {}
-    if not load.get("available"):
-        return Text("unavailable", style="dim")
-
-    status = str(load.get("status") or "idle")
-    total_slots = load.get("total_slots")
-    if isinstance(total_slots, int):
-        # A slot-pool backend (llama-server): `queued` there is just the busy-slot count, not a
-        # backlog, so show what is actually happening instead.
-        busy_slots = load.get("busy_slots") or 0
-        label = f"{status} ({busy_slots}/{total_slots} slots)"
-        return Text(label, style="" if status == "idle" else "bold yellow")
-
-    queued = load.get("queued") or 0
-    label = status if not queued else f"{status} ({queued} queued)"
-    return Text(label, style="" if status == "idle" else "bold yellow")
 
 
 def _format_tasks_per_hour(throughput: object, key: str) -> str:
@@ -530,11 +511,9 @@ class DashboardApp(App[None]):
             "host_id",
             "status",
             "errors",
-            "slots",
             "tasks/h",
             "tasks/h/slot",
             "backend_type",
-            "in_flight/max",
             "last_seen",
             "reqs",
             "reqs/min",
@@ -617,13 +596,13 @@ class DashboardApp(App[None]):
             rate_per_s = completions_rate_per_s.get(host_id)
             table.add_row(
                 host_id,
-                _styled_node_status(host["status"]),
+                _styled_node_status(
+                    host["status"], host["in_flight"], host["max_concurrent_requests"]
+                ),
                 _styled_failure_count(health.get("recent_failures")),
-                _styled_external_load(host.get("external_load")),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour"),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour_per_slot"),
                 host["backend_type"],
-                f"{host['in_flight']}/{host['max_concurrent_requests']}",
                 host["last_seen"],
                 str(parsed.host_completions_total.get(host_id, 0)),
                 "—" if rate_per_s is None else f"{rate_per_s * 60:.1f}/min",

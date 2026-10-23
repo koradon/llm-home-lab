@@ -188,7 +188,7 @@ free something up manually).
 `in_flight` on `GET /v1/nodes` only counts requests the orchestrator itself dispatched — it can't
 see load on a node caused by something else hitting LM Studio directly (another tool, a manual
 `curl`, LM Studio's own UI playground). If you install LM Studio's `lms` CLI on the machine
-running the orchestrator, `GET /v1/nodes` and the TUI's `slots` column additionally report each
+running the orchestrator, `GET /v1/nodes` additionally reports each
 node's *actual* queue/status straight from LM Studio, regardless of who caused it:
 
 ```bash
@@ -200,10 +200,9 @@ This is entirely optional — everything else works without it, and a missing or
 [docs/adr/0005-lms-cli-for-external-node-load-visibility.md](docs/adr/0005-lms-cli-for-external-node-load-visibility.md)
 for why `lms` is required (LM Studio's REST API doesn't expose load/queue data itself).
 
-`llamaserver` nodes get the same `external_load` visibility with no extra install: llama-server
-exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly.
-For the Nodes table's `slots` display, see the
-[dashboard specification](docs/specs/20260719-tui-operator-dashboard.md#behavior).
+`llamaserver` nodes get the same `external_load` API visibility with no extra install: llama-server
+exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly. The
+API reports `busy_slots` and `total_slots`; `queued` is a busy-slot count, not a queue depth.
 
 The Nodes table also shows `tasks/h` (completed tasks per hour over a rolling window, 1 hour by
 default) and `tasks/h/slot` (that rate divided by the host's slot count, `n/a` when the slot
