@@ -56,10 +56,11 @@ request-serving path if the `lms` binary is missing, times out, or the target ho
   `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` (default `2`), wired into `ExternalLoadProbe`.
 - `GET /v1/nodes` gains an `external_load` field per host:
   `{"available": bool, "status": str | null, "queued": int | null}`, sourced from
-  `ExternalLoadProbe.probe(...)`, called from the same place `/health/ready`'s per-host loop
-  already lives (see [multi-node-registry-and-scheduler](20260717-multi-node-registry-and-scheduler.md)),
-  not from `GET /v1/nodes` itself (which stays a fast, no-I/O read of already-known state, matching
-  its current behavior for `status`/`_node_status`).
+  the last completed per-host `ExternalLoadProbe.probe(...)` result recorded by the shared
+  health sweep (background poller or on-demand `/health/ready`; see
+  [ADR-0006](../adr/0006-background-health-poller.md)). `GET /v1/nodes` performs no probe I/O.
+  Before a host has a recorded result it reports `available=false` with null status/queue;
+  subsequent reads retain the last result until a sweep updates it, even after probe-cache expiry.
 - TUI (`src/llm_home_lab/tui/app.py`) Nodes panel gains a column for this — rendered similarly to
   the existing node `status` column (colored), e.g. `unavailable` in a muted style, `idle` neutral,
   anything else (busy) highlighted, with `queued` shown alongside when `> 0`.

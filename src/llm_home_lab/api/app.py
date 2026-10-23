@@ -19,7 +19,7 @@ from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.completion_log import CompletionLog
 from llm_home_lab.observability.metrics import MetricsRegistry
-from llm_home_lab.registry.external_load import ExternalLoadProbe, LoadProbe
+from llm_home_lab.registry.external_load import ExternalLoadProbe, ExternalLoadStatus, LoadProbe
 from llm_home_lab.registry.models import (
     HostCapabilities,
     HostCapacity,
@@ -129,6 +129,8 @@ def create_app(
         for stale_id in set(backends_by_id) - live_ids:
             del backends_by_id[stale_id]
             del backend_capabilities_by_id[stale_id]
+        for stale_id in set(external_loads) - live_ids:
+            del external_loads[stale_id]
 
     def _fits_in_budget(host: HostInfo, model: str, loaded: list[str]) -> bool:
         budget = host.capabilities.memory_budget_gb
@@ -203,11 +205,18 @@ def create_app(
             )
         return candidates
 
+    # Last external-load result per host, written only by _probe_all_hosts. /v1/nodes serves
+    # this instead of probing inline so a slow host (`lms ps --host` can take its full timeout)
+    # never delays the dashboard's request; a host not probed yet reports "unavailable".
+    external_loads: dict[str, ExternalLoadStatus] = {}
+
     async def _probe_one_host(host: HostInfo) -> dict[str, object]:
         backend = _backend_for(host.host_id, host.capabilities)
         health = await backend.check_health()
         health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
-        await external_load_probe.probe(host.host_id, host.capabilities.base_url, datetime.now(UTC))
+        external_loads[host.host_id] = await external_load_probe.probe(
+            host.host_id, host.capabilities.base_url, datetime.now(UTC)
+        )
         return {"id": host.host_id, "healthy": health.healthy, "detail": health.detail}
 
     async def _probe_all_hosts() -> list[dict[str, object]]:
@@ -223,7 +232,12 @@ def create_app(
         of paying it once.
         """
         _prune_backend_cache()
-        return list(await asyncio.gather(*(_probe_one_host(host) for host in registry.hosts())))
+        reports = list(await asyncio.gather(*(_probe_one_host(host) for host in registry.hosts())))
+        alert_now = datetime.now(UTC)
+        alert_evaluator.evaluate(
+            metrics_registry.snapshot(alert_now, registry, scheduling_queue), alert_now
+        )
+        return reports
 
     async def _health_poll_loop(interval: float) -> None:
         while True:
@@ -417,12 +431,7 @@ def create_app(
     async def list_nodes() -> dict[str, list[dict[str, object]]]:
         at = datetime.now(UTC)
         hosts = registry.hosts()
-        external_loads = await asyncio.gather(
-            *(
-                external_load_probe.probe(host.host_id, host.capabilities.base_url, at)
-                for host in hosts
-            )
-        )
+        unprobed = ExternalLoadStatus(available=False, status=None, queued=None, checked_at=at)
         return {
             "nodes": [
                 {
@@ -454,7 +463,8 @@ def create_app(
                         ),
                     },
                 }
-                for host, load in zip(hosts, external_loads, strict=True)
+                for host in hosts
+                for load in [external_loads.get(host.host_id, unprobed)]
             ]
         }
 
@@ -498,10 +508,6 @@ def create_app(
     async def health_ready() -> JSONResponse:
         reports = await _probe_all_hosts()
         all_healthy = all(report["healthy"] for report in reports)
-        alert_now = datetime.now(UTC)
-        alert_evaluator.evaluate(
-            metrics_registry.snapshot(alert_now, registry, scheduling_queue), alert_now
-        )
         return JSONResponse(
             status_code=200 if all_healthy else 503,
             content={

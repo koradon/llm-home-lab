@@ -353,6 +353,11 @@ scope to add.
 Load panel charts two sparklines per node: green for the orchestrator's own `in_flight` ratio,
 orange for external load (busy/queued, from `lms`) when it's installed — see above.
 
+Refreshes read recorded state without triggering host probes. Keep the orchestrator's
+[background health poller](docs/adr/0006-background-health-poller.md) enabled for fresh health
+and external-load readings; the dashboard no longer drives readiness checks. For refresh errors
+and timeouts, see the [TUI behavior reference](docs/specs/20260719-tui-operator-dashboard.md#behavior).
+
 ## Demo workload script
 
 `scripts/demo_workload.py` generates a burst of concurrent chat completion requests against the

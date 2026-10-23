@@ -1,3 +1,5 @@
+import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
@@ -414,6 +416,7 @@ def test_a_registered_host_reports_external_load_from_the_probe():
     probe = ExternalLoadProbe(create_subprocess=create_subprocess)
     client = TestClient(_app(external_load_probe=probe), headers=AUTH_HEADERS)
     client.post("/v1/nodes/register", json=_register_payload())
+    client.get("/health/ready")
 
     nodes = client.get("/v1/nodes").json()["nodes"]
 
@@ -424,6 +427,27 @@ def test_a_registered_host_reports_external_load_from_the_probe():
         "total_slots": None,
         "busy_slots": None,
     }
+
+
+def test_list_nodes_stays_fast_when_the_external_load_probe_is_slow():
+    class SlowProbe:
+        calls = 0
+
+        async def probe(self, host_id, base_url, at):
+            self.calls += 1
+            await asyncio.sleep(30)
+
+    probe = SlowProbe()
+    client = TestClient(_app(external_load_probe=probe), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload())
+
+    started = time.monotonic()
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2
+    assert probe.calls == 0
+    assert nodes[0]["external_load"]["available"] is False
 
 
 def test_a_host_with_no_working_lms_binary_reports_external_load_unavailable():
@@ -529,6 +553,7 @@ def test_a_llamaserver_host_reports_busy_and_total_slots_in_external_load():
     client = TestClient(_app(external_load_probe=_llamaserver_probe(slots)), headers=AUTH_HEADERS)
     client.post("/v1/nodes/register", json=_register_payload())
 
+    client.get("/health/ready")
     nodes = client.get("/v1/nodes").json()["nodes"]
 
     assert nodes[0]["external_load"] == {
@@ -564,6 +589,7 @@ def test_throughput_per_slot_is_reported_for_a_host_with_a_known_slot_count():
     client = TestClient(app, headers=AUTH_HEADERS)
     client.post("/v1/nodes/register", json=_register_payload())
 
+    client.get("/health/ready")
     nodes = client.get("/v1/nodes").json()["nodes"]
 
     assert nodes[0]["throughput"]["tasks_per_hour"] == 8.0

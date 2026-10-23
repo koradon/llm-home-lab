@@ -45,9 +45,10 @@ _DEFAULT_BASE_URLS = {
 _BANNER_MESSAGES = {
     "unauthorized": "not authorized — check API key",
     "connection": "cannot reach orchestrator, retrying",
+    "timeout": "orchestrator slow to respond, retrying",
     "server_error": "orchestrator error, retrying",
 }
-_ERROR_KIND_PRIORITY = ("unauthorized", "connection", "server_error")
+_ERROR_KIND_PRIORITY = ("unauthorized", "connection", "timeout", "server_error")
 
 
 def _format_avg_metric(avg: float | None) -> str:
@@ -150,7 +151,6 @@ class DiagnosticsClient(Protocol):
     async def list_nodes(self) -> dict[str, object]: ...
     async def list_alerts(self) -> dict[str, object]: ...
     async def fetch_metrics_text(self) -> str: ...
-    async def trigger_health_check(self) -> None: ...
     async def register_node(self, fields: dict[str, object]) -> None: ...
     async def update_node(self, host_id: str, fields: dict[str, object]) -> None: ...
     async def deregister_node(self, host_id: str) -> None: ...
@@ -584,16 +584,13 @@ class DashboardApp(App[None]):
             return
         self._poll_in_progress = True
         try:
-            # /v1/nodes only reports a status other than "unknown" for hosts that have a
-            # recorded probe, and nothing records one except a call to /health/ready — the
-            # dashboard triggers it itself here so status reflects reality instead of staying
-            # "unknown" forever. Its outcome is deliberately excluded from `errors` below: a
-            # transport failure here shouldn't blank out nodes/alerts/tokens that loaded fine.
-            nodes, alerts, metrics_text, _health_check = await asyncio.gather(
+            # Host status comes from the orchestrator's background health poller
+            # (ORCHESTRATOR_HEALTH_POLL_INTERVAL_S); with it disabled, hosts stay "unknown"
+            # until something else calls /health/ready.
+            nodes, alerts, metrics_text = await asyncio.gather(
                 self._client.list_nodes(),
                 self._client.list_alerts(),
                 self._client.fetch_metrics_text(),
-                self._client.trigger_health_check(),
                 return_exceptions=True,
             )
             errors = [

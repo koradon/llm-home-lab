@@ -58,19 +58,12 @@ Out of scope for this plan:
    - `create_app` gains a required `external_load_probe: ExternalLoadProbe` parameter (matching
      this codebase's established pattern of required collaborators — see `metrics_registry`,
      `alert_evaluator`).
-   - `/health/ready`'s existing per-host loop additionally calls
-     `await external_load_probe.probe(host.host_id, host.capabilities.base_url, now)` per host,
-     storing results the same request-scoped way `_node_status` already reads live state (no new
-     module-level dict in `app.py` — `ExternalLoadProbe` owns its own cache internally, `app.py`
-     just calls `probe` and reads the return value fresh each time `GET /v1/nodes` needs it, same
-     as `_node_status` calling `health_monitor.is_healthy` fresh).
-   - `GET /v1/nodes` calls `external_load_probe.probe(...)` per host (cheap: cache hit in the
-     common case) and adds `"external_load": {"available": ..., "status": ..., "queued": ...}` to
-     each entry.
-3. **`main.py`** — `ORCHESTRATOR_LMS_BINARY_PATH` (default `"lms"`) and
-   `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` (default `15`) read into
-   `ExternalLoadProbe(lms_binary=..., cache_ttl=timedelta(seconds=...))` at
-   `create_default_app()`.
+   - Wire probe recording and node reads according to the
+     [external-load spec](../specs/20260720-external-node-load-visibility.md#requirements);
+     it owns the sweep/cache behavior and the no-I/O node-read contract.
+3. **`main.py`** — wire the external-load configuration described in the
+   [spec requirements](../specs/20260720-external-node-load-visibility.md#requirements)
+   into `ExternalLoadProbe` at `create_default_app()`.
 4. **TUI** (`src/llm_home_lab/tui/app.py`):
    - `nodes_table.add_columns(..., "ext_load")`.
    - `_render_nodes` reads `host["external_load"]` from the (already-extended) `/v1/nodes`

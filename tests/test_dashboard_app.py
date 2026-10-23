@@ -43,10 +43,6 @@ class _FakeClient:
             raise self._error
         return self._metrics_text
 
-    async def trigger_health_check(self):
-        if self._error:
-            raise self._error
-
 
 async def test_successful_poll_populates_all_three_panels():
     client = _FakeClient(

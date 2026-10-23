@@ -52,17 +52,14 @@ Out of scope for this plan:
 3. **`tui` package** (`src/llm_home_lab/tui/`):
    - `client.py` — `OrchestratorDiagnosticsClient(base_url, api_key)` with async `list_nodes()`,
      `list_alerts()`, `fetch_metrics_text()`, each a single `httpx.AsyncClient` GET with the Bearer
-     header; raises a small `DiagnosticsClientError(kind: Literal["connection", "unauthorized",
-     "server_error"])` on failure so `app.py` can pick the right banner without inspecting
-     `httpx` exceptions directly.
+     header; raises `DiagnosticsClientError` using the error classification in the
+     [TUI spec](../specs/20260719-tui-operator-dashboard.md#behavior).
    - `app.py` — `DashboardApp(textual.app.App)`:
      - `__init__(client, interval_s, parse_metrics_text)`.
      - `on_mount` starts a `set_interval(interval_s, self.poll)` timer.
      - `poll()` calls all three client methods concurrently (`asyncio.gather`, `return_exceptions
        =True`), updates the three `DataTable`s on success, and on a `DiagnosticsClientError` shows
-       a `Banner`/status widget: `kind="unauthorized"` → "not authorized — check API key";
-       `kind="connection"` → "cannot reach orchestrator, retrying"; `kind="server_error"` → "
-       orchestrator error, retrying". The banner clears on the next successful poll.
+       a status banner per the TUI spec above. The banner clears on the next successful poll.
      - Queue & Tokens table renders `queue_depth`/each `token_usage_total` entry as "unavailable"
        when `ParsedMetrics` fields are `None`/missing, per the spec.
      - `run(argv=None)` module-level function: argparse for `--base-url`, `--api-key`,
@@ -106,8 +103,8 @@ transport) → `app.py` (Textual test harness) → packaging/docs last.
   across the two modules today).
 - **Concurrent `asyncio.gather` polling** means one slow/hanging endpoint could delay the whole
   poll tick — mitigated by a per-request `httpx` timeout (reuse this repo's existing backend
-  adapter timeout convention) so a hang surfaces as a `connection`-kind error within a bounded
-  time rather than blocking indefinitely.
+  adapter timeout convention) so a hang surfaces within a bounded time using the error
+  classification in the TUI spec.
 
 ## Open Questions
 

@@ -62,10 +62,21 @@ def _orchestrator_app():
     )
 
 
-async def test_dashboard_poll_triggers_a_health_probe_so_status_leaves_unknown():
-    transport = httpx.ASGITransport(app=_orchestrator_app())
+async def test_dashboard_poll_shows_status_recorded_by_the_background_poller_without_probing():
+    orchestrator = _orchestrator_app()
+    paths: list[str] = []
+
+    async def record_paths(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return await httpx.ASGITransport(app=orchestrator).handle_async_request(request)
+
+    # Stands in for the background poller having completed one tick.
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=orchestrator)) as probe:
+        await probe.get("http://test/health/ready", headers={"Authorization": "Bearer test-key"})
     client = OrchestratorDiagnosticsClient(
-        base_url="http://test", api_key="test-key", transport=transport
+        base_url="http://test",
+        api_key="test-key",
+        transport=httpx.MockTransport(record_paths),
     )
     app = DashboardApp(client=client, interval_s=100.0)
 
@@ -75,5 +86,5 @@ async def test_dashboard_poll_triggers_a_health_probe_so_status_leaves_unknown()
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         column_key = table.ordered_columns[1].key
-        status_cell = table.get_cell(row_key, column_key)
-        assert str(status_cell) == "online"
+        assert str(table.get_cell(row_key, column_key)) == "online"
+        assert "/health/ready" not in paths
