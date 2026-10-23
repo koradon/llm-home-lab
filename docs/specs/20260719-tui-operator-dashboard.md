@@ -47,7 +47,7 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     row currently selected via cursor, or deregister it after a confirm dialog. The form includes
     `model_sizes_gb` and `model_aliases`, each edited as repeating name/value input rows, not
     free text. Display order is managed separately (see **Node order** below).
-  - **Node Load** — one green sparkline per node, charting
+  - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
     `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
     There is no own/external split or external-load column in Nodes.
   - Alerts and Queue & Tokens are removed entirely, with no replacement panel or folded-in
@@ -64,11 +64,15 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 
 ## Behavior
 
-**Node Load uses a fixed scale.** Every node's chart uses the same 0..1 vertical scale,
-without per-node autoscaling or a configuration setting. A steady 1.0 fills the chart's
-height; 0.0 is empty. Equal histories render identically at equal chart dimensions, and a
-dip from 1.0 to 0.875 remains a small drop rather than spanning the full chart height.
-When multiple samples share a terminal column, that column shows their maximum load.
+**Node Load uses a fixed scale.** Every node's chart uses the same 0..1 vertical scale
+(four rows of eighth-block characters, 32 height levels), without per-node autoscaling or a
+configuration setting. A steady 1.0 fills the chart's height; 0.0 is empty apart from a dim
+one-cell baseline, so an idle or offline node still shows a chart. Equal histories render
+identically, and a dip from 1.0 to 0.875 remains a small drop rather than spanning the full
+chart height. There is one column per poll sample; the newest samples fill the chart width.
+
+**Node Load colours.** Each bar is coloured as a whole by its own value: ratio >= 0.70 green,
+0.30 <= ratio < 0.70 orange, ratio < 0.30 red (256-colour palette, plain constants).
 
 **Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
 it is the operator's manual order: an optional integer `position` on the node record (stored with

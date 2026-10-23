@@ -5,6 +5,7 @@ from textual.widgets import Button, DataTable, Input, Select, Sparkline, Static
 
 from llm_home_lab.tui.app import DashboardApp, NodeFormScreen, RemoveNodeConfirmScreen
 from llm_home_lab.tui.client import DiagnosticsClientError
+from llm_home_lab.tui.load_chart import GREEN, ORANGE, RED
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -149,7 +150,7 @@ async def test_each_nodes_load_group_stays_compact_instead_of_stretching_to_fill
         await pilot.pause()
 
         group = app.query_one("#group-host-a")
-        assert group.size.height == 4
+        assert group.size.height == 5
 
 
 async def test_a_node_that_disappears_has_its_sparkline_removed():
@@ -1166,35 +1167,33 @@ async def test_nodes_without_a_position_field_still_render_in_server_order():
 
 def _chart_lines(app, host_id):
     chart = app.query_one(f"#load-{host_id}", Sparkline)
-    return [chart.render_line(y).text for y in range(chart.size.height)]
+    return [chart.render_line(y).text.rstrip() for y in range(chart.size.height)]
 
 
-async def test_a_saturated_node_load_chart_is_full_height_not_a_flat_line():
+async def _poll_n(app, pilot, count):
+    for _ in range(count):
+        await app.poll()
+    await pilot.pause()
+
+
+async def test_a_saturated_node_load_chart_is_four_full_rows_not_a_flat_line():
     client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=8, max_concurrent_requests=8)]})
     app = DashboardApp(client=client, interval_s=100.0)
 
     async with app.run_test(size=(120, 40)) as pilot:
-        await app.poll()
-        await app.poll()
-        await app.poll()
-        await pilot.pause()
+        await _poll_n(app, pilot, 3)
 
-        lines = _chart_lines(app, "host-a")
-        assert len(lines) == 3
-        assert all(set(line) == {"█"} for line in lines)
+        assert _chart_lines(app, "host-a") == ["███"] * 4
 
 
-async def test_an_idle_node_load_chart_is_empty():
+async def test_an_idle_node_load_chart_shows_only_a_baseline():
     client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, max_concurrent_requests=5)]})
     app = DashboardApp(client=client, interval_s=100.0)
 
     async with app.run_test(size=(120, 40)) as pilot:
-        await app.poll()
-        await app.poll()
-        await pilot.pause()
+        await _poll_n(app, pilot, 2)
 
-        lines = _chart_lines(app, "host-a")
-        assert all(line.strip() == "" for line in lines)
+        assert _chart_lines(app, "host-a") == ["", "", "", "▁▁"]
 
 
 async def test_nodes_with_the_same_load_history_render_identical_charts():
@@ -1209,9 +1208,7 @@ async def test_nodes_with_the_same_load_history_render_identical_charts():
     app = DashboardApp(client=client, interval_s=100.0)
 
     async with app.run_test(size=(120, 40)) as pilot:
-        for _ in range(3):
-            await app.poll()
-        await pilot.pause()
+        await _poll_n(app, pilot, 3)
 
         assert _chart_lines(app, "host-a") == _chart_lines(app, "host-b")
 
@@ -1221,14 +1218,27 @@ async def test_a_small_dip_from_full_load_stays_visually_small():
     app = DashboardApp(client=client, interval_s=100.0)
 
     async with app.run_test(size=(120, 40)) as pilot:
-        for _ in range(3):
-            await app.poll()
+        await _poll_n(app, pilot, 3)
         client._nodes = {"nodes": [_node("host-a", in_flight=7, max_concurrent_requests=8)]}
-        await app.poll()
-        await pilot.pause()
+        await _poll_n(app, pilot, 1)
 
         lines = _chart_lines(app, "host-a")
-        dipped = [line[-1] for line in lines]
-        assert dipped[1:] == ["█", "█"]
-        assert dipped[0] in "▄▅▆▇"
-        assert {line[0] for line in lines} == {"█"}
+        assert [line[-1] for line in lines] == ["▄", "█", "█", "█"]
+        assert {line[:3] for line in lines} == {"███"}
+
+
+async def test_the_exported_screenshot_shows_green_orange_and_red_bars():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=8, max_concurrent_requests=8)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        for in_flight in (8, 5, 1):
+            client._nodes = {
+                "nodes": [_node("host-a", in_flight=in_flight, max_concurrent_requests=8)]
+            }
+            await _poll_n(app, pilot, 1)
+
+        svg = app.export_screenshot()
+
+    for style in (GREEN, ORANGE, RED):
+        assert style.color.get_truecolor().hex in svg

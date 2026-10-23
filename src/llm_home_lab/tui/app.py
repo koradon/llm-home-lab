@@ -466,7 +466,7 @@ class DashboardApp(App[None]):
         margin-right: 1;
     }
     LoadChart {
-        height: 3;
+        height: 4;
         margin: 0 1;
     }
     .node-load-group {
