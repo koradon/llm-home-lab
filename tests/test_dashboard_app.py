@@ -207,6 +207,42 @@ def _status_span_style(cell):
     return str(cell.spans[0].style) if cell.spans else ""
 
 
+def _styled_parts(cell):
+    # (text, style) for the status word and the counter; "" means unstyled default colour.
+    word, counter = cell.plain.split(" ")
+    styles = {cell.plain[span.start : span.end]: str(span.style) for span in cell.spans}
+    return (word, styles.get(word, "")), (counter, styles.get(counter, ""))
+
+
+async def test_the_counter_colours_follow_load_and_availability():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("busy", in_flight=8, max_concurrent_requests=8),
+                _node("idle", in_flight=0, max_concurrent_requests=8),
+                _node("off", in_flight=0, max_concurrent_requests=5, status="offline"),
+                _node("unk", in_flight=2, max_concurrent_requests=4, status="unknown"),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        cells = [
+            table.get_cell(table.coordinate_to_cell_key((row, 0))[0], table.ordered_columns[1].key)
+            for row in range(4)
+        ]
+        assert [_styled_parts(cell) for cell in cells] == [
+            (("online", "bold green"), ("8/8", "bold yellow")),
+            (("online", "bold green"), ("0/8", "")),
+            (("offline", "bold red"), ("0/5", "dim")),
+            (("unknown", "bold yellow"), ("2/4", "dim")),
+        ]
+
+
 async def test_the_status_cell_shows_load_counter_next_to_the_status():
     client = _FakeClient(
         nodes={

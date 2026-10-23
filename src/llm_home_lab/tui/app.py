@@ -90,7 +90,14 @@ _NODE_STATUS_STYLES = {"online": "bold green", "offline": "bold red", "unknown":
 
 def _styled_node_status(status: object, in_flight: object, max_concurrent: object) -> Text:
     style = _NODE_STATUS_STYLES.get(str(status), "")
-    return Text.assemble((str(status), style), f" {in_flight}/{max_concurrent}")
+    # The counter is dim when the node is not reachable, bold yellow while busy, plain when idle.
+    if status != "online":
+        counter_style = "dim"
+    else:
+        counter_style = "bold yellow" if in_flight else ""
+    return Text.assemble(
+        (str(status), style), " ", (f"{in_flight}/{max_concurrent}", counter_style)
+    )
 
 
 def _styled_failure_count(recent_failures: object) -> Text:

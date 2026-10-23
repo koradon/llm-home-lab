@@ -49,9 +49,10 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   - **Node Load** — one green sparkline per node, charting
     `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
     There is no own/external split or external-load column in Nodes.
-  - The `status` cell carries the load counter as plain text after the styled status, e.g.
-    `online 8/8` or `offline 0/5` (`in_flight`/`max_concurrent_requests`); there is no separate
-    in-flight/capacity column. Sorting by `status` orders by the status word.
+  - The `status` cell carries the load counter after the styled status word, e.g. `online 8/8` or
+    `offline 0/5` (`in_flight`/`max_concurrent_requests`). The counter is bold yellow while the node
+    is busy (`in_flight` above 0), unstyled when idle, and dim when the node is offline or unknown;
+    there is no separate in-flight/capacity column. Sorting by `status` orders by the status word.
   - Alerts and Queue & Tokens are removed entirely, with no replacement panel or folded-in
     queue/token summary. The existing Nodes completion metrics remain.
 - CLI flags / env vars: `--base-url`/`ORCHESTRATOR_BASE_URL` (default `http://localhost:8080`),

@@ -23,6 +23,14 @@ Feature: TUI operator dashboard
     Then the status cells read "online 8/8" and "offline 0/5"
     And the Nodes table has no separate in-flight/capacity column
 
+  Scenario: The counter is coloured by load and availability
+    Given "host-a" is online and busy, "host-b" is online and idle
+    And "host-c" is offline and "host-d" is unknown
+    When the dashboard refreshes
+    Then the busy counter is bold yellow and the idle counter is unstyled
+    And the offline and unknown counters are dim
+    And each status word keeps its own colour
+
   Scenario: Node Load has one series per node
     Given a node has 8 in-flight requests and capacity 8
     When the dashboard refreshes
