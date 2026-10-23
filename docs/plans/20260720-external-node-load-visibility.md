@@ -16,8 +16,8 @@ draft
 ## Scope
 
 Build `ExternalLoadProbe` (`src/llm_home_lab/registry/external_load.py`), wire it into
-`/health/ready`'s existing per-host loop and `GET /v1/nodes`, add the two new env vars, and extend
-the TUI's Nodes panel with an external-load column.
+`/health/ready`'s existing per-host loop and `GET /v1/nodes`, and add the two new env vars.
+Dashboard presentation is owned by the [TUI spec](../specs/20260719-tui-operator-dashboard.md).
 
 Concrete decisions for this plan (resolving the spec's deferred items):
 
@@ -31,11 +31,6 @@ Concrete decisions for this plan (resolving the spec's deferred items):
   `ExternalLoadProbe`, keyed by `host_id` (not `base_url`, so a re-registered host with a changed
   address correctly invalidates on its next natural probe rather than serving a stale cached
   result for the old address — mirrors the `_backend_for` capability-change fix from #42).
-- **TUI column**: extend the existing Nodes `DataTable` (from
-  [tui-operator-dashboard](../specs/20260719-tui-operator-dashboard.md)) with one more column,
-  `ext_load`, reusing `_styled_node_status`-style coloring (`_styled_external_load`): `"unavailable"`
-  muted/dim, `"idle"` default, anything else styled like a busy indicator (e.g. bold yellow),
-  optionally suffixed with `(N queued)` when `queued > 0`.
 
 Out of scope for this plan:
 
@@ -64,10 +59,8 @@ Out of scope for this plan:
 3. **`main.py`** — wire the external-load configuration described in the
    [spec requirements](../specs/20260720-external-node-load-visibility.md#requirements)
    into `ExternalLoadProbe` at `create_default_app()`.
-4. **TUI** (`src/llm_home_lab/tui/app.py`):
-   - `nodes_table.add_columns(..., "ext_load")`.
-   - `_render_nodes` reads `host["external_load"]` from the (already-extended) `/v1/nodes`
-     response and renders `_styled_external_load(...)`.
+4. **TUI**: follow the current [TUI spec](../specs/20260719-tui-operator-dashboard.md);
+   external-load API work requires no dashboard display.
 5. **Tests**:
    - `test_external_load_probe.py` — inject a fake subprocess runner (matching this repo's
      transport-injection convention, e.g. a `run: Callable[..., Awaitable[...]]` constructor
@@ -80,21 +73,19 @@ Out of scope for this plan:
      a stale cached result keyed only by the old address's data).
    - `test_node_registry_endpoints.py` — `GET /v1/nodes` includes `external_load` per host, sourced
      from a fake `ExternalLoadProbe`.
-   - `test_dashboard_app.py` — Nodes panel renders the new column for available/unavailable/busy
-     cases.
-6. **Docs**: README gets a short note under the TUI/nodes sections: `lms` is optional, install via
+6. **Docs**: README gets a short note under the nodes section: `lms` is optional, install via
    `curl -fsSL https://lmstudio.ai/cli/install.sh | bash` if you want external-load visibility;
    everything else works without it. `Dockerfile` gets the same install step added (commented as
    optional if the base image build wants to skip it) per ADR-0005.
 7. **Verification** — `uv run pytest --cov=llm_home_lab`, `uv run ruff check .`, `uv run ruff
    format --check .`, `uv run mypy src`; then the `verify` skill against the real two-node setup
    (Mac + Windows) already in use this session: confirm `GET /v1/nodes` reports real
-   `external_load` for both, confirm the TUI renders it, and confirm pulling the Windows machine's
+   `external_load` for both, and confirm pulling the Windows machine's
    network cable / powering it off degrades only that host's `external_load` to unavailable
    without affecting the rest of `/v1/nodes` or `/health/ready`.
 
 Implemented test-first (`tdd` skill): `ExternalLoadProbe` fully (pure async logic, injected runner,
-no real subprocess in tests) → app wiring → TUI column → Dockerfile/README docs last.
+no real subprocess in tests) → app wiring → Dockerfile/README docs last.
 
 ## Risks
 

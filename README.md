@@ -200,9 +200,9 @@ This is entirely optional — everything else works without it, and a missing or
 [docs/adr/0005-lms-cli-for-external-node-load-visibility.md](docs/adr/0005-lms-cli-for-external-node-load-visibility.md)
 for why `lms` is required (LM Studio's REST API doesn't expose load/queue data itself).
 
-`llamaserver` nodes get the same `ext_load` visibility with no extra install: llama-server
+`llamaserver` nodes get the same `external_load` API visibility with no extra install: llama-server
 exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly. The
-column shows busy over total slots (e.g. `busy (7/8 slots)`), not a queue depth.
+API reports `busy_slots` and `total_slots`; `queued` is a busy-slot count, not a queue depth.
 
 The Nodes table also shows `tasks/h` (completed tasks per hour over a rolling window, 1 hour by
 default) and `tasks/h/slot` (that rate divided by the host's slot count, `n/a` when the slot

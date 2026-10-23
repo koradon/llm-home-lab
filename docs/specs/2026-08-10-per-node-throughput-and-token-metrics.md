@@ -60,8 +60,7 @@ through the existing Prometheus → `/metrics` → TUI pipeline used for every o
   `last_seen`: `reqs`, `reqs/min`, `avg_lat_ms`, `prompt_tok`, `compl_tok`.
   - `reqs` is `completions_total` for that host, rendered as-is.
   - `reqs/min` is a live rate, derived by diffing two poll snapshots of `completions_total` —
-    generalizing the existing `compute_token_rates` helper (already used for `tokens/s[host_id]`
-    in the Queue & Tokens panel) rather than duplicating its poll-diff logic.
+    using the shared `compute_token_rates` poll-diff helper.
   - `prompt_tok` and `compl_tok` are each rendered as a single cell in `avg (min–max)` format,
     e.g. `540 (48–2048)`, to avoid needing four additional columns.
 
