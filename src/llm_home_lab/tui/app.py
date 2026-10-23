@@ -100,6 +100,25 @@ def _styled_failure_count(recent_failures: object) -> Text:
     return Text(str(count), style="bold red")
 
 
+def _styled_external_load(external_load: object) -> Text:
+    load = external_load if isinstance(external_load, dict) else {}
+    if not load.get("available"):
+        return Text("unavailable", style="dim")
+
+    status = str(load.get("status") or "idle")
+    total_slots = load.get("total_slots")
+    if isinstance(total_slots, int) and total_slots > 0:
+        # A slot-pool backend (llama-server): `queued` there is just the busy-slot count, not a
+        # backlog, so show what is actually happening instead.
+        busy_slots = load.get("busy_slots") or 0
+        label = status if not busy_slots else f"{status} ({busy_slots}/{total_slots} slots)"
+        return Text(label, style="" if status == "idle" else "bold yellow")
+
+    queued = load.get("queued") or 0
+    label = status if not queued else f"{status} ({queued} queued)"
+    return Text(label, style="" if status == "idle" else "bold yellow")
+
+
 def _format_tasks_per_hour(throughput: object, key: str) -> str:
     value = throughput.get(key) if isinstance(throughput, dict) else None
     if not isinstance(value, int | float):
@@ -511,6 +530,7 @@ class DashboardApp(App[None]):
             "host_id",
             "status",
             "errors",
+            "slots",
             "tasks/h",
             "tasks/h/slot",
             "backend_type",
@@ -599,6 +619,7 @@ class DashboardApp(App[None]):
                 host_id,
                 _styled_node_status(host["status"]),
                 _styled_failure_count(health.get("recent_failures")),
+                _styled_external_load(host.get("external_load")),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour"),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour_per_slot"),
                 host["backend_type"],

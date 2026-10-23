@@ -41,7 +41,8 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   hand-rolled already (see the monitoring spec).
 - `app.py` — a Textual `App` with a fixed-interval polling loop (default 2s, `--interval`) driving
   two panels:
-  - **Nodes** — `host_id`, `backend_type`, `in_flight`/`max_concurrent_requests`, `last_seen`, one
+  - **Nodes** — `host_id`, `backend_type`, `in_flight`/`max_concurrent_requests`, `last_seen`, a
+    `slots` column (the node's own `external_load`: status plus busy/total slots, or queued count), one
     row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
     buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
     row currently selected via cursor, or deregister it after a confirm dialog. The form includes
@@ -49,7 +50,7 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     free text. Display order is managed separately (see **Node order** below).
   - **Node Load** — one green sparkline per node, charting
     `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
-    There is no own/external split or external-load column in Nodes.
+    There is no own/external split.
   - Alerts and Queue & Tokens are removed entirely, with no replacement panel or folded-in
     queue/token summary. The existing Nodes completion metrics remain.
 - CLI flags / env vars: `--base-url`/`ORCHESTRATOR_BASE_URL` (default `http://localhost:8080`),

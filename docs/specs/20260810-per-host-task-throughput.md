@@ -7,11 +7,12 @@ draft
 ## Summary
 
 Per-host `tasks/h` and `tasks/h/slot` metrics are exposed on `GET /v1/nodes` and in the TUI.
-Busy/total slot counts remain available through the API. Dashboard layout is owned by
-[tui-operator-dashboard](20260719-tui-operator-dashboard.md).
+The Nodes `slots` column renders busy over total slots, e.g. `busy (7/8 slots)`, for slot-pool
+backends. Dashboard layout is owned by [tui-operator-dashboard](20260719-tui-operator-dashboard.md).
 
 ## User stories
 
+- As the operator, I want to see how many slots are busy out of the total on each host.
 - As the operator, I want tasks per hour, and tasks per hour per slot, for each host, so I can
   judge how well each machine performs relative to its parallelism.
 
@@ -39,7 +40,7 @@ Busy/total slot counts remain available through the API. Dashboard layout is own
 - `tasks_per_hour_per_slot = tasks_per_hour / total_slots`, or `null` (rendered `n/a`) when
   `total_slots` is unknown (`None`) or zero.
 - `GET /v1/nodes` adds, per node, `throughput: {window_s, tasks_per_hour,
-  tasks_per_hour_per_slot}`. The TUI renders `tasks/h` and `tasks/h/slot` after `errors`, one
+  tasks_per_hour_per_slot}`. The TUI renders `tasks/h` and `tasks/h/slot` after `slots`, one
   decimal; a missing value renders `n/a`.
 
 ## Behavior

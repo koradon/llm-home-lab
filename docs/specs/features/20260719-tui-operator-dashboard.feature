@@ -14,7 +14,7 @@ Feature: TUI operator dashboard
     When the dashboard refreshes
     Then the Nodes and Node Load panels are displayed
     And no Alerts or Queue & Tokens panel or replacement summary is displayed
-    And the Nodes table has no external-load column
+    And the Nodes table keeps its slots column
 
   Scenario: Node Load has one series per node
     Given a node has 8 in-flight requests and capacity 8
