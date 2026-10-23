@@ -100,9 +100,8 @@ CLI subprocess, since llama-server exposes this natively:
   list) and `busy_slots` (slots with `is_processing: true`), surfaced as
   `external_load.total_slots` / `external_load.busy_slots` on `GET /v1/nodes`. `queued` is kept
   for backward compatibility with the same value as `busy_slots` — it is **not** a backlog.
-- The TUI `slots` column shows `<status> (busy_slots/total_slots slots)` whenever the total is
-  known, including `idle (0/8 slots)` when no slots are busy.
-  Dashboard presentation is owned by [tui-operator-dashboard](20260719-tui-operator-dashboard.md).
+- Dashboard presentation is owned by
+  [tui-operator-dashboard](20260719-tui-operator-dashboard.md#behavior).
 - A `404` (an operator disabled `/slots` via a flag), any other non-2xx response, an unreachable
   host, or unparseable output all report `available: false` — the same "informational,
   never an error" degrade contract as `ExternalLoadProbe`. Verified against llama.cpp's own

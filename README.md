@@ -201,9 +201,9 @@ This is entirely optional — everything else works without it, and a missing or
 for why `lms` is required (LM Studio's REST API doesn't expose load/queue data itself).
 
 `llamaserver` nodes get the same `external_load` visibility with no extra install: llama-server
-exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly. The
-The Nodes table's `slots` column shows busy over total slots (e.g. `busy (7/8 slots)`), not a queue
-depth.
+exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly.
+For the Nodes table's `slots` display, see the
+[dashboard specification](docs/specs/20260719-tui-operator-dashboard.md#behavior).
 
 The Nodes table also shows `tasks/h` (completed tasks per hour over a rolling window, 1 hour by
 default) and `tasks/h/slot` (that rate divided by the host's slot count, `n/a` when the slot

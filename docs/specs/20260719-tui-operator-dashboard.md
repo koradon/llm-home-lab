@@ -65,6 +65,16 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 
 ## Behavior
 
+**Slots display.** The Nodes table renders each host's `external_load` in its `slots` column.
+Unavailable or missing probe data renders dim `unavailable`. When `total_slots` is known,
+render `<status> (busy_slots/total_slots slots)`, including `idle (0/8 slots)` and
+`idle (0/0 slots)`. Otherwise, append `(N queued)` only for a nonzero queue count;
+an idle LM Studio host with no queue renders `idle`. Missing status defaults to `idle`,
+and missing busy/queued counts default to zero. Idle cells have no warning styling;
+other available statuses are bold yellow. Slot counts describe processing slots, not queue depth.
+The slot-display acceptance scenarios are in
+[the throughput feature](features/20260810-per-host-task-throughput.feature).
+
 **Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
 it is the operator's manual order: an optional integer `position` on the node record (stored with
 the node's capabilities, exposed by `GET /v1/nodes`, settable via `POST /v1/nodes/register` and
