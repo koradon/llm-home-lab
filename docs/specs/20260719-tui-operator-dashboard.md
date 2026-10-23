@@ -79,7 +79,7 @@ chart height. There is one column per poll sample; the newest samples fill the c
 0.30 <= ratio < 0.70 orange, ratio < 0.30 red (256-colour palette, plain constants). The
 percent in the label above the chart uses the same band as the latest bar.
 
-**Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
+**Node order.** The Nodes table and the Node Load charts share one displayed order. By default
 it is the operator's manual order: an optional integer `position` on the node record (stored with
 the node's capabilities, exposed by `GET /v1/nodes`, settable via `POST /v1/nodes/register` and
 `PATCH /v1/nodes/{host_id}`). `/v1/nodes` lists positioned nodes first by `position`, then

@@ -39,7 +39,7 @@ Feature: TUI operator dashboard
   Scenario: Node Load has one series per node
     Given a node has 8 in-flight requests and capacity 8
     When the dashboard refreshes
-    Then that node has one green load sparkline with a sample of 1.0
+    Then that node has one full-height green load chart with a sample of 1.0
     And no own/external split is displayed
 
   Scenario: A connection failure shows a banner and keeps polling
@@ -64,11 +64,11 @@ Feature: TUI operator dashboard
     Given the Nodes table lists host-b, host-c, host-a in the server's order
     When the operator presses "d" on host-b
     Then the TUI PATCHes each node's "position" through the existing node API
-    And the Nodes table and the Node Load sparklines both list host-c, host-b, host-a
+    And the Nodes table and the Node Load charts both list host-c, host-b, host-a
 
   Scenario: A column sort is a session-only view
     Given the Nodes table is in the manual order
     When the operator presses "s" and "r"
-    Then the Nodes table and the Node Load sparklines are sorted by the chosen column and direction
+    Then the Nodes table and the Node Load charts are sorted by the chosen column and direction
     And no node's "position" is changed
     And pressing "o" returns both to the manual order
