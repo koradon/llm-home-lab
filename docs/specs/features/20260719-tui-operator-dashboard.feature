@@ -39,3 +39,16 @@ Feature: TUI operator dashboard
     Then it only ever issues GET requests to /v1/nodes and /metrics
     And it only registers, edits, or deregisters a node in response to explicit operator action
       in the Nodes panel, never as part of the polling loop itself
+
+  Scenario: The operator reorders nodes and the order is persisted on the node record
+    Given the Nodes table lists host-b, host-c, host-a in the server's order
+    When the operator presses "d" on host-b
+    Then the TUI PATCHes each node's "position" through the existing node API
+    And the Nodes table and the Node Load sparklines both list host-c, host-b, host-a
+
+  Scenario: A column sort is a session-only view
+    Given the Nodes table is in the manual order
+    When the operator presses "s" and "r"
+    Then the Nodes table and the Node Load sparklines are sorted by the chosen column and direction
+    And no node's "position" is changed
+    And pressing "o" returns both to the manual order

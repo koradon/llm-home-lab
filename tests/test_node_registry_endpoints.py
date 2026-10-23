@@ -594,3 +594,62 @@ def test_throughput_per_slot_is_reported_for_a_host_with_a_known_slot_count():
 
     assert nodes[0]["throughput"]["tasks_per_hour"] == 8.0
     assert nodes[0]["throughput"]["tasks_per_hour_per_slot"] == 2.0
+
+
+def _node_ids(client):
+    return [n["host_id"] for n in client.get("/v1/nodes").json()["nodes"]]
+
+
+def test_nodes_without_a_position_list_in_registration_order_with_a_null_position():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    for host_id in ("host-b", "host-a", "host-c"):
+        client.post("/v1/nodes/register", json=_register_payload(host_id))
+
+    nodes = client.get("/v1/nodes").json()["nodes"]
+
+    assert [n["host_id"] for n in nodes] == ["host-b", "host-a", "host-c"]
+    assert [n["position"] for n in nodes] == [None, None, None]
+
+
+def test_patching_positions_reorders_the_node_list_and_survives_a_restart():
+    db_path = new_registry_db_path()
+    client = TestClient(_app(db_path=db_path), headers=AUTH_HEADERS)
+    for host_id in ("host-a", "host-b", "host-c"):
+        client.post("/v1/nodes/register", json=_register_payload(host_id))
+
+    for position, host_id in enumerate(("host-c", "host-a", "host-b")):
+        client.patch(f"/v1/nodes/{host_id}", json={"position": position})
+
+    assert _node_ids(client) == ["host-c", "host-a", "host-b"]
+    restarted = TestClient(_app(db_path=db_path), headers=AUTH_HEADERS)
+    assert _node_ids(restarted) == ["host-c", "host-a", "host-b"]
+
+
+def test_a_newly_registered_node_goes_after_positioned_nodes():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_register_payload("host-a"))
+    client.post("/v1/nodes/register", json=_register_payload("host-b"))
+    client.patch("/v1/nodes/host-b", json={"position": 0})
+    client.patch("/v1/nodes/host-a", json={"position": 1})
+
+    client.post("/v1/nodes/register", json=_register_payload("host-new"))
+
+    assert _node_ids(client) == ["host-b", "host-a", "host-new"]
+
+
+def test_a_stored_record_without_a_position_field_still_loads():
+    import json
+    import sqlite3
+
+    db_path = new_registry_db_path()
+    TestClient(_app(db_path=db_path), headers=AUTH_HEADERS).post(
+        "/v1/nodes/register", json=_register_payload()
+    )
+    with sqlite3.connect(db_path) as conn:
+        (raw,) = conn.execute("SELECT capabilities FROM hosts").fetchone()
+        legacy = {k: v for k, v in json.loads(raw).items() if k != "position"}
+        conn.execute("UPDATE hosts SET capabilities = ?", (json.dumps(legacy),))
+
+    restarted = TestClient(_app(db_path=db_path), headers=AUTH_HEADERS)
+
+    assert restarted.get("/v1/nodes").json()["nodes"][0]["position"] is None

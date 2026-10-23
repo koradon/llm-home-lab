@@ -44,10 +44,9 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   - **Nodes** — `host_id`, `backend_type`, `in_flight`/`max_concurrent_requests`, `last_seen`, one
     row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
     buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
-    row currently selected via cursor, or deregister it after a confirm dialog — every field
-    `NodeRegistrationRequest`/`NodeUpdateRequest` accepts (including `model_sizes_gb` and
-    `model_aliases`, each edited as repeating name/value input rows, not free text) is editable
-    here.
+    row currently selected via cursor, or deregister it after a confirm dialog. The form includes
+    `model_sizes_gb` and `model_aliases`, each edited as repeating name/value input rows, not
+    free text. Display order is managed separately (see **Node order** below).
   - **Node Load** — one green sparkline per node, charting
     `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
     There is no own/external split or external-load column in Nodes.
@@ -64,6 +63,16 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   change to `ApiKeyStore`/`ClientConfig` needed, this is purely a new client entry.
 
 ## Behavior
+
+**Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
+it is the operator's manual order: an optional integer `position` on the node record (stored with
+the node's capabilities, exposed by `GET /v1/nodes`, settable via `POST /v1/nodes/register` and
+`PATCH /v1/nodes/{host_id}`). `/v1/nodes` lists positioned nodes first by `position`, then
+unpositioned ones in registration order, so a new node lands last and records stored before the
+field existed keep working. `u`/`d` move the selected node up/down (the TUI PATCHes the new
+positions). `s` cycles a session-only sort column (node, status, reqs/min, avg latency, tokens;
+rows without a value sort last), `r` toggles direction, `o` clears the sort; the column sort is
+never persisted and moving is disabled while one is active.
 
 **Polling is fixed-interval, not event-driven.** No websocket/SSE surface is added to the
 orchestrator for this — matches home-lab scale and keeps the orchestrator's API contract unchanged.

@@ -25,7 +25,7 @@ from textual.widgets import (
     Static,
 )
 
-from llm_home_lab.diagnostics.metrics_parser import parse_metrics_text
+from llm_home_lab.diagnostics.metrics_parser import ParsedMetrics, parse_metrics_text
 from llm_home_lab.tui.client import DiagnosticsClientError, OrchestratorDiagnosticsClient
 from llm_home_lab.tui.load_history import update_load_history
 from llm_home_lab.tui.rates import compute_token_rates
@@ -105,6 +105,19 @@ def _format_tasks_per_hour(throughput: object, key: str) -> str:
     if not isinstance(value, int | float):
         return "n/a"
     return f"{value:.1f}"
+
+
+# Session-only sort columns, cycled with "s"; None in the cycle is the persisted manual order.
+_SORT_COLUMNS = ("node", "status", "reqs/min", "avg latency", "tokens")
+
+
+def _sort_missing_last(
+    items: list[tuple[str, object]], descending: bool
+) -> list[tuple[str, object]]:
+    present = [item for item in items if item[1] is not None]
+    missing = [item for item in items if item[1] is None]
+    present.sort(key=lambda item: cast("str | float", item[1]), reverse=descending)
+    return present + missing
 
 
 class DiagnosticsClient(Protocol):
@@ -429,6 +442,11 @@ class DashboardApp(App[None]):
         ("e", "edit_node", "Edit node"),
         ("n", "new_node", "New node"),
         ("x", "remove_node", "Remove node"),
+        ("s", "cycle_sort", "Sort column"),
+        ("r", "toggle_sort_direction", "Sort direction"),
+        ("o", "clear_sort", "Manual order"),
+        ("u", "move_node_up", "Move up"),
+        ("d", "move_node_down", "Move down"),
     ]
     CSS = """
     DataTable, #load-sparklines {
@@ -471,6 +489,8 @@ class DashboardApp(App[None]):
         self._node_group_ids: dict[str, str] = {}
         self._poll_in_progress = False
         self._node_row_order: list[str] = []
+        self._sort_column: str | None = None
+        self._sort_descending = False
         self._nodes_by_id: dict[str, dict[str, object]] = {}
         self._last_completions_total: dict[str, int] = {}
         self._last_completions_total_at: datetime | None = None
@@ -552,6 +572,11 @@ class DashboardApp(App[None]):
 
     def _render_nodes(self, nodes: dict[str, object], metrics_text: str, now: datetime) -> None:
         table = self.query_one("#nodes-table", DataTable)
+        selected_host_id = (
+            self._node_row_order[table.cursor_row]
+            if table.row_count and table.cursor_row < len(self._node_row_order)
+            else None
+        )
         table.clear()
         self._node_row_order = []
         self._nodes_by_id = {}
@@ -565,7 +590,8 @@ class DashboardApp(App[None]):
         self._last_completions_total = dict(parsed.host_completions_total)
         self._last_completions_total_at = now
 
-        for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
+        hosts = cast("list[dict[str, object]]", nodes.get("nodes", []))
+        for host in self._display_order(hosts, parsed, completions_rate_per_s):
             host_id = cast(str, host["host_id"])
             health = cast("dict[str, object]", host.get("health") or {})
             rate_per_s = completions_rate_per_s.get(host_id)
@@ -594,6 +620,105 @@ class DashboardApp(App[None]):
             )
             self._node_row_order.append(host_id)
             self._nodes_by_id[host_id] = host
+
+        if selected_host_id in self._node_row_order:
+            table.move_cursor(row=self._node_row_order.index(selected_host_id))
+        self._update_nodes_title()
+
+    def _display_order(
+        self,
+        hosts: list[dict[str, object]],
+        parsed: ParsedMetrics,
+        rates_per_s: dict[str, float | None],
+    ) -> list[dict[str, object]]:
+        # /v1/nodes already returns the persisted manual order; a column sort is a session-only
+        # view layered on top of it.
+        if self._sort_column is None:
+            return hosts
+
+        by_id = {cast(str, host["host_id"]): host for host in hosts}
+        column = self._sort_column
+        keyed: list[tuple[str, object]] = []
+        for host_id, host in by_id.items():
+            value: object
+            if column == "node":
+                value = host_id.lower()
+            elif column == "status":
+                value = str(host["status"])
+            elif column == "reqs/min":
+                value = rates_per_s.get(host_id)
+            elif column == "avg latency":
+                value = parsed.host_latency_ms_avg.get(host_id)
+            else:
+                prompt = parsed.host_prompt_tokens_avg.get(host_id)
+                completion = parsed.host_completion_tokens_avg.get(host_id)
+                value = (
+                    None
+                    if prompt is None and completion is None
+                    else (prompt or 0) + (completion or 0)
+                )
+            keyed.append((host_id, value))
+        return [by_id[host_id] for host_id, _ in _sort_missing_last(keyed, self._sort_descending)]
+
+    def _update_nodes_title(self) -> None:
+        title = "Nodes"
+        if self._sort_column is not None:
+            arrow = "↓" if self._sort_descending else "↑"
+            title = f"Nodes — sorted by {self._sort_column} {arrow}"
+        self.query_one("#nodes-table", DataTable).border_title = title
+
+    async def _rerender(self) -> None:
+        # Re-fetch rather than re-render cached data so rates and the sparklines stay consistent.
+        await self.poll()
+
+    async def action_cycle_sort(self) -> None:
+        if self._sort_column is None:
+            self._sort_column = _SORT_COLUMNS[0]
+        else:
+            index = _SORT_COLUMNS.index(self._sort_column) + 1
+            self._sort_column = _SORT_COLUMNS[index] if index < len(_SORT_COLUMNS) else None
+        await self._rerender()
+
+    async def action_toggle_sort_direction(self) -> None:
+        self._sort_descending = not self._sort_descending
+        await self._rerender()
+
+    async def action_clear_sort(self) -> None:
+        self._sort_column = None
+        self._sort_descending = False
+        await self._rerender()
+
+    async def action_move_node_up(self) -> None:
+        await self._move_selected_node(-1)
+
+    async def action_move_node_down(self) -> None:
+        await self._move_selected_node(1)
+
+    async def _move_selected_node(self, step: int) -> None:
+        table = self.query_one("#nodes-table", DataTable)
+        # Moving only means something in the manual order; a column sort is a throwaway view.
+        if self._sort_column is not None or table.row_count == 0:
+            return
+        index = table.cursor_row
+        target = index + step
+        if not 0 <= target < len(self._node_row_order):
+            return
+
+        order = list(self._node_row_order)
+        order[index], order[target] = order[target], order[index]
+        try:
+            # Write the whole order, not just the swapped pair, so unpositioned nodes get
+            # explicit positions and the persisted order matches what the operator sees.
+            for position, host_id in enumerate(order):
+                if self._nodes_by_id[host_id].get("position") != position:
+                    await self._client.update_node(host_id, {"position": position})
+        except DiagnosticsClientError as exc:
+            self._show_banner(_BANNER_MESSAGES.get(exc.kind, exc.kind))
+            return
+        # Seed the cursor so _render_nodes keeps it on the moved node.
+        self._node_row_order = order
+        table.move_cursor(row=target)
+        await self.poll()
 
     def action_edit_node(self) -> None:
         table = self.query_one("#nodes-table", DataTable)
@@ -684,6 +809,14 @@ class DashboardApp(App[None]):
             self.query_one(f"#{self._sparkline_ids[host_id]}", Sparkline).data = self._load_history[
                 host_id
             ]
+
+        # Keep the groups in the same order as the Nodes table rows.
+        displayed = [hid for hid in self._node_row_order if hid in self._node_group_ids]
+        mounted = [child.id for child in container.children]
+        wanted = [self._node_group_ids[hid] for hid in displayed]
+        if mounted != wanted:
+            for index, group_id in enumerate(wanted):
+                container.move_child(self.query_one(f"#{group_id}"), before=index)
 
 
 def run(argv: list[str] | None = None) -> None:
