@@ -350,7 +350,7 @@ scope to add.
 
 `--base-url`/`ORCHESTRATOR_BASE_URL` and `--api-key`/`ORCHESTRATOR_API_KEY` are interchangeable
 (flag or env var); `--interval` controls the poll frequency in seconds (default `2`). The Node
-Load panel charts one green sparkline per node: `in_flight / max_concurrent_requests`.
+Load panel charts each node's `in_flight / max_concurrent_requests` on one fixed 0..1 scale.
 Full utilization is the desired lab state. Alerts and Queue & Tokens panels are not displayed.
 
 Refreshes read recorded state without triggering host probes. Keep the orchestrator's

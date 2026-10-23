@@ -21,12 +21,12 @@ from textual.widgets import (
     Input,
     Label,
     Select,
-    Sparkline,
     Static,
 )
 
 from llm_home_lab.diagnostics.metrics_parser import ParsedMetrics, parse_metrics_text
 from llm_home_lab.tui.client import DiagnosticsClientError, OrchestratorDiagnosticsClient
+from llm_home_lab.tui.load_chart import LoadChart, bar_style
 from llm_home_lab.tui.load_history import update_load_history
 from llm_home_lab.tui.rates import compute_token_rates
 
@@ -88,9 +88,37 @@ def _sparkline_widget_id(host_id: str, prefix: str, used_ids: set[str]) -> str:
 _NODE_STATUS_STYLES = {"online": "bold green", "offline": "bold red", "unknown": "bold yellow"}
 
 
-def _styled_node_status(status: object) -> Text:
+def _styled_load_counter(status: object, in_flight: object, max_concurrent: object) -> Text:
+    # Dim when the node is not reachable, bold yellow while busy, plain when idle.
+    if status != "online":
+        style = "dim"
+    else:
+        style = "bold yellow" if in_flight else ""
+    return Text(f"{in_flight}/{max_concurrent}", style=style)
+
+
+def _styled_node_status(status: object, in_flight: object, max_concurrent: object) -> Text:
     style = _NODE_STATUS_STYLES.get(str(status), "")
-    return Text(str(status), style=style)
+    return Text.assemble(
+        (str(status), style), " ", _styled_load_counter(status, in_flight, max_concurrent)
+    )
+
+
+def _load_label(host: dict[str, object]) -> Text:
+    in_flight = host["in_flight"]
+    max_concurrent = host["max_concurrent_requests"]
+    if isinstance(in_flight, int) and isinstance(max_concurrent, int) and max_concurrent > 0:
+        ratio = in_flight / max_concurrent
+        percent = Text(f"{round(ratio * 100)}%", style=bar_style(ratio))
+    else:
+        percent = Text("n/a")
+    return Text.assemble(
+        str(host["host_id"]),
+        " · ",
+        _styled_load_counter(host["status"], in_flight, max_concurrent),
+        " · ",
+        percent,
+    )
 
 
 def _styled_failure_count(recent_failures: object) -> Text:
@@ -465,8 +493,8 @@ class DashboardApp(App[None]):
     #nodes-toolbar Button {
         margin-right: 1;
     }
-    Sparkline {
-        height: 3;
+    LoadChart {
+        height: 4;
         margin: 0 1;
     }
     .node-load-group {
@@ -486,6 +514,7 @@ class DashboardApp(App[None]):
         self._clock = clock or (lambda: datetime.now(UTC))
         self._load_history: dict[str, list[float]] = {}
         self._sparkline_ids: dict[str, str] = {}
+        self._label_ids: dict[str, str] = {}
         self._node_group_ids: dict[str, str] = {}
         self._poll_in_progress = False
         self._node_row_order: list[str] = []
@@ -514,7 +543,6 @@ class DashboardApp(App[None]):
             "tasks/h",
             "tasks/h/slot",
             "backend_type",
-            "in_flight/max",
             "last_seen",
             "reqs",
             "reqs/min",
@@ -597,12 +625,13 @@ class DashboardApp(App[None]):
             rate_per_s = completions_rate_per_s.get(host_id)
             table.add_row(
                 host_id,
-                _styled_node_status(host["status"]),
+                _styled_node_status(
+                    host["status"], host["in_flight"], host["max_concurrent_requests"]
+                ),
                 _styled_failure_count(health.get("recent_failures")),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour"),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour_per_slot"),
                 host["backend_type"],
-                f"{host['in_flight']}/{host['max_concurrent_requests']}",
                 host["last_seen"],
                 str(parsed.host_completions_total.get(host_id, 0)),
                 "—" if rate_per_s is None else f"{rate_per_s * 60:.1f}/min",
@@ -778,8 +807,10 @@ class DashboardApp(App[None]):
 
     async def _render_load_sparklines(self, nodes: dict[str, object]) -> None:
         ratios: dict[str, float] = {}
+        hosts: dict[str, dict[str, object]] = {}
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
+            hosts[host_id] = host
             max_concurrent = cast(int, host["max_concurrent_requests"]) or 1
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
 
@@ -789,24 +820,34 @@ class DashboardApp(App[None]):
         for stale_host_id in [hid for hid in self._node_group_ids if hid not in ratios]:
             stale_group_id = self._node_group_ids.pop(stale_host_id)
             self._sparkline_ids.pop(stale_host_id, None)
+            self._label_ids.pop(stale_host_id, None)
             await self.query_one(f"#{stale_group_id}").remove()
 
-        used_ids = set(self._node_group_ids.values()) | set(self._sparkline_ids.values())
+        used_ids = (
+            set(self._node_group_ids.values())
+            | set(self._sparkline_ids.values())
+            | set(self._label_ids.values())
+        )
         for host_id in ratios:
             if host_id not in self._node_group_ids:
                 load_id = _sparkline_widget_id(host_id, "load", used_ids)
                 group_id = _sparkline_widget_id(host_id, "group", used_ids)
+                label_id = _sparkline_widget_id(host_id, "label", used_ids)
+                self._label_ids[host_id] = label_id
                 self._sparkline_ids[host_id] = load_id
                 self._node_group_ids[host_id] = group_id
                 await container.mount(
                     Vertical(
-                        Label(host_id),
-                        Sparkline(id=load_id, min_color="green", max_color="green"),
+                        Label(_load_label(hosts[host_id]), id=label_id),
+                        LoadChart(id=load_id),
                         id=group_id,
                         classes="node-load-group",
                     )
                 )
-            self.query_one(f"#{self._sparkline_ids[host_id]}", Sparkline).data = self._load_history[
+            self.query_one(f"#{self._label_ids[host_id]}", Label).update(
+                _load_label(hosts[host_id])
+            )
+            self.query_one(f"#{self._sparkline_ids[host_id]}", LoadChart).data = self._load_history[
                 host_id
             ]
 
