@@ -44,10 +44,9 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   - **Nodes** — `host_id`, `backend_type`, `in_flight`/`max_concurrent_requests`, `last_seen`, one
     row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
     buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
-    row currently selected via cursor, or deregister it after a confirm dialog — every field
-    `NodeRegistrationRequest`/`NodeUpdateRequest` accepts (including `model_sizes_gb` and
-    `model_aliases`, each edited as repeating name/value input rows, not free text) is editable
-    here.
+    row currently selected via cursor, or deregister it after a confirm dialog. The form includes
+    `model_sizes_gb` and `model_aliases`, each edited as repeating name/value input rows, not
+    free text. Display order is managed separately (see **Node order** below).
   - **Node Load** — one green sparkline per node, charting
     `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
     There is no own/external split or external-load column in Nodes.

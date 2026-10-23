@@ -325,9 +325,9 @@ A terminal dashboard shows live node health, completion metrics, and node load â
 comparable to `docker stats`. It's a separate client that doesn't need to run on the same machine
 as the orchestrator. The Nodes panel is a full registration UI, not just a viewer: press `n` or
 click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
-place, or press `x` to deregister it (after a confirmation dialog). Every field
-`POST /v1/nodes/register`/`PATCH /v1/nodes/{host_id}` accept is editable in the form, including
-`model_aliases`/`model_sizes_gb` as repeatable model-name/value rows.
+place, or press `x` to deregister it (after a confirmation dialog). The form includes
+`model_aliases`/`model_sizes_gb` as repeatable model-name/value rows. For sorting and changing
+the saved node order, see the [node order controls](docs/specs/20260719-tui-operator-dashboard.md#behavior).
 
 ```bash
 uv sync
