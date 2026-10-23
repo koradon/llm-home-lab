@@ -7,7 +7,7 @@ Feature: TUI operator dashboard
   Scenario: Dashboard renders registered nodes
     Given the orchestrator has one or more registered hosts
     When the TUI polls GET /v1/nodes
-    Then the Nodes panel shows each host's id, backend type, in-flight/capacity, and last seen time
+    Then the Nodes panel shows each host's id, backend type, status with its in-flight/capacity counter, and last seen time
 
   Scenario: Dashboard keeps only Nodes and Node Load
     Given nodes are fully utilized and alert rules are firing
@@ -15,6 +15,26 @@ Feature: TUI operator dashboard
     Then the Nodes and Node Load panels are displayed
     And no Alerts or Queue & Tokens panel or replacement summary is displayed
     And the Nodes table has no external-load column
+
+  Scenario: The status cell shows the load counter
+    Given "host-a" is online with 8 in-flight requests and capacity 8
+    And "host-b" is offline with 0 in-flight requests and capacity 5
+    When the dashboard refreshes
+    Then the status cells read "online 8/8" and "offline 0/5"
+    And the Nodes table has no separate in-flight/capacity column
+
+  Scenario: The counter is coloured by load and availability
+    Given "host-a" is online and busy, "host-b" is online and idle
+    And "host-c" is offline and "host-d" is unknown
+    When the dashboard refreshes
+    Then the busy counter is bold yellow and the idle counter is unstyled
+    And the offline and unknown counters are dim
+    And each status word keeps its own colour
+
+  Scenario: The load chart label shows the counter and percent
+    Given "host-a" has 1 in-flight request and capacity 3, and "host-c" has capacity 0
+    When the dashboard refreshes
+    Then the labels read "host-a · 1/3 · 33%" and "host-c · 0/0 · n/a"
 
   Scenario: Node Load has one series per node
     Given a node has 8 in-flight requests and capacity 8

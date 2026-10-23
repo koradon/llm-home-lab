@@ -41,15 +41,19 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   hand-rolled already (see the monitoring spec).
 - `app.py` — a Textual `App` with a fixed-interval polling loop (default 2s, `--interval`) driving
   two panels:
-  - **Nodes** — `host_id`, `backend_type`, `in_flight`/`max_concurrent_requests`, `last_seen`, one
-    row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
+  - **Nodes** — `host_id`, `backend_type`, `status`, `last_seen`, one row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
     buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
     row currently selected via cursor, or deregister it after a confirm dialog. The form includes
     `model_sizes_gb` and `model_aliases`, each edited as repeating name/value input rows, not
     free text. Display order is managed separately (see **Node order** below).
   - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
-    `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
+    `in_flight / max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
+    (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours. Full utilization is the desired lab state.
     There is no own/external split or external-load column in Nodes.
+  - The `status` cell carries the load counter after the styled status word, e.g. `online 8/8` or
+    `offline 0/5` (`in_flight`/`max_concurrent_requests`). The counter is bold yellow while the node
+    is busy (`in_flight` above 0), unstyled when idle, and dim when the node is offline or unknown;
+    there is no separate in-flight/capacity column. Sorting by `status` orders by the status word.
   - Alerts and Queue & Tokens are removed entirely, with no replacement panel or folded-in
     queue/token summary. The existing Nodes completion metrics remain.
 - CLI flags / env vars: `--base-url`/`ORCHESTRATOR_BASE_URL` (default `http://localhost:8080`),
@@ -72,7 +76,8 @@ identically, and a dip from 1.0 to 0.875 remains a small drop rather than spanni
 chart height. There is one column per poll sample; the newest samples fill the chart width.
 
 **Node Load colours.** Each bar is coloured as a whole by its own value: ratio >= 0.70 green,
-0.30 <= ratio < 0.70 orange, ratio < 0.30 red (256-colour palette, plain constants).
+0.30 <= ratio < 0.70 orange, ratio < 0.30 red (256-colour palette, plain constants). The
+percent in the label above the chart uses the same band as the latest bar.
 
 **Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
 it is the operator's manual order: an optional integer `position` on the node record (stored with

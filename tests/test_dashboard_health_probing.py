@@ -86,5 +86,5 @@ async def test_dashboard_poll_shows_status_recorded_by_the_background_poller_wit
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         column_key = table.ordered_columns[1].key
-        assert str(table.get_cell(row_key, column_key)) == "online"
+        assert str(table.get_cell(row_key, column_key)).startswith("online")
         assert sorted(paths) == ["/metrics", "/v1/nodes"]

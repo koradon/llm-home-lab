@@ -1,9 +1,9 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from textual.widgets import Button, DataTable, Input, Select, Sparkline, Static
+from textual.widgets import Button, DataTable, Input, Label, Select, Sparkline, Static
 
-from llm_home_lab.tui.app import DashboardApp, NodeFormScreen, RemoveNodeConfirmScreen
+from llm_home_lab.tui.app import DashboardApp, NodeFormScreen, RemoveNodeConfirmScreen, _load_label
 from llm_home_lab.tui.client import DiagnosticsClientError
 from llm_home_lab.tui.load_chart import GREEN, ORANGE, RED
 
@@ -203,6 +203,76 @@ async def test_overlapping_polls_do_not_crash_the_app():
         assert len(app.query(Sparkline)) == 3
 
 
+def _status_span_style(cell):
+    # The styled status word is the first span; the counter after it stays plain text.
+    return str(cell.spans[0].style) if cell.spans else ""
+
+
+def _styled_parts(cell):
+    # (text, style) for the status word and the counter; "" means unstyled default colour.
+    word, counter = cell.plain.split(" ")
+    styles = {cell.plain[span.start : span.end]: str(span.style) for span in cell.spans}
+    return (word, styles.get(word, "")), (counter, styles.get(counter, ""))
+
+
+async def test_the_counter_colours_follow_load_and_availability():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("busy", in_flight=8, max_concurrent_requests=8),
+                _node("idle", in_flight=0, max_concurrent_requests=8),
+                _node("off", in_flight=0, max_concurrent_requests=5, status="offline"),
+                _node("unk", in_flight=2, max_concurrent_requests=4, status="unknown"),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        cells = [
+            table.get_cell(table.coordinate_to_cell_key((row, 0))[0], table.ordered_columns[1].key)
+            for row in range(4)
+        ]
+        assert [_styled_parts(cell) for cell in cells] == [
+            (("online", "bold green"), ("8/8", "bold yellow")),
+            (("online", "bold green"), ("0/8", "")),
+            (("offline", "bold red"), ("0/5", "dim")),
+            (("unknown", "bold yellow"), ("2/4", "dim")),
+        ]
+
+
+async def test_the_status_cell_shows_load_counter_next_to_the_status():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("host-a", in_flight=8, max_concurrent_requests=8),
+                _node("host-b", in_flight=0, max_concurrent_requests=5, status="offline"),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        table = app.query_one("#nodes-table", DataTable)
+        labels = [str(column.label) for column in table.ordered_columns]
+        cells = [
+            str(
+                table.get_cell(
+                    table.coordinate_to_cell_key((row, 0))[0], table.ordered_columns[1].key
+                )
+            )
+            for row in range(2)
+        ]
+        assert cells == ["online 8/8", "offline 0/5"]
+        assert "in_flight/max" not in labels
+        assert "slots" not in labels
+
+
 async def test_an_offline_node_status_is_styled_red_and_stays_listed():
     client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0, status="offline")]})
     app = DashboardApp(client=client, interval_s=100.0)
@@ -215,7 +285,8 @@ async def test_an_offline_node_status_is_styled_red_and_stays_listed():
         column_key = table.ordered_columns[1].key
         status_cell = table.get_cell(row_key, column_key)
         assert table.row_count == 1
-        assert "red" in status_cell.style
+        assert str(status_cell) == "offline 0/4"
+        assert "red" in _status_span_style(status_cell)
 
 
 async def test_an_unknown_node_status_is_styled_distinctly_from_online():
@@ -229,7 +300,7 @@ async def test_an_unknown_node_status_is_styled_distinctly_from_online():
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         column_key = table.ordered_columns[1].key
         status_cell = table.get_cell(row_key, column_key)
-        assert "yellow" in status_cell.style
+        assert "yellow" in _status_span_style(status_cell)
 
 
 async def test_an_online_node_status_has_no_alarming_style():
@@ -243,8 +314,8 @@ async def test_an_online_node_status_has_no_alarming_style():
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         column_key = table.ordered_columns[1].key
         status_cell = table.get_cell(row_key, column_key)
-        assert "red" not in status_cell.style
-        assert "yellow" not in status_cell.style
+        assert "red" not in _status_span_style(status_cell)
+        assert "yellow" not in _status_span_style(status_cell)
 
 
 async def test_a_node_with_recent_failures_shows_a_red_highlighted_count():
@@ -301,11 +372,11 @@ async def test_a_node_with_no_recorded_completions_shows_zero_reqs_and_unavailab
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[8].key)) == "0"
+        assert str(table.get_cell(row_key, columns[7].key)) == "0"
+        assert str(table.get_cell(row_key, columns[8].key)) == "—"
         assert str(table.get_cell(row_key, columns[9].key)) == "—"
         assert str(table.get_cell(row_key, columns[10].key)) == "—"
         assert str(table.get_cell(row_key, columns[11].key)) == "—"
-        assert str(table.get_cell(row_key, columns[12].key)) == "—"
 
 
 async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
@@ -330,10 +401,10 @@ async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[8].key)) == "12"
-        assert str(table.get_cell(row_key, columns[10].key)) == "245"
-        assert str(table.get_cell(row_key, columns[11].key)) == "200 (50–400)"
-        assert str(table.get_cell(row_key, columns[12].key)) == "20 (5–40)"
+        assert str(table.get_cell(row_key, columns[7].key)) == "12"
+        assert str(table.get_cell(row_key, columns[9].key)) == "245"
+        assert str(table.get_cell(row_key, columns[10].key)) == "200 (50–400)"
+        assert str(table.get_cell(row_key, columns[11].key)) == "20 (5–40)"
 
 
 async def test_reqs_per_min_is_computed_between_two_polls():
@@ -351,7 +422,7 @@ async def test_reqs_per_min_is_computed_between_two_polls():
 
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[9].key
+        column_key = table.ordered_columns[8].key
         assert str(table.get_cell(row_key, column_key)) == "60.0/min"
 
 
@@ -944,7 +1015,10 @@ def _table_host_ids(app):
 
 
 def _sparkline_labels(app):
-    return [str(label.render()) for label in app.query("#load-sparklines .node-load-group Label")]
+    return [
+        str(label.render()).split(" · ")[0]
+        for label in app.query("#load-sparklines .node-load-group Label")
+    ]
 
 
 def _three_nodes():
@@ -1242,3 +1316,63 @@ async def test_the_exported_screenshot_shows_green_orange_and_red_bars():
 
     for style in (GREEN, ORANGE, RED):
         assert style.color.get_truecolor().hex in svg
+
+
+async def test_the_load_label_shows_host_counter_and_rounded_percent():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("host-a", in_flight=1, max_concurrent_requests=3),
+                _node("host-b", in_flight=8, max_concurrent_requests=8),
+                _node("host-c", in_flight=0, max_concurrent_requests=0),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+
+        labels = [
+            str(app.query_one(f"#label-{h}", Label).render())
+            for h in ("host-a", "host-b", "host-c")
+        ]
+        assert labels == ["host-a · 1/3 · 33%", "host-b · 8/8 · 100%", "host-c · 0/0 · n/a"]
+
+
+async def test_the_load_label_follows_the_next_poll():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=0)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test():
+        await app.poll()
+        client._nodes = {"nodes": [_node("host-a", in_flight=2)]}
+
+        await app.poll()
+
+        assert str(app.query_one("#label-host-a", Label).render()) == "host-a · 2/4 · 50%"
+
+
+def test_the_load_label_counter_uses_the_status_cell_colours():
+    def counter_style(host):
+        label = _load_label(host)
+        counter = f"{host['in_flight']}/{host['max_concurrent_requests']}"
+        return {label.plain[s.start : s.end]: str(s.style) for s in label.spans}.get(counter, "")
+
+    assert counter_style(_node("busy", in_flight=2)) == "bold yellow"
+    assert counter_style(_node("idle", in_flight=0)) == ""
+    assert counter_style(_node("off", in_flight=0, status="offline")) == "dim"
+    assert counter_style(_node("unk", in_flight=2, status="unknown")) == "dim"
+
+
+def test_the_load_label_percent_uses_the_chart_colour_band():
+    def percent_style(host):
+        label = _load_label(host)
+        return {label.plain[s.start : s.end]: s.style for s in label.spans}.get(
+            label.plain.rsplit(" · ", 1)[1]
+        )
+
+    assert percent_style(_node("full", in_flight=4)) == GREEN
+    assert percent_style(_node("half", in_flight=2)) == ORANGE
+    assert percent_style(_node("low", in_flight=1)) == RED
+    assert percent_style(_node("none", in_flight=0, max_concurrent_requests=0)) is None
