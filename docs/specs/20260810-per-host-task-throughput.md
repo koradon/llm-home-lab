@@ -8,7 +8,8 @@ draft
 
 Per-host `tasks/h` and `tasks/h/slot` metrics are exposed on `GET /v1/nodes` and in the TUI.
 The Nodes `slots` column renders busy over total slots, e.g. `busy (7/8 slots)`, for slot-pool
-backends. Dashboard layout is owned by [tui-operator-dashboard](20260719-tui-operator-dashboard.md).
+backends, including `idle (0/8 slots)` when no slots are busy. Whenever the total is known,
+the counter remains visible, including a zero total (`idle (0/0 slots)`). Dashboard layout is owned by [tui-operator-dashboard](20260719-tui-operator-dashboard.md).
 
 ## User stories
 

@@ -8,6 +8,16 @@ Feature: Per-host task throughput and busy/total slot display
     When the TUI renders the Nodes table
     Then the slots cell reads "busy (7/8 slots)"
 
+  Scenario Outline: An idle llama-server host keeps its slot counter
+    Given an idle llama-server host reports 0 of <total> slots processing
+    When the TUI renders the Nodes table
+    Then the slots cell reads "idle (0/<total> slots)"
+
+    Examples:
+      | total |
+      | 8     |
+      | 0     |
+
   Scenario: An LM Studio host still shows a true queue count
     Given an LM Studio host reports status "processingPrompt" with 2 queued
     When the TUI renders the Nodes table

@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from textual.widgets import Button, DataTable, Input, Select, Sparkline, Static
 
 from llm_home_lab.tui.app import DashboardApp, NodeFormScreen, RemoveNodeConfirmScreen
@@ -1261,7 +1262,8 @@ async def test_a_llamaserver_node_shows_busy_over_total_slots_instead_of_a_queue
         assert "yellow" in cell.style
 
 
-async def test_an_idle_llamaserver_node_shows_plain_idle():
+@pytest.mark.parametrize("total_slots", [0, 8])
+async def test_an_idle_llamaserver_node_shows_busy_over_total_slots(total_slots):
     client = _FakeClient(
         nodes={
             "nodes": [
@@ -1273,7 +1275,7 @@ async def test_an_idle_llamaserver_node_shows_plain_idle():
                         "status": "idle",
                         "queued": 0,
                         "busy_slots": 0,
-                        "total_slots": 8,
+                        "total_slots": total_slots,
                     },
                 )
             ]
@@ -1284,7 +1286,9 @@ async def test_an_idle_llamaserver_node_shows_plain_idle():
     async with app.run_test():
         await app.poll()
 
-        assert str(_slots_cell(app.query_one("#nodes-table", DataTable))) == "idle"
+        cell = _slots_cell(app.query_one("#nodes-table", DataTable))
+        assert str(cell) == f"idle (0/{total_slots} slots)"
+        assert not cell.style
 
 
 async def test_the_slots_cell_stays_with_its_node_when_rows_are_reordered():

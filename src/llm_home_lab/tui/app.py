@@ -107,11 +107,11 @@ def _styled_external_load(external_load: object) -> Text:
 
     status = str(load.get("status") or "idle")
     total_slots = load.get("total_slots")
-    if isinstance(total_slots, int) and total_slots > 0:
+    if isinstance(total_slots, int):
         # A slot-pool backend (llama-server): `queued` there is just the busy-slot count, not a
         # backlog, so show what is actually happening instead.
         busy_slots = load.get("busy_slots") or 0
-        label = status if not busy_slots else f"{status} ({busy_slots}/{total_slots} slots)"
+        label = f"{status} ({busy_slots}/{total_slots} slots)"
         return Text(label, style="" if status == "idle" else "bold yellow")
 
     queued = load.get("queued") or 0
