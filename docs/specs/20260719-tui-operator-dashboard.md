@@ -64,6 +64,12 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 
 ## Behavior
 
+**Node Load uses a fixed scale.** Every node's chart uses the same 0..1 vertical scale,
+without per-node autoscaling or a configuration setting. A steady 1.0 fills the chart's
+height; 0.0 is empty. Equal histories render identically at equal chart dimensions, and a
+dip from 1.0 to 0.875 remains a small drop rather than spanning the full chart height.
+When multiple samples share a terminal column, that column shows their maximum load.
+
 **Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
 it is the operator's manual order: an optional integer `position` on the node record (stored with
 the node's capabilities, exposed by `GET /v1/nodes`, settable via `POST /v1/nodes/register` and
