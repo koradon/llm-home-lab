@@ -57,6 +57,7 @@ class NodeRegistrationRequest(BaseModel):
     memory_budget_gb: float | None = None
     model_sizes_gb: dict[str, float] | None = None
     model_aliases: dict[str, list[str]] | None = None
+    position: int | None = None
 
 
 class NodeUpdateRequest(BaseModel):
@@ -68,6 +69,7 @@ class NodeUpdateRequest(BaseModel):
     memory_budget_gb: float | None = None
     model_sizes_gb: dict[str, float] | None = None
     model_aliases: dict[str, list[str]] | None = None
+    position: int | None = None
 
 
 _NODE_CAPABILITY_FIELDS = {
@@ -78,6 +80,7 @@ _NODE_CAPABILITY_FIELDS = {
     "memory_budget_gb",
     "model_sizes_gb",
     "model_aliases",
+    "position",
 }
 _NODE_CAPACITY_FIELDS = {"max_concurrent_requests"}
 
@@ -395,6 +398,7 @@ def create_app(
                 memory_budget_gb=payload.memory_budget_gb,
                 model_sizes_gb=payload.model_sizes_gb,
                 model_aliases=payload.model_aliases,
+                position=payload.position,
             ),
             HostCapacity(max_concurrent_requests=payload.max_concurrent_requests),
             at=datetime.now(UTC),
@@ -430,7 +434,11 @@ def create_app(
     @app.get("/v1/nodes")
     async def list_nodes() -> dict[str, list[dict[str, object]]]:
         at = datetime.now(UTC)
-        hosts = registry.hosts()
+        # sorted() is stable, so unpositioned nodes keep registration order after positioned ones.
+        hosts = sorted(
+            registry.hosts(),
+            key=lambda h: (h.capabilities.position is None, h.capabilities.position or 0),
+        )
         unprobed = ExternalLoadStatus(available=False, status=None, queued=None, checked_at=at)
         return {
             "nodes": [
@@ -443,6 +451,7 @@ def create_app(
                     "memory_budget_gb": host.capabilities.memory_budget_gb,
                     "model_sizes_gb": host.capabilities.model_sizes_gb,
                     "model_aliases": host.capabilities.model_aliases,
+                    "position": host.capabilities.position,
                     "max_concurrent_requests": host.capacity.max_concurrent_requests,
                     "in_flight": host.in_flight,
                     "last_seen": host.last_seen.isoformat(),

@@ -11,6 +11,8 @@ class HostCapabilities:
     memory_budget_gb: float | None = None
     model_sizes_gb: dict[str, float] | None = None
     model_aliases: dict[str, list[str]] | None = None
+    # Operator-chosen display order; None sorts after positioned nodes, in registration order.
+    position: int | None = None
 
 
 @dataclass

@@ -65,6 +65,16 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 
 ## Behavior
 
+**Node order.** The Nodes table and the Node Load sparklines share one displayed order. By default
+it is the operator's manual order: an optional integer `position` on the node record (stored with
+the node's capabilities, exposed by `GET /v1/nodes`, settable via `POST /v1/nodes/register` and
+`PATCH /v1/nodes/{host_id}`). `/v1/nodes` lists positioned nodes first by `position`, then
+unpositioned ones in registration order, so a new node lands last and records stored before the
+field existed keep working. `u`/`d` move the selected node up/down (the TUI PATCHes the new
+positions). `s` cycles a session-only sort column (node, status, reqs/min, avg latency, tokens;
+rows without a value sort last), `r` toggles direction, `o` clears the sort; the column sort is
+never persisted and moving is disabled while one is active.
+
 **Polling is fixed-interval, not event-driven.** No websocket/SSE surface is added to the
 orchestrator for this — matches home-lab scale and keeps the orchestrator's API contract unchanged.
 

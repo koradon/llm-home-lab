@@ -920,3 +920,245 @@ async def test_clicking_remove_node_button_operates_on_the_selected_row():
         await pilot.pause()
 
         assert client.deregister_node_calls == ["host-b"]
+
+
+class _OrderingFakeClient(_FakeClient):
+    """Mimics the orchestrator: PATCHed positions are stored and drive /v1/nodes ordering."""
+
+    async def update_node(self, host_id, fields):
+        await super().update_node(host_id, fields)
+        for node in self._nodes["nodes"]:
+            if node["host_id"] == host_id:
+                node["position"] = fields["position"]
+
+    async def list_nodes(self):
+        nodes = self._nodes["nodes"]
+        ordered = sorted(nodes, key=lambda n: (n.get("position") is None, n.get("position") or 0))
+        return {"nodes": ordered}
+
+
+def _table_host_ids(app):
+    table = app.query_one("#nodes-table", DataTable)
+    return [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+
+
+def _sparkline_labels(app):
+    return [str(label.render()) for label in app.query("#load-sparklines .node-load-group Label")]
+
+
+def _three_nodes():
+    return {
+        "nodes": [
+            _node("host-b", in_flight=0, status="offline"),
+            _node("host-c", in_flight=0, status="online"),
+            _node("host-a", in_flight=0, status="unknown"),
+        ]
+    }
+
+
+async def test_the_default_view_keeps_the_order_the_server_returned():
+    app = DashboardApp(client=_FakeClient(nodes=_three_nodes()), interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        assert _table_host_ids(app) == ["host-b", "host-c", "host-a"]
+
+
+async def test_pressing_s_cycles_the_sort_column_and_r_toggles_the_direction():
+    app = DashboardApp(client=_FakeClient(nodes=_three_nodes()), interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("s")
+        await pilot.pause()
+        by_node = _table_host_ids(app)
+        await pilot.press("r")
+        await pilot.pause()
+        by_node_desc = _table_host_ids(app)
+        await pilot.press("s")
+        await pilot.pause()
+        by_status_desc = _table_host_ids(app)
+
+        assert by_node == ["host-a", "host-b", "host-c"]
+        assert by_node_desc == ["host-c", "host-b", "host-a"]
+        assert by_status_desc == ["host-a", "host-c", "host-b"]
+        title = app.query_one("#nodes-table", DataTable).border_title
+        assert "status" in title and "↓" in title
+
+
+async def test_cycling_past_the_last_sort_column_returns_to_the_manual_order():
+    app = DashboardApp(client=_FakeClient(nodes=_three_nodes()), interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        for _ in range(5):
+            await pilot.press("s")
+        await pilot.pause()
+        assert "tokens" in app.query_one("#nodes-table", DataTable).border_title
+
+        await pilot.press("s")
+        await pilot.pause()
+
+        assert _table_host_ids(app) == ["host-b", "host-c", "host-a"]
+        assert app.query_one("#nodes-table", DataTable).border_title == "Nodes"
+
+
+async def test_pressing_o_clears_the_sort_and_restores_the_manual_order():
+    app = DashboardApp(client=_FakeClient(nodes=_three_nodes()), interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("s", "r")
+        await pilot.pause()
+
+        await pilot.press("o")
+        await pilot.pause()
+
+        assert _table_host_ids(app) == ["host-b", "host-c", "host-a"]
+
+
+async def test_sorting_by_reqs_per_min_puts_the_busiest_first_and_unknown_rates_last():
+    clock_values = iter([T0, T0 + timedelta(seconds=60)])
+    client = _FakeClient(
+        nodes={"nodes": [_node("slow", 0), _node("fast", 0), _node("idle", 0)]},
+        metrics_text=(
+            'llm_home_lab_host_completions_total{host_id="slow"} 0\n'
+            'llm_home_lab_host_completions_total{host_id="fast"} 0\n'
+        ),
+    )
+    app = DashboardApp(client=client, interval_s=100.0, clock=lambda: next(clock_values))
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        client._metrics_text = (
+            'llm_home_lab_host_completions_total{host_id="slow"} 1\n'
+            'llm_home_lab_host_completions_total{host_id="fast"} 9\n'
+        )
+        app._sort_column = "reqs/min"
+        app._sort_descending = True
+        await app.poll()
+        await pilot.pause()
+
+        assert _table_host_ids(app)[:2] == ["fast", "slow"]
+
+
+async def test_sorting_by_avg_latency_orders_by_the_parsed_average():
+    client = _FakeClient(
+        nodes={"nodes": [_node("a", 0), _node("b", 0)]},
+        metrics_text=(
+            'llm_home_lab_host_latency_ms_avg{host_id="a"} 900\n'
+            'llm_home_lab_host_latency_ms_avg{host_id="b"} 100\n'
+        ),
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app._sort_column = "avg latency"
+        await app.poll()
+        await pilot.pause()
+
+        assert _table_host_ids(app) == ["b", "a"]
+
+
+async def test_the_load_sparklines_follow_the_displayed_order():
+    app = DashboardApp(client=_FakeClient(nodes=_three_nodes()), interval_s=100.0)
+
+    async with app.run_test(size=(120, 60)) as pilot:
+        await app.poll()
+        await pilot.pause()
+        assert _sparkline_labels(app) == ["host-b", "host-c", "host-a"]
+
+        await pilot.press("s")
+        await pilot.pause()
+
+        assert _sparkline_labels(app) == ["host-a", "host-b", "host-c"]
+
+
+async def test_pressing_d_moves_the_selected_node_down_and_persists_positions():
+    client = _OrderingFakeClient(nodes=_three_nodes())
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 60)) as pilot:
+        await app.poll()
+        await pilot.press("d")
+        await pilot.pause()
+
+        assert _table_host_ids(app) == ["host-c", "host-b", "host-a"]
+        assert client.update_node_calls == [
+            ("host-c", {"position": 0}),
+            ("host-b", {"position": 1}),
+            ("host-a", {"position": 2}),
+        ]
+        assert app.query_one("#nodes-table", DataTable).cursor_row == 1
+        assert _sparkline_labels(app) == ["host-c", "host-b", "host-a"]
+
+
+async def test_pressing_u_moves_the_selected_node_up_and_the_cursor_follows_it():
+    client = _OrderingFakeClient(nodes=_three_nodes())
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 60)) as pilot:
+        await app.poll()
+        await pilot.press("down", "down", "u")
+        await pilot.pause()
+
+        assert _table_host_ids(app) == ["host-b", "host-a", "host-c"]
+        assert app.query_one("#nodes-table", DataTable).cursor_row == 1
+
+
+async def test_moving_past_either_end_changes_nothing():
+    client = _OrderingFakeClient(nodes=_three_nodes())
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 60)) as pilot:
+        await app.poll()
+
+        await pilot.press("u")
+        await pilot.pause()
+
+        assert client.update_node_calls == []
+        assert _table_host_ids(app) == ["host-b", "host-c", "host-a"]
+
+
+async def test_moving_a_node_while_a_column_sort_is_active_does_nothing():
+    client = _OrderingFakeClient(nodes=_three_nodes())
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 60)) as pilot:
+        await app.poll()
+        await pilot.press("s")
+
+        await pilot.press("d")
+        await pilot.pause()
+
+        assert client.update_node_calls == []
+
+
+async def test_a_moved_order_is_what_a_fresh_dashboard_sees_after_the_server_reorders():
+    client = _OrderingFakeClient(nodes=_three_nodes())
+    first = DashboardApp(client=client, interval_s=100.0)
+    async with first.run_test(size=(120, 60)) as pilot:
+        await first.poll()
+        await pilot.press("d")
+        await pilot.pause()
+
+    second = DashboardApp(client=client, interval_s=100.0)
+    async with second.run_test(size=(120, 60)):
+        await second.poll()
+
+        assert _table_host_ids(second) == ["host-c", "host-b", "host-a"]
+
+
+async def test_nodes_without_a_position_field_still_render_in_server_order():
+    nodes = {"nodes": [_node("host-a", 0), _node("host-b", 0)]}
+    assert all("position" not in n for n in nodes["nodes"])
+    client = _OrderingFakeClient(nodes=nodes)
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        assert _table_host_ids(app) == ["host-a", "host-b"]
