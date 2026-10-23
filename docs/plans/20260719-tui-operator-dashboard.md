@@ -22,9 +22,8 @@ Build `src/llm_home_lab/diagnostics/metrics_parser.py` (shared with the future w
 
 Concrete decisions for this plan (resolving the spec's deferred questions):
 
-- **Widget layout**: three stacked `Textual` `DataTable` widgets (Nodes, Alerts, Queue & Tokens) in
-  a single-screen `App`, refreshed in place on each poll tick rather than re-mounting — the simplest
-  layout that satisfies the spec's three panels.
+- **Dashboard layout and polling**: see the current
+  [TUI spec](../specs/20260719-tui-operator-dashboard.md#requirements).
 - **Shared parser location**: `metrics_parser.py` lives in a new `src/llm_home_lab/diagnostics/`
   package (not inside `tui/`) from the start, since the web UI plan will import the same module —
   avoids a later move/rename once M6 starts.
@@ -57,11 +56,7 @@ Out of scope for this plan:
    - `app.py` — `DashboardApp(textual.app.App)`:
      - `__init__(client, interval_s, parse_metrics_text)`.
      - `on_mount` starts a `set_interval(interval_s, self.poll)` timer.
-     - `poll()` calls all three client methods concurrently (`asyncio.gather`, `return_exceptions
-       =True`), updates the three `DataTable`s on success, and on a `DiagnosticsClientError` shows
-       a status banner per the TUI spec above. The banner clears on the next successful poll.
-     - Queue & Tokens table renders `queue_depth`/each `token_usage_total` entry as "unavailable"
-       when `ParsedMetrics` fields are `None`/missing, per the spec.
+     - Polling and rendering follow the current TUI spec linked above.
      - `run(argv=None)` module-level function: argparse for `--base-url`, `--api-key`,
        `--interval`, reading `ORCHESTRATOR_BASE_URL`/`ORCHESTRATOR_API_KEY` as fallbacks; exits
        with a clear error if no API key is available from either source (no insecure default).
@@ -75,17 +70,15 @@ Out of scope for this plan:
      `httpx.MockTransport` pattern used for backend adapter tests): happy path per method, `401` →
      `DiagnosticsClientError(kind="unauthorized")`, connection error → `kind="connection"`, `500`
      → `kind="server_error"`.
-   - `test_dashboard_app.py` — using Textual's `App.run_test()` harness: a successful poll
-     populates all three tables; a `DiagnosticsClientError` of each kind shows the matching banner
-     text and clears on the next successful poll; a missing metric renders "unavailable" in the
-     Queue & Tokens table without affecting the other two tables.
+   - `test_dashboard_app.py` — Textual harness coverage for the current TUI spec
+     and poll-error banners.
 6. **Docs**: add a "Terminal dashboard" section to the root `README.md`'s Quickstart (installation
    via `uv sync`, example `llm-home-lab-tui --base-url ... --api-key ...` invocation,
    and a one-line note on adding the `config/api_keys.json` client entry) — per the "README is
    user-facing" convention, concrete usage steps only, no milestone/issue references.
 7. **Verification** — `uv run pytest --cov=llm_home_lab`, `uv run ruff check .`, `uv run ruff
    format --check .`, `uv run mypy src`; then the `verify` skill: run the TUI against a real
-   running orchestrator + LM Studio (not just mocked transports) to confirm the three panels
+   running orchestrator + LM Studio (not just mocked transports) to confirm the panels described by the current TUI spec
    populate and the error banners actually trigger against a genuinely stopped orchestrator.
 
 Implemented test-first (`tdd` skill): `metrics_parser.py` (pure, no I/O) → `client.py` (mocked

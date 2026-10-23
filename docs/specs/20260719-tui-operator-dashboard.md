@@ -7,8 +7,8 @@ draft
 ## Summary
 
 A Textual-based terminal client, shipped as its own console script in this repo, that polls a
-running orchestrator's existing diagnostic endpoints (`GET /v1/nodes`, `GET /v1/alerts`, `GET
-/metrics`) and renders live node health/capacity, firing alerts, and queue depth/token usage —
+running orchestrator's existing diagnostic endpoints (`GET /v1/nodes`, `GET /metrics`) and renders
+live node health/capacity, completion metrics, and node load —
 comparable to `docker stats` or `htop`, that the operator runs against a (possibly remote)
 orchestrator. It also registers, edits, and deregisters nodes (see "The TUI is no longer strictly
 read-only" below); either way it introduces no new orchestrator endpoints and no persistence of
@@ -19,10 +19,6 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 
 - As an operator, I want to see registered nodes, their health, and their load at a glance in my
   terminal, so that I don't have to poll `/v1/nodes` by hand or grep logs.
-- As an operator, I want to see currently firing alerts with severity and runbook link, so that I
-  notice issues without watching the `llm_home_lab.alerts` logger directly.
-- As an operator, I want to see queue depth and per-host token usage, so that I understand load and
-  cost without standing up a full Prometheus/Grafana stack.
 - As an operator running the TUI against a remote orchestrator, I want to authenticate the same way
   any other client does (Bearer key), so observability access doesn't bypass the existing security
   baseline.
@@ -44,7 +40,7 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   Prometheus client library dependency, since the wire format this repo produces is small and
   hand-rolled already (see the monitoring spec).
 - `app.py` — a Textual `App` with a fixed-interval polling loop (default 2s, `--interval`) driving
-  three panels:
+  two panels:
   - **Nodes** — `host_id`, `backend_type`, `in_flight`/`max_concurrent_requests`, `last_seen`, one
     row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
     buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
@@ -52,12 +48,11 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     `NodeRegistrationRequest`/`NodeUpdateRequest` accepts (including `model_sizes_gb` and
     `model_aliases`, each edited as repeating name/value input rows, not free text) is editable
     here.
-  - **Alerts** — `rule_name`, `severity`, `state`, `value`/`threshold_value`, `runbook_url`, one row
-    per currently-firing alert from `list_alerts()`.
-  - **Queue & Tokens** — queue depth, per-host cumulative token usage, and per-host token rate,
-    parsed from `fetch_metrics_text()`, each with a session-scoped "max" column tracking the
-    highest value observed since the TUI started (not shown for the cumulative token-usage row,
-    since its max is always its current value).
+  - **Node Load** — one green sparkline per node, charting
+    `in_flight / max_concurrent_requests`. Full utilization is the desired lab state.
+    There is no own/external split or external-load column in Nodes.
+  - Alerts and Queue & Tokens are removed entirely, with no replacement panel or folded-in
+    queue/token summary. The existing Nodes completion metrics remain.
 - CLI flags / env vars: `--base-url`/`ORCHESTRATOR_BASE_URL` (default `http://localhost:8080`),
   `--api-key`/`ORCHESTRATOR_API_KEY` (required, no insecure default — matches this repo's
   auth-required-by-default posture), `--interval`.
@@ -65,7 +60,7 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   dependencies in `pyproject.toml` `[project].dependencies` — the TUI is not optional.
 - New entry point: `[project.scripts] llm-home-lab-tui = "llm_home_lab.tui.app:run"`.
 - Operators wanting to use the TUI add a client entry to `config/api_keys.json` scoped via
-  `allowed_path_prefixes: ["/v1/nodes", "/v1/alerts"]` (`/metrics` is already auth-exempt) — no
+  `allowed_path_prefixes: ["/v1/nodes"]` (`/metrics` is already auth-exempt) — no
   change to `ApiKeyStore`/`ClientConfig` needed, this is purely a new client entry.
 
 ## Behavior
@@ -73,7 +68,8 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 **Polling is fixed-interval, not event-driven.** No websocket/SSE surface is added to the
 orchestrator for this — matches home-lab scale and keeps the orchestrator's API contract unchanged.
 
-Dashboard refreshes call only the three diagnostic GET endpoints, never `/health/ready`.
+Dashboard refreshes call only `GET /v1/nodes` and `GET /metrics`, never `/v1/alerts` or
+`/health/ready`. Metrics remain necessary for the Nodes completion columns.
 Host health comes from the background poller described in
 [ADR-0006](../adr/0006-background-health-poller.md). With polling disabled, health stays
 unknown until an on-demand readiness check records it.
@@ -96,11 +92,6 @@ poll due to `401` renders a distinct "not authorized" banner instead of the gene
 connection-error banner, so an operator immediately knows to check their key rather than suspect a
 network issue.
 
-**The metrics parser fails visibly, not silently, on unexpected `/metrics` output.** If an expected
-metric line is absent from a scrape (e.g. a future change to `MetricsRegistry` renames or removes
-it), the Queue & Tokens panel shows "unavailable" for that row rather than a stale or fabricated
-value.
-
 ## Acceptance scenarios (BDD)
 
 Keep scenarios in a sibling Gherkin file:
@@ -116,10 +107,10 @@ Keep scenarios in a sibling Gherkin file:
   `/v1/nodes` shape.
 - Spec: [security-and-governance-baseline](20260717-security-and-governance-baseline.md) — Bearer
   auth and `allowed_path_prefixes` this spec's client entry follows.
-- Spec: [web-management-ui](20260719-web-management-ui.md) — shares the same three orchestrator
-  endpoints and, in the plan, the same `metrics_parser.py` module.
-- Spec: [per-alias-completion-metrics](20260730-per-alias-completion-metrics.md) — future
-  per-alias breakdown for the Queue & Tokens panel, not yet scheduled.
+- Spec: [web-management-ui](20260719-web-management-ui.md) — shares diagnostics client and
+  metrics parser components.
+- Spec: [per-alias-completion-metrics](20260730-per-alias-completion-metrics.md) — alias-level
+  backend metrics; TUI rendering is out of scope.
 - Roadmap: [operator-dashboards](../roadmap/operator-dashboards.md)
 - Plan: (to be written) `docs/plans/20260719-tui-operator-dashboard.md`
 - Issue: (to be created, milestone M5)

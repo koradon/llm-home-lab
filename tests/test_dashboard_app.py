@@ -10,9 +10,8 @@ T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class _FakeClient:
-    def __init__(self, nodes=None, alerts=None, metrics_text=None, error=None):
+    def __init__(self, nodes=None, metrics_text=None, error=None):
         self._nodes = nodes or {"nodes": []}
-        self._alerts = alerts or {"alerts": []}
         self._metrics_text = metrics_text or ""
         self._error = error
         self.register_node_calls = []
@@ -33,59 +32,31 @@ class _FakeClient:
             raise self._error
         return self._nodes
 
-    async def list_alerts(self):
-        if self._error:
-            raise self._error
-        return self._alerts
-
     async def fetch_metrics_text(self):
         if self._error:
             raise self._error
         return self._metrics_text
 
 
-async def test_successful_poll_populates_all_three_panels():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                {
-                    "host_id": "host-a",
-                    "backend_type": "lmstudio",
-                    "in_flight": 1,
-                    "max_concurrent_requests": 4,
-                    "last_seen": "2026-07-19T00:00:00+00:00",
-                    "status": "online",
-                }
-            ]
-        },
-        alerts={
-            "alerts": [
-                {
-                    "rule_name": "latency",
-                    "severity": "warning",
-                    "state": "firing",
-                    "value": 6000,
-                    "threshold_value": 5000,
-                    "runbook_url": "https://example/runbooks/latency",
-                }
-            ]
-        },
-        metrics_text=(
-            'llm_home_lab_queue_depth 3\nllm_home_lab_token_usage_total{host_id="host-a"} 150\n'
-        ),
-    )
+async def test_successful_poll_shows_only_nodes_and_one_load_series_per_node():
+    client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=4)]})
     app = DashboardApp(client=client, interval_s=100.0)
 
-    async with app.run_test():
+    async with app.run_test(size=(120, 40)) as pilot:
         await app.poll()
+        await pilot.pause()
 
-        nodes_table = app.query_one("#nodes-table", DataTable)
-        alerts_table = app.query_one("#alerts-table", DataTable)
-        queue_table = app.query_one("#queue-tokens-table", DataTable)
-
-        assert nodes_table.row_count == 1
-        assert alerts_table.row_count == 1
-        assert queue_table.row_count == 4
+        table = app.query_one("#nodes-table", DataTable)
+        assert table.row_count == 1
+        assert len(app.query(DataTable)) == 1
+        assert not app.query("#alerts-table, #queue-tokens-table")
+        assert "ext_load" not in [str(column.label) for column in table.ordered_columns]
+        assert len(app.query(Sparkline)) == 1
+        assert list(app.query_one(Sparkline).data) == [1.0]
+        panel = app.query_one("#load-sparklines")
+        assert panel.border_title == "Node Load"
+        assert panel.region.bottom <= 39
+        assert str(app.query_one("#banner", Static).render()) == ""
 
 
 async def test_connection_failure_shows_connection_banner_and_keeps_running():
@@ -123,94 +94,11 @@ async def test_banner_clears_after_a_successful_poll_following_a_failure():
         assert str(banner.render()) == ""
 
 
-async def test_missing_metric_renders_unavailable_without_affecting_other_panels():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                {
-                    "host_id": "host-a",
-                    "backend_type": "lmstudio",
-                    "in_flight": 0,
-                    "max_concurrent_requests": 4,
-                    "last_seen": "2026-07-19T00:00:00+00:00",
-                    "status": "online",
-                }
-            ]
-        },
-        alerts={"alerts": []},
-        metrics_text="",
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        nodes_table = app.query_one("#nodes-table", DataTable)
-        queue_table = app.query_one("#queue-tokens-table", DataTable)
-
-        assert nodes_table.row_count == 1
-        assert queue_table.get_row_at(0) == ["queue_depth", "unavailable", "unavailable"]
-
-
-async def test_critical_alert_severity_is_styled_red():
-    client = _FakeClient(
-        alerts={
-            "alerts": [
-                {
-                    "rule_name": "availability",
-                    "severity": "critical",
-                    "state": "firing",
-                    "value": 0.5,
-                    "threshold_value": 0.99,
-                    "runbook_url": "https://example/runbooks/availability",
-                }
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#alerts-table", DataTable)
-        row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[1].key
-        severity_cell = table.get_cell(row_key, column_key)
-        assert "red" in severity_cell.style
-
-
-async def test_p95_latency_is_rendered_from_parsed_metrics():
-    client = _FakeClient(
-        metrics_text="llm_home_lab_queue_depth 0\nllm_home_lab_request_latency_p95_ms 123.5\n"
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#queue-tokens-table", DataTable)
-        rows = [table.get_row_at(i) for i in range(table.row_count)]
-        assert ["p95_latency_ms", "124", "124"] in rows
-
-
-async def test_first_poll_shows_no_token_rate_yet():
-    client = _FakeClient(metrics_text='llm_home_lab_token_usage_total{host_id="host-a"} 100\n')
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#queue-tokens-table", DataTable)
-        rows = [table.get_row_at(i) for i in range(table.row_count)]
-        assert ["tokens/s[host-a]", "-", "-"] in rows
-
-
 def _node(
     host_id,
     in_flight,
     max_concurrent_requests=4,
     status="online",
-    external_load=None,
     recent_failures=None,
 ):
     node = {
@@ -220,7 +108,6 @@ def _node(
         "max_concurrent_requests": max_concurrent_requests,
         "last_seen": "2026-07-19T00:00:00+00:00",
         "status": status,
-        "external_load": external_load,
     }
     if recent_failures is not None:
         node["health"] = {"recent_failures": recent_failures}
@@ -262,114 +149,7 @@ async def test_each_nodes_load_group_stays_compact_instead_of_stretching_to_fill
         await pilot.pause()
 
         group = app.query_one("#group-host-a")
-        assert group.size.height == 7
-
-
-async def test_a_busy_external_load_with_a_queue_backlog_combines_both_into_one_value():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "processingPrompt", "queued": 3},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
-        assert list(ext_load_sparkline.data) == [4.0]
-
-
-async def test_a_busy_node_with_no_queue_backlog_still_shows_nonzero_external_load():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "generating", "queued": 0},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
-        assert list(ext_load_sparkline.data) == [1.0]
-
-
-async def test_an_idle_external_load_is_charted_as_zero():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "idle", "queued": 0},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
-        assert list(ext_load_sparkline.data) == [0.0]
-
-
-async def test_an_unavailable_external_load_is_charted_as_zero():
-    client = _FakeClient(
-        nodes={"nodes": [_node("host-a", in_flight=0, external_load={"available": False})]}
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
-        assert list(ext_load_sparkline.data) == [0.0]
-
-
-async def test_a_second_poll_appends_to_the_same_external_load_sparkline():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "idle", "queued": 0},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-        client._nodes = {
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "processingPrompt", "queued": 2},
-                )
-            ]
-        }
-        await app.poll()
-
-        ext_load_sparkline = app.query_one("#extload-host-a", Sparkline)
-        assert list(ext_load_sparkline.data) == [0.0, 3.0]
+        assert group.size.height == 4
 
 
 async def test_a_node_that_disappears_has_its_sparkline_removed():
@@ -399,9 +179,9 @@ async def test_colliding_sanitized_host_ids_get_distinct_sparklines():
         await app.poll()
 
         sparklines = app.query(Sparkline)
-        assert len(sparklines) == 4
+        assert len(sparklines) == 2
         ids = {s.id for s in sparklines}
-        assert len(ids) == 4
+        assert len(ids) == 2
 
 
 async def test_overlapping_polls_do_not_crash_the_app():
@@ -419,7 +199,7 @@ async def test_overlapping_polls_do_not_crash_the_app():
     async with app.run_test():
         await asyncio.gather(app.poll(), app.poll())
 
-        assert len(app.query(Sparkline)) == 6
+        assert len(app.query(Sparkline)) == 3
 
 
 async def test_an_offline_node_status_is_styled_red_and_stays_listed():
@@ -520,11 +300,11 @@ async def test_a_node_with_no_recorded_completions_shows_zero_reqs_and_unavailab
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[9].key)) == "0"
+        assert str(table.get_cell(row_key, columns[8].key)) == "0"
+        assert str(table.get_cell(row_key, columns[9].key)) == "—"
         assert str(table.get_cell(row_key, columns[10].key)) == "—"
         assert str(table.get_cell(row_key, columns[11].key)) == "—"
         assert str(table.get_cell(row_key, columns[12].key)) == "—"
-        assert str(table.get_cell(row_key, columns[13].key)) == "—"
 
 
 async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
@@ -549,10 +329,10 @@ async def test_a_node_with_completion_stats_reports_them_in_the_nodes_table():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[9].key)) == "12"
-        assert str(table.get_cell(row_key, columns[11].key)) == "245"
-        assert str(table.get_cell(row_key, columns[12].key)) == "200 (50–400)"
-        assert str(table.get_cell(row_key, columns[13].key)) == "20 (5–40)"
+        assert str(table.get_cell(row_key, columns[8].key)) == "12"
+        assert str(table.get_cell(row_key, columns[10].key)) == "245"
+        assert str(table.get_cell(row_key, columns[11].key)) == "200 (50–400)"
+        assert str(table.get_cell(row_key, columns[12].key)) == "20 (5–40)"
 
 
 async def test_reqs_per_min_is_computed_between_two_polls():
@@ -570,133 +350,8 @@ async def test_reqs_per_min_is_computed_between_two_polls():
 
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[10].key
+        column_key = table.ordered_columns[9].key
         assert str(table.get_cell(row_key, column_key)) == "60.0/min"
-
-
-async def test_a_node_with_unavailable_external_load_is_styled_dim():
-    client = _FakeClient(
-        nodes={"nodes": [_node("host-a", in_flight=0, external_load={"available": False})]}
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#nodes-table", DataTable)
-        row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[3].key
-        ext_load_cell = table.get_cell(row_key, column_key)
-        assert str(ext_load_cell) == "unavailable"
-        assert "dim" in ext_load_cell.style
-
-
-async def test_a_node_with_idle_external_load_has_no_alarming_style():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "idle", "queued": 0},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#nodes-table", DataTable)
-        row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[3].key
-        ext_load_cell = table.get_cell(row_key, column_key)
-        assert str(ext_load_cell) == "idle"
-        assert "yellow" not in ext_load_cell.style
-
-
-async def test_a_node_with_busy_external_load_is_styled_yellow_with_queued_count():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={"available": True, "status": "processingPrompt", "queued": 2},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#nodes-table", DataTable)
-        row_key, _ = table.coordinate_to_cell_key((0, 0))
-        column_key = table.ordered_columns[3].key
-        ext_load_cell = table.get_cell(row_key, column_key)
-        assert str(ext_load_cell) == "processingPrompt (2 queued)"
-        assert "yellow" in ext_load_cell.style
-
-
-async def test_a_llamaserver_node_shows_busy_over_total_slots_instead_of_a_queued_count():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={
-                        "available": True,
-                        "status": "busy",
-                        "queued": 7,
-                        "busy_slots": 7,
-                        "total_slots": 8,
-                    },
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#nodes-table", DataTable)
-        row_key, _ = table.coordinate_to_cell_key((0, 0))
-        ext_load_cell = table.get_cell(row_key, table.ordered_columns[3].key)
-        assert str(ext_load_cell) == "busy (7/8 slots)"
-        assert "yellow" in ext_load_cell.style
-
-
-async def test_an_idle_llamaserver_node_shows_plain_idle():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _node(
-                    "host-a",
-                    in_flight=0,
-                    external_load={
-                        "available": True,
-                        "status": "idle",
-                        "queued": 0,
-                        "busy_slots": 0,
-                        "total_slots": 8,
-                    },
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#nodes-table", DataTable)
-        row_key, _ = table.coordinate_to_cell_key((0, 0))
-        assert str(table.get_cell(row_key, table.ordered_columns[3].key)) == "idle"
 
 
 async def test_throughput_columns_show_tasks_per_hour_and_per_slot():
@@ -722,8 +377,8 @@ async def test_throughput_columns_show_tasks_per_hour_and_per_slot():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[4].key)) == "24.0"
-        assert str(table.get_cell(row_key, columns[5].key)) == "3.0"
+        assert str(table.get_cell(row_key, columns[3].key)) == "24.0"
+        assert str(table.get_cell(row_key, columns[4].key)) == "3.0"
 
 
 async def test_throughput_per_slot_shows_na_when_the_slot_count_is_unknown():
@@ -749,8 +404,8 @@ async def test_throughput_per_slot_shows_na_when_the_slot_count_is_unknown():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
-        assert str(table.get_cell(row_key, columns[4].key)) == "0.0"
-        assert str(table.get_cell(row_key, columns[5].key)) == "n/a"
+        assert str(table.get_cell(row_key, columns[3].key)) == "0.0"
+        assert str(table.get_cell(row_key, columns[4].key)) == "n/a"
 
 
 async def test_throughput_columns_show_na_when_the_payload_has_no_throughput():
@@ -763,8 +418,8 @@ async def test_throughput_columns_show_na_when_the_payload_has_no_throughput():
         table = app.query_one("#nodes-table", DataTable)
         row_key, _ = table.coordinate_to_cell_key((0, 0))
         columns = table.ordered_columns
+        assert str(table.get_cell(row_key, columns[3].key)) == "n/a"
         assert str(table.get_cell(row_key, columns[4].key)) == "n/a"
-        assert str(table.get_cell(row_key, columns[5].key)) == "n/a"
 
 
 def _full_node(host_id, **overrides):
@@ -925,49 +580,6 @@ async def test_an_invalid_numeric_field_keeps_the_modal_open_with_an_error():
         assert client.update_node_calls == []
         error = app.screen.query_one("#edit-error", Static)
         assert "whole numbers" in str(error.render())
-
-
-async def test_second_poll_shows_token_rate_since_the_first():
-    client = _FakeClient(metrics_text='llm_home_lab_token_usage_total{host_id="host-a"} 100\n')
-    times = iter([T0, T0 + timedelta(seconds=5)])
-    app = DashboardApp(client=client, interval_s=100.0, clock=lambda: next(times))
-
-    async with app.run_test():
-        await app.poll()
-        client._metrics_text = 'llm_home_lab_token_usage_total{host_id="host-a"} 150\n'
-        await app.poll()
-
-        table = app.query_one("#queue-tokens-table", DataTable)
-        rows = [table.get_row_at(i) for i in range(table.row_count)]
-        assert ["tokens/s[host-a]", "10.0/s", "10.0/s"] in rows
-
-
-async def test_queue_depth_max_column_tracks_the_highest_value_seen():
-    client = _FakeClient(metrics_text="llm_home_lab_queue_depth 3\n")
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-        client._metrics_text = "llm_home_lab_queue_depth 7\n"
-        await app.poll()
-        client._metrics_text = "llm_home_lab_queue_depth 2\n"
-        await app.poll()
-
-        table = app.query_one("#queue-tokens-table", DataTable)
-        rows = [table.get_row_at(i) for i in range(table.row_count)]
-        assert ["queue_depth", "2", "7"] in rows
-
-
-async def test_tokens_row_always_shows_a_dash_for_max():
-    client = _FakeClient(metrics_text='llm_home_lab_token_usage_total{host_id="host-a"} 100\n')
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test():
-        await app.poll()
-
-        table = app.query_one("#queue-tokens-table", DataTable)
-        rows = [table.get_row_at(i) for i in range(table.row_count)]
-        assert ["tokens[host-a]", "100", "—"] in rows
 
 
 async def test_editing_prefills_model_sizes_and_aliases_as_separate_rows():

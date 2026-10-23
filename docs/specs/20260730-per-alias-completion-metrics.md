@@ -67,11 +67,6 @@ configured with `model_aliases: {"my-model": ["my-model-a", "my-model-b"]}`, a r
 `my-model` that round-robins to `my-model-b` is recorded under alias `my-model-b`, not
 `my-model` — the whole point is distinguishing the instances the client-facing name hides.
 
-**Composes with the (separately planned) TUI "max" column.** If the TUI's Queue & Tokens panel
-later grows a per-row historical maximum (see the node-registration-parity plan referenced below),
-an alias-level row should get the same treatment — this spec only needs to ensure the underlying
-data is available; the max-tracking behavior itself lives in the TUI plan, not here.
-
 ## Acceptance scenarios (BDD)
 
 Keep scenarios in a sibling Gherkin file:
@@ -83,11 +78,10 @@ Keep scenarios in a sibling Gherkin file:
   `_resolve_model()` this extends.
 - Spec: [health-and-telemetry-baseline](20260711-health-and-telemetry-baseline.md) —
   `MetricsRegistry` and the Prometheus exposition format this adds a metric line to.
-- Spec: [tui-operator-dashboard](20260719-tui-operator-dashboard.md) — Queue & Tokens panel that
-  would eventually render this data.
+- Spec: [tui-operator-dashboard](20260719-tui-operator-dashboard.md) — dashboard presentation.
 - Plan: (to be written, not scheduled) `docs/plans/20260730-per-alias-completion-metrics.md`
 - Out of scope: TUI rendering of per-alias data, and the unrelated node-registration-parity TUI
-  work (register/edit modals, `model_aliases` editing UI, Queue & Tokens "max" column) — that work
+  work (register/edit modals, `model_aliases` editing UI) — that work
   proceeds independently of this spec.
 
 ## Open Questions

@@ -9,8 +9,7 @@ draft
 A small, separate FastAPI service (`llm_home_lab_webui`, its own process and port) with a static
 HTML/JS frontend — a browser-based, RabbitMQ-management-style view of node health/capacity, firing
 alerts, and queue depth/token usage trends over time. It polls the orchestrator's existing
-diagnostic endpoints (the same three the TUI uses: `GET /v1/nodes`, `GET /v1/alerts`, `GET
-/metrics`) on an interval and persists samples into its own SQLite database — reusing the engine
+diagnostic endpoints (`GET /v1/nodes`, `GET /v1/alerts`, `GET /metrics`) on an interval and persists samples into its own SQLite database — reusing the engine
 ADR-0002 already chose, in a separate process and file, not reopening that ADR — so the dashboard
 can show short-window historical trends, not just current values. No new frontend build toolchain:
 static HTML/CSS/vanilla JS, matching this project's single-maintainer, low-new-dependency appetite
@@ -96,8 +95,8 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260719-web-mana
 
 - Idea: [operator-observability-dashboards](../ideas/operator-observability-dashboards.md) — Option
   B, promoted here.
-- Spec: [tui-operator-dashboard](20260719-tui-operator-dashboard.md) — shares the same three
-  orchestrator endpoints and the `metrics_parser.py` module (relocated to a shared package in the
+- Spec: [tui-operator-dashboard](20260719-tui-operator-dashboard.md) — shares diagnostic
+  client components and the `metrics_parser.py` module (relocated to a shared package in the
   plan).
 - Spec: [monitoring-slos-and-alerting](20260719-monitoring-slos-and-alerting.md) — `/metrics`,
   `/v1/alerts` this spec polls.

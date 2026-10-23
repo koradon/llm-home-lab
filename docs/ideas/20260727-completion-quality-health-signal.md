@@ -47,8 +47,7 @@ Three parts, each usable independently, ordered by value-per-effort:
    real signal.
 2. **Surface it.** Add a per-host failure count (or the last few `HealthMonitor.events`
    `FailoverEvent`s) to `GET /v1/nodes`, and a matching column in the TUI's Nodes table
-   (alongside the existing host_id/status/ext_load/backend_type/in_flight/max/last_seen
-   columns) — see [operator-observability-dashboards](operator-observability-dashboards.md) and
+   — see [operator-observability-dashboards](operator-observability-dashboards.md) and
    the shipped [tui-operator-dashboard](../specs/20260719-tui-operator-dashboard.md) spec, which
    this extends rather than replaces.
 3. **(Optional, lower priority) Stop rewarding "fails fast" in routing.** Under the current

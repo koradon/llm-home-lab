@@ -20,7 +20,7 @@ request-serving path if the `lms` binary is missing, times out, or the target ho
 - As an operator, I want to see whether a registered LM Studio host is busy with generations I
   didn't initiate, so that I know whether another tool is hitting it directly.
 - As an operator without `lms` installed (or on a host that doesn't support remote `lms` queries),
-  I want the orchestrator and TUI to keep working normally, with this signal simply showing as
+  I want the orchestrator to keep working normally, with this API signal simply showing as
   unavailable, so that a missing optional tool never breaks anything else.
 - As an operator, I want this check to not slow down `/health/ready` on every single call, so that
   a frequent external prober isn't spawning a new subprocess per host every time it polls.
@@ -33,10 +33,8 @@ request-serving path if the `lms` binary is missing, times out, or the target ho
     model reports the highest activity if more than one is loaded), `queued: int | None` (summed
     across loaded models), `checked_at: datetime`.
   - `ExternalLoadProbe(lms_binary: str = "lms", timeout_s: float = 5.0, cache_ttl: timedelta =
-    timedelta(seconds=2))`: kept short (rather than the initially-proposed 15s) and matched to the
-    TUI's own default 2s poll interval, so its external-load sparkline (see below) stays visually
-    responsive — the tradeoff is a fresh `lms` subprocess spawn per host on almost every poll;
-    operators who care more about subprocess overhead than freshness can raise
+    timedelta(seconds=2))`: operators who care more about subprocess overhead than freshness
+    can raise
     `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S`.
     - `async def probe(host_id: str, base_url: str, at: datetime) -> ExternalLoadStatus` — if a
       cached result for `host_id` is younger than `cache_ttl` relative to `at`, returns it
@@ -61,18 +59,7 @@ request-serving path if the `lms` binary is missing, times out, or the target ho
   [ADR-0006](../adr/0006-background-health-poller.md)). `GET /v1/nodes` performs no probe I/O.
   Before a host has a recorded result it reports `available=false` with null status/queue;
   subsequent reads retain the last result until a sweep updates it, even after probe-cache expiry.
-- TUI (`src/llm_home_lab/tui/app.py`) Nodes panel gains a column for this — rendered similarly to
-  the existing node `status` column (colored), e.g. `unavailable` in a muted style, `idle` neutral,
-  anything else (busy) highlighted, with `queued` shown alongside when `> 0`.
-- TUI also gains a second sparkline per node, grouped directly under the existing `in_flight`-ratio
-  one (same panel, own label per host, own color: green for the existing in-flight ratio, orange
-  for external load) rather than a separate panel — charting a combined busy+backlog value:
-  `(1.0 if status not in (None, "idle") else 0.0) + queued`. Raw `queued` alone is not charted,
-  since it is almost always `0` for a single caller hitting a node directly (it only counts
-  requests waiting *behind* another) — a busy status must contribute even with no backlog, or a
-  genuinely busy node charts as a flat, empty line. `available: false` charts as `0.0` (the
-  DataTable column remains the source of truth for distinguishing "unavailable" from "genuinely
-  idle").
+- Dashboard presentation is owned by [tui-operator-dashboard](20260719-tui-operator-dashboard.md).
 
 ## Behavior
 
@@ -104,8 +91,7 @@ Keep scenarios in a sibling Gherkin file:
 - ADR: [0005-lms-cli-for-external-node-load-visibility](../adr/0005-lms-cli-for-external-node-load-visibility.md)
 - Spec: [multi-node-registry-and-scheduler](20260717-multi-node-registry-and-scheduler.md) —
   `GET /v1/nodes`, `_node_status`, and the `/health/ready` per-host loop this probe hooks into.
-- Spec: [tui-operator-dashboard](20260719-tui-operator-dashboard.md) — Nodes panel this extends
-  with a new column.
+- Spec: [tui-operator-dashboard](20260719-tui-operator-dashboard.md) — dashboard presentation.
 - Idea: [operator-observability-dashboards](../ideas/operator-observability-dashboards.md)
 - Plan: (to be written) `docs/plans/20260720-external-node-load-visibility.md`
 - Issue: (to be created, unattached to a milestone) `.plan/issues/`
@@ -113,8 +99,6 @@ Keep scenarios in a sibling Gherkin file:
 
 ## Open Questions
 
-- Exact TUI styling for "busy due to external load" vs. the existing node `status` column's
-  online/offline styling — left to the plan.
 - Whether `cache_ttl`/probe interval should be configurable per-host (a slow-to-probe host vs. a
   fast one) — deferred; one global interval is the simpler starting point.
 - Whether a future LM Studio REST API release makes this subprocess approach obsolete — flagged in

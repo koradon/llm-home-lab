@@ -1,17 +1,7 @@
 Feature: Per-host task throughput and busy/total slot display
-  Operators see how many slots are busy and how many tasks each host processes per hour.
+  Operators see how many tasks each host processes per hour.
 
   # Related spec: docs/specs/20260810-per-host-task-throughput.md
-
-  Scenario: A llama-server host shows busy over total slots
-    Given a llama-server host reports 7 of 8 slots processing
-    When the TUI renders the Nodes table
-    Then the ext_load cell reads "busy (7/8 slots)"
-
-  Scenario: An LM Studio host still shows a true queue count
-    Given an LM Studio host reports status "processingPrompt" with 2 queued
-    When the TUI renders the Nodes table
-    Then the ext_load cell reads "processingPrompt (2 queued)"
 
   Scenario: Tasks per hour counts completions in the window
     Given the window is 1 hour

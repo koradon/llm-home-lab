@@ -45,9 +45,9 @@ dependency of the orchestrator's request-serving path. A new `ExternalLoadProbe`
 `lms ps --host <base_url's host> --json` per registered host (see
 [external-node-load-visibility spec](../specs/20260720-external-node-load-visibility.md) for
 exact behavior), on the same trigger as the existing health-check sweep, cached for a short
-interval so `/health/ready` doesn't spawn a fresh subprocess on every call. `GET /v1/nodes` and the
-TUI gain a field for it, always able to render "unavailable" without that ever being treated as an
-error.
+interval so `/health/ready` doesn't spawn a fresh subprocess on every call. `GET /v1/nodes` gains
+a field for it, able to report "unavailable" without that ever being treated as an error.
+Dashboard presentation is owned by the [TUI spec](../specs/20260719-tui-operator-dashboard.md).
 
 ### Consequences
 
