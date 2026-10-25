@@ -281,6 +281,10 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 | `ORCHESTRATOR_THROUGHPUT_WINDOW_S` | `3600` | Rolling window (seconds) behind the `tasks/h` and `tasks/h/slot` columns; kept in memory; after an orchestrator restart the rate is computed over the time observed so far (at least 60 s, at most the window), so it is usable from the first completions |
 | `ORCHESTRATOR_LMS_BINARY_PATH` | `lms` | Path to the optional `lms` CLI for external node load visibility — see below |
 | `ORCHESTRATOR_EXTERNAL_LOAD_PROBE_INTERVAL_S` | `2` | Cache TTL (seconds) for external load probes; raise it if the `lms` subprocess overhead matters more than freshness for your setup |
+| `ORCHESTRATOR_LEASE_TTL_S` | `180` | Short node-lease length. A heartbeat renews it; a dead holder loses the node when it expires |
+| `ORCHESTRATOR_LEASE_CEILING_S` | `10800` | Default hard ceiling (3 hours) on a reservation that does not set its own |
+| `ORCHESTRATOR_LEASE_MAX_CEILING_S` | `10800` | Longest ceiling a reservation may request. Must be at least `ORCHESTRATOR_LEASE_CEILING_S` |
+| `ORCHESTRATOR_LEASE_MIN_ACTIVE_NODES` | `1` | Healthy unleased nodes that must stay in ordinary routing |
 
 **Long-running generations**: the orchestrator always talks to LM Studio via its streaming
 protocol internally, even for a non-streaming caller — so `LMSTUDIO_TIMEOUT` is a *gap* timeout
@@ -317,7 +321,32 @@ it runs; register more hosts if you need to run many long generations at once.
 - `POST /v1/nodes/register`, `PATCH /v1/nodes/{host_id}`, `POST /v1/nodes/{host_id}/heartbeat`,
   `DELETE /v1/nodes/{host_id}`, `GET /v1/nodes` — manage model hosts.
 - `GET /v1/capacity` — total `max_concurrent_requests` summed across online hosts.
+- `POST /v1/node-leases`, `POST /v1/node-leases/heartbeat`, `DELETE /v1/node-leases`,
+  `POST /v1/node-leases/force-release` — reserve a node for a real-LLM check. See below.
 - `GET /health/live`, `GET /health/ready` — liveness/readiness (no auth required).
+
+## Reserving a node for a real-LLM check
+
+`llm-home-lab-run` takes one node out of ordinary routing, runs a command, and puts the node
+back. Tests keep calling this orchestrator. The wrapper exports `OPENAI_BASE_URL`,
+`ORCHESTRATOR_BASE_URL`, and `LLM_HOME_LAB_NODE_LEASE`. The command sends that token as
+`X-LLM-Node-Lease` so the completion lands on the reserved node and nowhere else. Other callers
+do not get that node. A crashed wrapper stops heartbeating and the node returns within
+`ORCHESTRATOR_LEASE_TTL_S` (3 minutes). The hold cannot run past the ceiling (3 hours unless a
+reservation asks for less, or the server maximum is raised).
+
+```bash
+uv run llm-home-lab-run --model google/gemma-4-e4b -- python check_real_model.py
+uv run llm-home-lab-run --node gpu-box --ceiling-seconds 7200 -- uv run pytest tests/test_live.py
+```
+
+A refusal exits 2 and prints which nodes exist, who holds them, and until when. An unreachable
+orchestrator exits 3. The command's own exit code is passed through. `--node` and `--model`
+choose the node. Details, including force-release, are in
+[the node test lease spec](docs/specs/20261025-node-test-lease.md).
+
+An API key used both to reserve and to call `/v1/chat/completions` needs a path prefix that
+covers `/v1/node-leases` and `/v1/chat/completions` (a prefix of `/v1/` does).
 
 ## Terminal dashboard (TUI)
 
@@ -328,6 +357,10 @@ click "+ New Node" to register a new node, select a row and press `e` to edit it
 place, or press `x` to deregister it (after a confirmation dialog). The form includes
 `model_aliases`/`model_sizes_gb` as repeatable model-name/value rows. For sorting and changing
 the saved node order, see the [node order controls](docs/specs/20260719-tui-operator-dashboard.md#behavior).
+A node reserved for a real-LLM check shows `reserved` (or `expiring`) with the holder and the
+hard ceiling, in a colour that is not the online or offline colour. A reserved node that is
+also offline keeps both colours. See
+[node-lease-states.svg](docs/specs/assets/node-lease-states.svg).
 
 ```bash
 uv sync

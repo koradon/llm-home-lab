@@ -6,7 +6,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -16,6 +16,18 @@ from pydantic import BaseModel
 from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBackend
 from llm_home_lab.health.monitor import HealthMonitor
+from llm_home_lab.leases.book import NodeLeaseBook
+from llm_home_lab.leases.models import (
+    LEASE_HEADER,
+    LeaseEndedError,
+    LeaseInvalidError,
+    LeaseNotFoundError,
+    LeaseNotHeldError,
+    LeaseRefusedError,
+    LeaseSettings,
+    NodeLease,
+    ReservableHost,
+)
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.completion_log import CompletionLog
 from llm_home_lab.observability.metrics import MetricsRegistry
@@ -58,6 +70,17 @@ class NodeRegistrationRequest(BaseModel):
     model_sizes_gb: dict[str, float] | None = None
     model_aliases: dict[str, list[str]] | None = None
     position: int | None = None
+
+
+class NodeLeaseCreateRequest(BaseModel):
+    holder: str
+    host_id: str | None = None
+    model: str | None = None
+    ceiling_s: int | None = None
+
+
+class NodeLeaseForceReleaseRequest(BaseModel):
+    host_id: str
 
 
 class NodeUpdateRequest(BaseModel):
@@ -107,12 +130,22 @@ def create_app(
     external_load_probe: LoadProbe | None = None,
     health_poll_interval: float | None = None,
     completion_log: CompletionLog | None = None,
+    lease_book: NodeLeaseBook | None = None,
+    lease_settings: LeaseSettings | None = None,
+    lease_clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     if auth_enabled and key_store is None:
         raise ValueError("key_store is required when auth_enabled is True")
 
     external_load_probe = external_load_probe or ExternalLoadProbe()
     completion_log = completion_log or CompletionLog()
+    lease_book = lease_book or NodeLeaseBook(lease_settings)
+
+    def _lease_now() -> datetime:
+        if lease_clock is None:
+            return datetime.now(UTC)
+        return lease_clock()
+
     backends_by_id: dict[str, ChatBackend] = {}
     backend_capabilities_by_id: dict[str, HostCapabilities] = {}
 
@@ -207,6 +240,23 @@ def create_app(
                 )
             )
         return candidates
+
+    async def _reservable_hosts(model: str | None, now: datetime) -> list[ReservableHost]:
+        capable_ids: set[str] | None
+        if model is None:
+            capable_ids = None
+        else:
+            capable, _budget_blocked = await _model_capable_hosts(model)
+            capable_ids = {host.host_id for host in capable}
+        return [
+            ReservableHost(
+                host_id=host.host_id,
+                status=_node_status(host.host_id, now),
+                healthy=health_monitor.is_healthy(host.host_id, now),
+                serves_requested_model=capable_ids is None or host.host_id in capable_ids,
+            )
+            for host in registry.hosts()
+        ]
 
     # Last external-load result per host, written only by _probe_all_hosts. /v1/nodes serves
     # this instead of probing inline so a slow host (`lms ps --host` can take its full timeout)
@@ -386,6 +436,26 @@ def create_app(
     ) -> JSONResponse:
         return _error_response(503, str(exc), "backend_error", "model_capacity_exceeded")
 
+    @app.exception_handler(LeaseRefusedError)
+    async def on_lease_refused(request: Request, exc: LeaseRefusedError) -> JSONResponse:
+        return _error_response(409, str(exc), "invalid_request_error", "lease_refused")
+
+    @app.exception_handler(LeaseInvalidError)
+    async def on_lease_invalid(request: Request, exc: LeaseInvalidError) -> JSONResponse:
+        return _error_response(400, str(exc), "invalid_request_error", "lease_invalid")
+
+    @app.exception_handler(LeaseNotHeldError)
+    async def on_lease_not_held(request: Request, exc: LeaseNotHeldError) -> JSONResponse:
+        return _error_response(403, str(exc), "invalid_request_error", "lease_not_held")
+
+    @app.exception_handler(LeaseEndedError)
+    async def on_lease_ended(request: Request, exc: LeaseEndedError) -> JSONResponse:
+        return _error_response(409, str(exc), "invalid_request_error", "lease_ended")
+
+    @app.exception_handler(LeaseNotFoundError)
+    async def on_lease_not_found(request: Request, exc: LeaseNotFoundError) -> JSONResponse:
+        return _error_response(404, str(exc), "invalid_request_error", "lease_not_found")
+
     @app.post("/v1/nodes/register")
     async def register_node(payload: NodeRegistrationRequest) -> dict[str, str]:
         registry.register(
@@ -431,9 +501,48 @@ def create_app(
         _prune_backend_cache()
         return {"status": "deregistered"}
 
+    def _lease_body(lease: NodeLease, now: datetime, *, include_token: bool) -> dict[str, object]:
+        remaining = min(lease.expires_at, lease.hard_expires_at) - now
+        return lease.public_dict(
+            include_token=include_token,
+            expiring_soon=remaining <= lease_book.settings.expiring_soon,
+        )
+
+    @app.post("/v1/node-leases", status_code=201)
+    async def create_node_lease(payload: NodeLeaseCreateRequest) -> dict[str, object]:
+        now = _lease_now()
+        hosts = await _reservable_hosts(payload.model, now)
+        ceiling = None if payload.ceiling_s is None else timedelta(seconds=payload.ceiling_s)
+        lease = lease_book.reserve(
+            holder=payload.holder,
+            hosts=hosts,
+            host_id=payload.host_id,
+            model=payload.model,
+            ceiling=ceiling,
+            now=now,
+        )
+        return _lease_body(lease, now, include_token=True)
+
+    @app.post("/v1/node-leases/heartbeat")
+    async def heartbeat_node_lease(http_request: Request) -> dict[str, object]:
+        now = _lease_now()
+        lease = lease_book.heartbeat(http_request.headers.get(LEASE_HEADER, ""), now)
+        return _lease_body(lease, now, include_token=False)
+
+    @app.delete("/v1/node-leases")
+    async def release_node_lease(http_request: Request) -> dict[str, str]:
+        lease_book.release(http_request.headers.get(LEASE_HEADER, ""), _lease_now())
+        return {"status": "released"}
+
+    @app.post("/v1/node-leases/force-release")
+    async def force_release_node_lease(payload: NodeLeaseForceReleaseRequest) -> dict[str, str]:
+        lease_book.force_release(payload.host_id, _lease_now())
+        return {"status": "force_released"}
+
     @app.get("/v1/nodes")
     async def list_nodes() -> dict[str, list[dict[str, object]]]:
         at = datetime.now(UTC)
+        lease_at = _lease_now()
         # sorted() is stable, so unpositioned nodes keep registration order after positioned ones.
         hosts = sorted(
             registry.hosts(),
@@ -471,6 +580,7 @@ def create_app(
                             host.host_id, at, load.total_slots
                         ),
                     },
+                    "lease": lease_book.view(host.host_id, lease_at),
                 }
                 for host in hosts
                 for load in [external_loads.get(host.host_id, unprobed)]
@@ -529,21 +639,47 @@ def create_app(
     async def chat_completions(
         request: ChatCompletionRequest,
         response: Response,
+        http_request: Request,
     ) -> StreamingResponse | dict[str, object]:
         now = datetime.now(UTC)
+        lease_now = _lease_now()
+        token = http_request.headers.get(LEASE_HEADER)
+        pinned = lease_book.require(token, lease_now) if token else None
         model_hosts, budget_blocked = await _model_capable_hosts(request.model)
-        if not model_hosts:
-            if budget_blocked:
-                raise ModelCapacityExceededError(
-                    f"model {request.model!r} would exceed a host's memory budget right now"
+        if pinned is not None:
+            # A leased request stays on that one node. Model matching is unchanged,
+            # and a miss does not fall through to any other host.
+            model_hosts = [host for host in model_hosts if host.host_id == pinned.host_id]
+            if not model_hosts:
+                raise ModelNotAvailableError(
+                    f"leased node {pinned.host_id!r} does not serve model {request.model!r}"
                 )
-            raise ModelNotAvailableError(f"no registered host serves model {request.model!r}")
+        else:
+            open_hosts = []
+            leased_any = False
+            for host in model_hosts:
+                if lease_book.is_held(host.host_id, lease_now):
+                    leased_any = True
+                    continue
+                open_hosts.append(host)
+            if not open_hosts:
+                if leased_any:
+                    raise NoAvailableBackendError(
+                        "every host that serves this model is reserved for a test"
+                    )
+                if budget_blocked:
+                    raise ModelCapacityExceededError(
+                        f"model {request.model!r} would exceed a host's memory budget right now"
+                    )
+                raise ModelNotAvailableError(f"no registered host serves model {request.model!r}")
+            model_hosts = open_hosts
 
         failover_in_play = any(
             not health_monitor.is_healthy(host.host_id, now) for host in model_hosts
         )
 
         candidates = _eligible_candidates(model_hosts, now)
+        available_ids = {host.host_id for host in model_hosts}
 
         if not candidates:
             request_id = uuid.uuid4().hex
@@ -557,7 +693,12 @@ def create_app(
                 while waited < dispatch_wait_timeout:
                     await asyncio.sleep(dispatch_poll_interval)
                     waited += dispatch_poll_interval
-                    if scheduling_queue.dispatch(registry, datetime.now(UTC)) == request_id:
+                    if (
+                        scheduling_queue.dispatch(
+                            registry, datetime.now(UTC), available_host_ids=available_ids
+                        )
+                        == request_id
+                    ):
                         admitted = True
                         break
                 if not admitted:

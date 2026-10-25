@@ -75,6 +75,10 @@ one-cell baseline, so an idle or offline node still shows a chart. Equal histori
 identically, and a dip from 1.0 to 0.875 remains a small drop rather than spanning the full
 chart height. There is one column per poll sample; the newest samples fill the chart width.
 
+**Reserved nodes.** When `GET /v1/nodes` includes a lease, the status cell shows who holds the
+node and the hard ceiling, in a colour that is not the online or offline colour. See
+[node test lease](20261025-node-test-lease.md).
+
 **Node Load colours.** Each bar is coloured as a whole by its own value: ratio >= 0.70 green,
 0.30 <= ratio < 0.70 orange, ratio < 0.30 red (256-colour palette, plain constants). The
 percent in the label above the chart uses the same band as the latest bar.
@@ -135,6 +139,7 @@ Keep scenarios in a sibling Gherkin file:
   metrics parser components.
 - Spec: [per-alias-completion-metrics](20260730-per-alias-completion-metrics.md) — alias-level
   backend metrics; TUI rendering is out of scope.
+- Spec: [node test lease](20261025-node-test-lease.md) — reservation shown on the status cell.
 - Roadmap: [operator-dashboards](../roadmap/operator-dashboards.md)
 - Plan: (to be written) `docs/plans/20260719-tui-operator-dashboard.md`
 - Issue: (to be created, milestone M5)

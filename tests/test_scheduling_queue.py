@@ -32,6 +32,24 @@ def test_dispatch_admits_a_queued_request_when_a_host_has_capacity():
     assert dispatched == "req-1"
 
 
+def test_dispatch_ignores_free_capacity_outside_the_allowed_hosts():
+    queue = SchedulingQueue()
+    registry = _registry_with_host("host-a", max_concurrent_requests=1)
+    registry.register(
+        "host-b",
+        HostCapabilities(
+            backend_type="lmstudio", context_window=8192, base_url="http://localhost:1234"
+        ),
+        HostCapacity(max_concurrent_requests=1),
+        at=T0,
+    )
+    registry.acquire_slot("host-a")
+    queue.enqueue("req-1", session_id="session-1", priority=0, at=T0)
+
+    assert queue.dispatch(registry, at=T0, available_host_ids={"host-a"}) is None
+    assert queue.dispatch(registry, at=T0, available_host_ids={"host-b"}) == "req-1"
+
+
 def test_dispatch_returns_none_when_no_host_has_capacity():
     queue = SchedulingQueue()
     registry = _registry_with_host(max_concurrent_requests=1)

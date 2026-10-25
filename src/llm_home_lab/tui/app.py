@@ -86,6 +86,10 @@ def _sparkline_widget_id(host_id: str, prefix: str, used_ids: set[str]) -> str:
 
 
 _NODE_STATUS_STYLES = {"online": "bold green", "offline": "bold red", "unknown": "bold yellow"}
+# Explicit hex, not named magenta: the Textual theme maps "magenta" onto the same
+# red it uses for offline, which would hide a reserved node that has gone offline.
+_RESERVED_STYLE = "bold #c000ff"
+_EXPIRING_STYLE = "bold #ff8800"
 
 
 def _styled_load_counter(status: object, in_flight: object, max_concurrent: object) -> Text:
@@ -97,11 +101,35 @@ def _styled_load_counter(status: object, in_flight: object, max_concurrent: obje
     return Text(f"{in_flight}/{max_concurrent}", style=style)
 
 
-def _styled_node_status(status: object, in_flight: object, max_concurrent: object) -> Text:
+def _lease_markup(lease: object) -> Text | None:
+    if not isinstance(lease, dict):
+        return None
+    holder = lease.get("holder")
+    until = lease.get("hard_expires_at") or lease.get("expires_at")
+    if not isinstance(holder, str) or not isinstance(until, str):
+        return None
+    word = "expiring" if lease.get("expiring_soon") else "reserved"
+    style = _EXPIRING_STYLE if lease.get("expiring_soon") else _RESERVED_STYLE
+    return Text.assemble((word, style), f" {holder} until {until}")
+
+
+def _styled_node_status(
+    status: object,
+    in_flight: object,
+    max_concurrent: object,
+    lease: object = None,
+) -> Text:
+    counter = _styled_load_counter(status, in_flight, max_concurrent)
+    reservation = _lease_markup(lease)
+    if reservation is None:
+        style = _NODE_STATUS_STYLES.get(str(status), "")
+        return Text.assemble((str(status), style), " ", counter)
+    # A reserved node that is not online keeps its health colour beside the lease colour,
+    # so an offline reservation does not look like a healthy one.
+    if status == "online":
+        return Text.assemble(reservation, " ", counter)
     style = _NODE_STATUS_STYLES.get(str(status), "")
-    return Text.assemble(
-        (str(status), style), " ", _styled_load_counter(status, in_flight, max_concurrent)
-    )
+    return Text.assemble((str(status), style), " ", reservation, " ", counter)
 
 
 def _load_label(host: dict[str, object]) -> Text:
@@ -626,7 +654,10 @@ class DashboardApp(App[None]):
             table.add_row(
                 host_id,
                 _styled_node_status(
-                    host["status"], host["in_flight"], host["max_concurrent_requests"]
+                    host["status"],
+                    host["in_flight"],
+                    host["max_concurrent_requests"],
+                    host.get("lease"),
                 ),
                 _styled_failure_count(health.get("recent_failures")),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour"),

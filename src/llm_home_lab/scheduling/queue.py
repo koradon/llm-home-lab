@@ -1,12 +1,19 @@
 from collections import deque
+from collections.abc import Collection
 from datetime import datetime
 
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.scheduling.models import QueueEntry
 
 
-def _has_free_capacity(registry: HostRegistry) -> bool:
-    return any(host.in_flight < host.capacity.max_concurrent_requests for host in registry.hosts())
+def _has_free_capacity(
+    registry: HostRegistry, available_host_ids: Collection[str] | None = None
+) -> bool:
+    return any(
+        host.in_flight < host.capacity.max_concurrent_requests
+        and (available_host_ids is None or host.host_id in available_host_ids)
+        for host in registry.hosts()
+    )
 
 
 class SchedulingQueue:
@@ -47,8 +54,13 @@ class SchedulingQueue:
         if rotation is not None and session_id in rotation:
             rotation.remove(session_id)
 
-    def dispatch(self, registry: HostRegistry, at: datetime) -> str | None:
-        if not _has_free_capacity(registry):
+    def dispatch(
+        self,
+        registry: HostRegistry,
+        at: datetime,
+        available_host_ids: Collection[str] | None = None,
+    ) -> str | None:
+        if not _has_free_capacity(registry, available_host_ids):
             return None
 
         for priority in sorted(self._tiers):
