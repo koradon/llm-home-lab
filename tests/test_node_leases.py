@@ -562,3 +562,49 @@ def test_a_client_that_only_uses_the_exported_base_url_lands_on_the_reserved_nod
     ordinary = client.post("/v1/chat/completions", json=_chat("gemma"))
     assert ordinary.status_code == 200
     assert ordinary.headers["X-Backend-Id"] == "host-b"
+
+
+def test_lease_prefix_rejects_other_routes_and_methods_without_side_effects():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    _register(client, "host-a")
+    _register(client, "host-b")
+    created = client.post("/v1/node-leases", json={"holder": "ada", "host_id": "host-a"})
+    token = created.json()["token"]
+    for method, path in [
+        ("POST", "/v1/nodes/register"),
+        ("PATCH", "/v1/nodes/host-a"),
+        ("POST", "/v1/nodes/host-a/heartbeat"),
+        ("POST", "/v1/node-leases/force-release"),
+        ("POST", "/v1/node-leases/heartbeat"),
+        ("DELETE", "/v1/node-leases"),
+        ("GET", "/v1/nodes"),
+        ("GET", "/health"),
+        ("GET", "/metrics"),
+        ("GET", "/alerts"),
+        ("GET", "/v1/models"),
+        ("GET", "/capacity/extra"),
+        ("POST", "/capacity"),
+        ("POST", "/v1/capacity"),
+        ("GET", "/v1/chat/completions"),
+    ]:
+        for headers in [AUTH_HEADERS, {"Authorization": ""}]:
+            response = client.request(
+                method,
+                f"/lease/{token}{path}",
+                headers=headers,
+                json={
+                    "host_id": "unexpected",
+                    "backend_type": "fake",
+                    "context_window": 8192,
+                    "base_url": "http://fake",
+                    "max_concurrent_requests": 4,
+                },
+            )
+            assert response.status_code == 404, (method, path, response.text)
+    nodes = client.get("/v1/nodes").json()["nodes"]
+    assert {node["host_id"] for node in nodes} == {"host-a", "host-b"}
+    response = client.post(
+        "/v1/chat/completions", headers={LEASE_HEADER_NAME: token}, json=_chat()
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Backend-Id"] == "host-a"

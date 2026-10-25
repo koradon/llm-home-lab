@@ -833,6 +833,10 @@ def create_app(
         ) -> None:
             if scope.get("type") == "http":
                 rewrite_lease_path(scope)
+                path = scope.get("path")
+                if isinstance(path, str) and path.startswith("/lease/"):
+                    await Response(status_code=404)(scope, receive, send)
+                    return
             await self._app(scope, receive, send)
 
     app.add_middleware(_LeasePathMiddleware)

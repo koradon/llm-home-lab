@@ -9,9 +9,7 @@ _LEASE_HEADER = b"x-llm-node-lease"
 def rewrite_lease_path(scope: dict[str, object]) -> None:
     """Strip ``/lease/{token}`` and pin that token when the request has no lease header.
 
-    ``/lease/{token}/capacity`` is the capacity route. Every other path under the
-    prefix is the same route it would be without the prefix, including
-    ``/v1/chat/completions`` and ``/v1/capacity``.
+    Only POST chat completions and GET capacity routes accept the prefix.
     """
     path = scope.get("path")
     if not isinstance(path, str):
@@ -21,8 +19,14 @@ def rewrite_lease_path(scope: dict[str, object]) -> None:
         return
     token = match.group("token")
     rest = match.group("rest") or "/"
-    if rest == "/capacity" or rest.startswith("/capacity/"):
-        rest = "/v1" + rest
+    if (scope.get("method"), rest) not in {
+        ("POST", "/v1/chat/completions"),
+        ("GET", "/v1/capacity"),
+        ("GET", "/capacity"),
+    }:
+        return
+    if rest == "/capacity":
+        rest = "/v1/capacity"
     scope["path"] = rest
     scope["raw_path"] = rest.encode("utf-8")
     raw_headers = scope.get("headers")

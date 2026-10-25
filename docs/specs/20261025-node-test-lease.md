@@ -91,7 +91,9 @@ node, and only if it serves the model. Capacity and health waits apply to that n
 The prefix is not an API key. A missing or invalid key is still rejected, and a key allowed
 only on `/v1/chat/completions` can complete through the leased base but cannot reserve.
 `/lease/{token}/v1/chat/completions`, `/lease/{token}/v1/capacity`, and `/lease/{token}/capacity`
-are the chat and capacity routes. Streaming is the same response as the unprefixed route.
+accept POST, GET, and GET respectively. Every other path or method under `/lease/{token}/`
+returns 404 without rewriting or executing the underlying route. Streaming is the same
+response as the unprefixed route.
 
 Allowed hosts are read again when the request is admitted and takes a slot. An ordinary request
 that waited is not sent to a host reserved during the wait. A pinned request does not start
