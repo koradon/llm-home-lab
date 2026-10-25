@@ -646,6 +646,9 @@ def create_app(
         token = http_request.headers.get(LEASE_HEADER)
         pinned = lease_book.require(token, lease_now) if token else None
         model_hosts, budget_blocked = await _model_capable_hosts(request.model)
+        lease_now = _lease_now()
+        pinned = lease_book.require(token, lease_now) if token else None
+        all_model_hosts = model_hosts
         if pinned is not None:
             # A leased request stays on that one node. Model matching is unchanged,
             # and a miss does not fall through to any other host.
@@ -678,46 +681,62 @@ def create_app(
             not health_monitor.is_healthy(host.host_id, now) for host in model_hosts
         )
 
-        candidates = _eligible_candidates(model_hosts, now)
-        available_ids = {host.host_id for host in model_hosts}
+        def current_candidates() -> list[RoutingCandidate]:
+            at = _lease_now()
+            live = lease_book.require(token, at) if token else None
+            hosts = [
+                host
+                for host in all_model_hosts
+                if (
+                    host.host_id == live.host_id
+                    if live
+                    else not lease_book.is_held(host.host_id, at)
+                )
+            ]
+            return _eligible_candidates(hosts, datetime.now(UTC))
 
+        def queued_host_ids() -> set[str]:
+            try:
+                return {candidate.backend.backend_id for candidate in current_candidates()}
+            except (LeaseEndedError, LeaseNotHeldError):
+                return set()
+
+        candidates = current_candidates()
         if not candidates:
             request_id = uuid.uuid4().hex
             queue_session_id = request.session_id or request_id
             waited = 0.0
-            while True:
-                scheduling_queue.enqueue(
-                    request_id, session_id=queue_session_id, priority=0, at=now
-                )
-                admitted = False
+            scheduling_queue.enqueue(
+                request_id,
+                session_id=queue_session_id,
+                priority=0,
+                at=now,
+                eligible_host_ids=queued_host_ids,
+            )
+            try:
                 while waited < dispatch_wait_timeout:
                     await asyncio.sleep(dispatch_poll_interval)
                     waited += dispatch_poll_interval
+                    candidates = current_candidates()
                     if (
-                        scheduling_queue.dispatch(
-                            registry, datetime.now(UTC), available_host_ids=available_ids
+                        candidates
+                        and scheduling_queue.dispatch(
+                            registry,
+                            datetime.now(UTC),
+                            available_host_ids={c.backend.backend_id for c in candidates},
+                            request_id=request_id,
                         )
                         == request_id
                     ):
-                        admitted = True
                         break
-                if not admitted:
-                    scheduling_queue.cancel(request_id, session_id=queue_session_id, priority=0)
+                else:
                     if failover_in_play:
                         metrics_registry.record_failover_outcome(False, datetime.now(UTC))
                     raise NoAvailableBackendError(
                         "no host became available before the dispatch timeout"
                     )
-                candidates = _eligible_candidates(model_hosts, datetime.now(UTC))
-                if candidates:
-                    break
-                # dispatch() only checks that free capacity exists *somewhere* — it
-                # doesn't reserve a slot for this request_id. With another admitted
-                # waiter grabbing the only free slot before we got here (more likely
-                # the tighter capacity is, e.g. max_concurrent_requests=1), candidates
-                # is empty even though we were "admitted". Re-enqueue and keep waiting
-                # on the remaining budget instead of failing a request that could
-                # still succeed.
+            finally:
+                scheduling_queue.cancel(request_id, session_id=queue_session_id, priority=0)
 
         decision = router.select_backend(request, candidates, session_id=request.session_id)
         backend = backends_by_id[decision.backend_id]

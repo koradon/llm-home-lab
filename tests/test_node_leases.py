@@ -362,3 +362,97 @@ def test_the_default_ceiling_is_three_hours_and_the_env_can_raise_the_maximum():
     assert raised.default_ceiling == timedelta(hours=2)
     assert raised.max_ceiling == timedelta(hours=4)
     assert raised.min_active_nodes == 2
+
+
+async def test_queued_ordinary_request_rechecks_reservations_and_keeps_its_entry():
+    from httpx import ASGITransport, AsyncClient
+
+    app = _app(dispatch_wait_timeout=2)
+    with TestClient(app, headers=AUTH_HEADERS) as setup:
+        _register(setup, "host-a", max_concurrent_requests=1)
+        _register(setup, "host-b", max_concurrent_requests=1)
+    registry = app.state.registry
+    queue = app.state.scheduling_queue
+    registry.acquire_slot("host-a")
+    registry.acquire_slot("host-b")
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        ordinary = asyncio.create_task(client.post("/v1/chat/completions", json=_chat()))
+        for _ in range(100):
+            if queue.depth() == 1:
+                break
+            await asyncio.sleep(0.01)
+        assert queue.depth() == 1
+        lease = await client.post("/v1/node-leases", json={"holder": "ada", "host_id": "host-a"})
+        assert lease.status_code == 201
+        pinned = asyncio.create_task(
+            client.post(
+                "/v1/chat/completions",
+                json=_chat(),
+                headers={LEASE_HEADER_NAME: lease.json()["token"]},
+            )
+        )
+        for _ in range(100):
+            if queue.depth() == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert queue.depth() == 2
+        registry.release_slot("host-a")
+        result = await pinned
+        assert result.status_code == 200
+        assert result.headers["X-Backend-Id"] == "host-a"
+        assert not ordinary.done()
+        assert queue.depth() == 1
+        registry.release_slot("host-b")
+        result = await ordinary
+        assert result.status_code == 200
+        assert result.headers["X-Backend-Id"] == "host-b"
+        assert queue.depth() == 0
+
+
+async def test_queued_pinned_request_rejects_expired_or_replaced_lease():
+    from httpx import ASGITransport, AsyncClient
+
+    for expire in (True, False):
+        clock = _Clock(T0)
+        app = _app(clock=clock, dispatch_wait_timeout=2)
+        with TestClient(app, headers=AUTH_HEADERS) as setup:
+            _register(setup, "host-a", max_concurrent_requests=1)
+            _register(setup, "host-b", max_concurrent_requests=1)
+        registry = app.state.registry
+        registry.acquire_slot("host-a")
+        async with AsyncClient(
+            transport=ASGITransport(app), base_url="http://test", headers=AUTH_HEADERS
+        ) as client:
+            lease = await client.post(
+                "/v1/node-leases", json={"holder": "ada", "host_id": "host-a"}
+            )
+            pending = asyncio.create_task(
+                client.post(
+                    "/v1/chat/completions",
+                    json=_chat(),
+                    headers={LEASE_HEADER_NAME: lease.json()["token"]},
+                )
+            )
+            for _ in range(100):
+                if app.state.scheduling_queue.depth() == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert app.state.scheduling_queue.depth() == 1
+            if expire:
+                clock.now += timedelta(seconds=31)
+            else:
+                released = await client.post(
+                    "/v1/node-leases/force-release", json={"host_id": "host-a"}
+                )
+                assert released.status_code == 200
+            replacement = await client.post(
+                "/v1/node-leases", json={"holder": "bea", "host_id": "host-a"}
+            )
+            assert replacement.status_code == 201
+            registry.release_slot("host-a")
+            result = await pending
+            assert result.status_code in (403, 409)
+            assert registry.in_flight("host-a") == 0
+            assert app.state.scheduling_queue.depth() == 0

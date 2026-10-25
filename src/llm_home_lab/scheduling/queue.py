@@ -1,5 +1,5 @@
 from collections import deque
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from datetime import datetime
 
 from llm_home_lab.registry.registry import HostRegistry
@@ -18,10 +18,20 @@ def _has_free_capacity(
 
 class SchedulingQueue:
     def __init__(self) -> None:
+        self._eligibility: dict[str, Callable[[], Collection[str]]] = {}
         self._tiers: dict[int, dict[str, deque[QueueEntry]]] = {}
         self._rotations: dict[int, deque[str]] = {}
 
-    def enqueue(self, request_id: str, session_id: str, priority: int, at: datetime) -> None:
+    def enqueue(
+        self,
+        request_id: str,
+        session_id: str,
+        priority: int,
+        at: datetime,
+        eligible_host_ids: Callable[[], Collection[str]] | None = None,
+    ) -> None:
+        if eligible_host_ids is not None:
+            self._eligibility[request_id] = eligible_host_ids
         tier = self._tiers.setdefault(priority, {})
         if session_id not in tier:
             tier[session_id] = deque()
@@ -36,6 +46,7 @@ class SchedulingQueue:
         )
 
     def cancel(self, request_id: str, session_id: str, priority: int) -> None:
+        self._eligibility.pop(request_id, None)
         tier = self._tiers.get(priority)
         if tier is None or session_id not in tier:
             return
@@ -59,6 +70,7 @@ class SchedulingQueue:
         registry: HostRegistry,
         at: datetime,
         available_host_ids: Collection[str] | None = None,
+        request_id: str | None = None,
     ) -> str | None:
         if not _has_free_capacity(registry, available_host_ids):
             return None
@@ -69,15 +81,22 @@ class SchedulingQueue:
                 continue
 
             tier = self._tiers[priority]
-            session_id = rotation.popleft()
-            session_queue = tier[session_id]
-            entry = session_queue.popleft()
-
-            if session_queue:
-                rotation.append(session_id)
-            else:
-                del tier[session_id]
-
-            return entry.request_id
+            for session_id in list(rotation):
+                session_queue = tier[session_id]
+                entry = session_queue[0]
+                eligibility = self._eligibility.get(entry.request_id)
+                allowed = eligibility() if eligibility is not None else available_host_ids
+                if not _has_free_capacity(registry, allowed):
+                    continue
+                if request_id is not None and entry.request_id != request_id:
+                    return None
+                session_queue.popleft()
+                self._eligibility.pop(entry.request_id, None)
+                rotation.remove(session_id)
+                if session_queue:
+                    rotation.append(session_id)
+                else:
+                    del tier[session_id]
+                return entry.request_id
 
         return None
