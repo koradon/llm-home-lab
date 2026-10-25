@@ -332,8 +332,9 @@ back. Tests keep calling this orchestrator. The wrapper exports `OPENAI_BASE_URL
 `ORCHESTRATOR_BASE_URL`, and `LLM_HOME_LAB_NODE_LEASE`. The command sends that token as
 `X-LLM-Node-Lease` so the completion lands on the reserved node and nowhere else. Other callers
 do not get that node. A crashed wrapper stops heartbeating and the node returns within
-`ORCHESTRATOR_LEASE_TTL_S` (3 minutes). The hold cannot run past the ceiling (3 hours unless a
-reservation asks for less, or the server maximum is raised).
+`ORCHESTRATOR_LEASE_TTL_S` (3 minutes). The hold cannot run past its hard ceiling: 3 hours by
+default (`ORCHESTRATOR_LEASE_CEILING_S`), or the `ceiling_s` the reservation requested, which
+cannot exceed `ORCHESTRATOR_LEASE_MAX_CEILING_S`.
 
 ```bash
 uv run llm-home-lab-run --model google/gemma-4-e4b -- python check_real_model.py

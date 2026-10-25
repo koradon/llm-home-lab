@@ -53,20 +53,22 @@ selection does not.
 Success is `201` and includes `token`, `host_id`, `holder`, `expires_at`, `hard_expires_at`,
 and `expiring_soon`. The token is not repeated on `GET /v1/nodes`.
 
-`expires_at` is `now + ttl`, capped by the hard ceiling. A heartbeat sets it forward by one ttl
-again, never past the ceiling. When `now` reaches `expires_at` or `hard_expires_at`, the lease
-is gone and the node is back in ordinary routing.
+`expires_at` is one ttl after the lease is recorded, capped by the hard ceiling. The clock is
+read after model discovery, immediately before the reservation is stored, so a slow discovery
+does not return a token that is already past its ttl. A heartbeat sets `expires_at` forward by
+one ttl again, never past the ceiling. When `now` reaches `expires_at` or `hard_expires_at`,
+the lease is gone and the node is back in ordinary routing.
 
 Refusal is `409` `lease_refused`. An unknown `host_id` is `404`. A ceiling above the server
 maximum, or an empty holder, is `400`.
 
 `POST /v1/node-leases/heartbeat` and `DELETE /v1/node-leases` require `X-LLM-Node-Lease`. A
-wrong token is `403`. An ended lease is `409` `lease_ended` on heartbeat. Release of an already
-ended lease is `404`.
+wrong or unknown token is `403`. An ended lease is `409` `lease_ended` on heartbeat and on
+release, and that call drops it.
 
 `POST /v1/node-leases/force-release` with `{"host_id": "..."}` drops a live lease without the
-token. This is the human override. It still requires an API key allowed on `/v1/node-leases`,
-like every other lease route.
+token. A host with no live lease is `404`. This is the human override. It still requires an API
+key allowed on `/v1/node-leases`, like every other lease route.
 
 `GET /v1/nodes` adds `lease` on each node: `null`, or `holder`, `expires_at`,
 `hard_expires_at`, and `expiring_soon`. `expiring_soon` is true when the sooner of the two
@@ -84,6 +86,11 @@ A free slot on a leased node does not unblock it.
 
 With the header, the only candidate is that node, and only if it serves the model. Capacity and
 health waits apply to that node alone.
+
+Allowed hosts are read again when the request is admitted and takes a slot. An ordinary request
+that waited is not sent to a host reserved during the wait. A pinned request does not start
+after its lease has expired or been force-released, including when another holder has reserved
+that node. A queue poll admits only its own waiter; an earlier waiter stays queued.
 
 ### Wrapper
 
