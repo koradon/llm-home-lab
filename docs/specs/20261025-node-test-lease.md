@@ -81,8 +81,8 @@ but cannot reserve. A prefix of `/v1/` covers both.
 
 ### Completions
 
-Without the header, candidate hosts are the usual model matches minus leased hosts. If that
-set is empty because every match is leased, the gateway returns `503` and does not queue.
+Without a lease header or leased URL, candidate hosts are the usual model matches minus leased
+hosts. If that set is empty because every match is leased, the gateway returns `503` and does not queue.
 Otherwise an ordinary request still waits for capacity, but only on hosts it is allowed to use.
 A free slot on a leased node does not unblock it.
 

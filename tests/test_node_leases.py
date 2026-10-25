@@ -603,8 +603,6 @@ def test_lease_prefix_rejects_other_routes_and_methods_without_side_effects():
             assert response.status_code == 404, (method, path, response.text)
     nodes = client.get("/v1/nodes").json()["nodes"]
     assert {node["host_id"] for node in nodes} == {"host-a", "host-b"}
-    response = client.post(
-        "/v1/chat/completions", headers={LEASE_HEADER_NAME: token}, json=_chat()
-    )
+    response = client.post("/v1/chat/completions", headers={LEASE_HEADER_NAME: token}, json=_chat())
     assert response.status_code == 200
     assert response.headers["X-Backend-Id"] == "host-a"

@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.types import Receive
 
 from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBackend
@@ -828,7 +829,7 @@ def create_app(
         async def __call__(
             self,
             scope: dict[str, object],
-            receive: Callable[[], Awaitable[object]],
+            receive: Receive,
             send: Callable[[object], Awaitable[None]],
         ) -> None:
             if scope.get("type") == "http":
