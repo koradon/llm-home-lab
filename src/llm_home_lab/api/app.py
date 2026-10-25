@@ -28,6 +28,7 @@ from llm_home_lab.leases.models import (
     NodeLease,
     ReservableHost,
 )
+from llm_home_lab.leases.path import rewrite_lease_path
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.completion_log import CompletionLog
 from llm_home_lab.observability.metrics import MetricsRegistry
@@ -818,6 +819,23 @@ def create_app(
             },
         }
 
+    class _LeasePathMiddleware:
+        """Outermost on purpose: auth and routing see the path with the token removed."""
+
+        def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+            self._app = app
+
+        async def __call__(
+            self,
+            scope: dict[str, object],
+            receive: Callable[[], Awaitable[object]],
+            send: Callable[[object], Awaitable[None]],
+        ) -> None:
+            if scope.get("type") == "http":
+                rewrite_lease_path(scope)
+            await self._app(scope, receive, send)
+
+    app.add_middleware(_LeasePathMiddleware)
     return app
 
 

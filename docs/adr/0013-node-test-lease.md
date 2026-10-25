@@ -36,9 +36,15 @@ A reservation is refused, not queued, when no suitable node is free or when gran
 leave fewer than `ORCHESTRATOR_LEASE_MIN_ACTIVE_NODES` (default 1) healthy nodes in ordinary
 routing. The refusal names every node, who holds it, and until when.
 
-Test traffic keeps using the orchestrator. A request carrying `X-LLM-Node-Lease` is routed to
-that leased node and no other. Ordinary requests skip leased nodes. In-flight requests are not
-cancelled. Model matching is unchanged.
+Test traffic keeps using the orchestrator. `llm-home-lab-run` exports `ORCHESTRATOR_BASE_URL`
+and `OPENAI_BASE_URL` as one leased base that ends in `/v1` and carries the token in the path
+(`/lease/<token>`). An unmodified client that only honours that base, and sends no custom
+header, is routed to the leased node. `/v1/chat/completions` and `/capacity` both resolve under
+that prefix, and so does `/v1/capacity`. A request that instead carries `X-LLM-Node-Lease` is
+still routed to that leased node and no other. A local forwarding proxy was the other way to
+inject the header; the path keeps streaming and API-key checks on the orchestrator itself.
+Ordinary requests skip leased nodes. In-flight requests are not cancelled. Model matching is
+unchanged.
 
 Leases live in memory. An orchestrator restart drops them, which returns every node to routing
 instead of leaving a hold behind with no heartbeat.

@@ -2,6 +2,7 @@ import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from fastapi.testclient import TestClient
 from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
@@ -10,6 +11,7 @@ from llm_home_lab.backends.base import BackendChunk, BackendResponse
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.leases.book import NodeLeaseBook
 from llm_home_lab.leases.models import LEASE_HEADER_NAME, LeaseSettings, ReservableHost
+from llm_home_lab.leases.runner import child_environment
 from llm_home_lab.observability.alerts import AlertEvaluator
 from llm_home_lab.observability.metrics import MetricsRegistry
 from llm_home_lab.registry.registry import HostRegistry
@@ -94,6 +96,7 @@ def _app(
     clock: _Clock | None = None,
     backend_factory=None,
     dispatch_wait_timeout: float = 0.2,
+    key_store: ApiKeyStore | None = None,
 ):
     return create_app(
         registry=HostRegistry(new_registry_db_path()),
@@ -105,7 +108,7 @@ def _app(
         backend_factories={"fake": backend_factory or (lambda caps: RecordingBackend())},
         metrics_registry=MetricsRegistry(),
         alert_evaluator=AlertEvaluator([]),
-        key_store=_key_store(),
+        key_store=key_store or _key_store(),
         external_load_probe=inert_external_load_probe(),
         dispatch_wait_timeout=dispatch_wait_timeout,
         dispatch_poll_interval=0.01,
@@ -497,3 +500,65 @@ def test_reservation_ttl_starts_after_slow_model_discovery():
     )
     assert response.status_code == 200
     assert response.headers["X-Backend-Id"] == lease["host_id"]
+
+
+def test_a_client_that_only_uses_the_exported_base_url_lands_on_the_reserved_node():
+    chat_only = ApiKeyStore(
+        [
+            ClientConfig(
+                client_id="test-client",
+                allowed_path_prefixes=["/"],
+                keys=[ApiKey(key="test-key", expires_at=None)],
+            ),
+            ClientConfig(
+                client_id="chat-only",
+                allowed_path_prefixes=["/v1/chat/completions"],
+                keys=[ApiKey(key="chat-key", expires_at=None)],
+            ),
+        ]
+    )
+    app = _app(key_store=chat_only)
+    client = TestClient(app, headers=AUTH_HEADERS)
+    _register(client, "host-a", allowed_models=["gemma"])
+    _register(client, "host-b", allowed_models=["gemma"])
+    created = client.post("/v1/node-leases", json={"holder": "ada", "host_id": "host-a"})
+    assert created.status_code == 201
+    lease = created.json()
+    env = child_environment("http://orchestrator.test/v1", lease)
+    base = env["ORCHESTRATOR_BASE_URL"]
+    assert env["OPENAI_BASE_URL"] == base
+    api_key = {"Authorization": "Bearer test-key"}
+    chat_key = {"Authorization": "Bearer chat-key"}
+
+    async def drive() -> dict[str, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport) as http:
+            return {
+                "pinned": await http.post(
+                    f"{base}/chat/completions", json=_chat("gemma"), headers=api_key
+                ),
+                "streamed": await http.post(
+                    f"{base}/chat/completions",
+                    json={**_chat("gemma"), "stream": True},
+                    headers=chat_key,
+                ),
+                "capacity": await http.get(f"{base}/capacity", headers=api_key),
+                "alias": await http.get(f"{base.removesuffix('/v1')}/capacity", headers=api_key),
+                "missing_key": await http.post(f"{base}/chat/completions", json=_chat("gemma")),
+            }
+
+    sent = asyncio.run(drive())
+    assert sent["pinned"].status_code == 200
+    assert sent["pinned"].headers["X-Backend-Id"] == "host-a"
+    assert sent["streamed"].status_code == 200
+    assert sent["streamed"].headers["content-type"].startswith("text/event-stream")
+    assert sent["streamed"].headers["X-Backend-Id"] == "host-a"
+    assert "data: [DONE]" in sent["streamed"].text
+    assert sent["capacity"].status_code == 200
+    assert "total_max_concurrent_requests" in sent["capacity"].json()
+    assert sent["alias"].status_code == 200
+    assert sent["missing_key"].status_code == 401
+
+    ordinary = client.post("/v1/chat/completions", json=_chat("gemma"))
+    assert ordinary.status_code == 200
+    assert ordinary.headers["X-Backend-Id"] == "host-b"

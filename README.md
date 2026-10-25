@@ -328,10 +328,12 @@ it runs; register more hosts if you need to run many long generations at once.
 ## Reserving a node for a real-LLM check
 
 `llm-home-lab-run` takes one node out of ordinary routing, runs a command, and puts the node
-back. Tests keep calling this orchestrator. The wrapper exports `OPENAI_BASE_URL`,
-`ORCHESTRATOR_BASE_URL`, and `LLM_HOME_LAB_NODE_LEASE`. The command sends that token as
-`X-LLM-Node-Lease` so the completion lands on the reserved node and nowhere else. Other callers
-do not get that node. A crashed wrapper stops heartbeating and the node returns within
+back. Tests keep calling this orchestrator. The wrapper sets the command's `OPENAI_BASE_URL`
+and `ORCHESTRATOR_BASE_URL` to a leased base that ends in `/v1` and carries the token in the
+path. A client that only uses that base, including one that posts `{base}/chat/completions` and
+reads `{base}/capacity`, lands on the reserved node without sending a custom header. Sending
+`X-LLM-Node-Lease` to the normal origin still pins the same way. Other callers do not get that
+node. A crashed wrapper stops heartbeating and the node returns within
 `ORCHESTRATOR_LEASE_TTL_S` (3 minutes). The hold cannot run past its hard ceiling: 3 hours by
 default (`ORCHESTRATOR_LEASE_CEILING_S`), or the `ceiling_s` the reservation requested, which
 cannot exceed `ORCHESTRATOR_LEASE_MAX_CEILING_S`.
@@ -340,6 +342,17 @@ cannot exceed `ORCHESTRATOR_LEASE_MAX_CEILING_S`.
 uv run llm-home-lab-run --model google/gemma-4-e4b -- python check_real_model.py
 uv run llm-home-lab-run --node gpu-box --ceiling-seconds 7200 -- uv run pytest tests/test_live.py
 ```
+
+From another repository's worktree, run the wrapper out of a llm-home-lab checkout. Do not
+install it with `uv tool` or `pipx`. `ORCHESTRATOR_BASE_URL` (origin, or a base that already
+ends in `/v1`) and `ORCHESTRATOR_API_KEY` are read from the environment:
+
+```bash
+uv run --project "$LLM_HOME_LAB_REPO" -- llm-home-lab-run --node "$NODE" -- pytest
+```
+
+The command's `ORCHESTRATOR_BASE_URL` and `OPENAI_BASE_URL` are then the leased base. Use that
+value as the client base. Do not append another `/v1`.
 
 A refusal exits 2 and prints which nodes exist, who holds them, and until when. An unreachable
 orchestrator exits 3. The command's own exit code is passed through. `--node` and `--model`

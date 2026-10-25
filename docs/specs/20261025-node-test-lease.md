@@ -28,9 +28,11 @@ command. The TUI shows the holder and the hard ceiling.
   the token.
 - Ordinary `/v1/chat/completions` traffic does not select a leased node. In-flight requests
   already on that node finish.
-- A request with header `X-LLM-Node-Lease` is routed to the leased node and nowhere else. Model
-  matching is the same check the gateway already uses. A model the leased node does not serve
-  is rejected rather than sent to another node.
+- A request with header `X-LLM-Node-Lease` is routed to the leased node and nowhere else. The
+  same pin is a base URL `{origin}/lease/{token}/v1`: a client that only uses that base, and
+  sends no lease header, is routed to the leased node. Model matching is the same check the
+  gateway already uses. A model the leased node does not serve is rejected rather than sent to
+  another node.
 - If no node can be reserved without leaving fewer than the configured minimum of healthy,
   unleased nodes in routing, the reservation fails at once. The body lists every node, its
   status, the holder or `holder=free`, and for a hold the lease expiry and the hard ceiling.
@@ -84,8 +86,12 @@ set is empty because every match is leased, the gateway returns `503` and does n
 Otherwise an ordinary request still waits for capacity, but only on hosts it is allowed to use.
 A free slot on a leased node does not unblock it.
 
-With the header, the only candidate is that node, and only if it serves the model. Capacity and
-health waits apply to that node alone.
+With the header, or with the token carried in `/lease/{token}/...`, the only candidate is that
+node, and only if it serves the model. Capacity and health waits apply to that node alone.
+The prefix is not an API key. A missing or invalid key is still rejected, and a key allowed
+only on `/v1/chat/completions` can complete through the leased base but cannot reserve.
+`/lease/{token}/v1/chat/completions`, `/lease/{token}/v1/capacity`, and `/lease/{token}/capacity`
+are the chat and capacity routes. Streaming is the same response as the unprefixed route.
 
 Allowed hosts are read again when the request is admitted and takes a slot. An ordinary request
 that waited is not sent to a host reserved during the wait. A pinned request does not start
@@ -113,14 +119,27 @@ The child environment is the parent environment plus:
 
 | Variable | Value |
 | --- | --- |
-| `ORCHESTRATOR_BASE_URL` | orchestrator origin, no trailing slash |
-| `OPENAI_BASE_URL` | that origin plus `/v1` |
+| `ORCHESTRATOR_BASE_URL` | `{origin}/lease/{token}/v1` |
+| `OPENAI_BASE_URL` | the same leased base |
 | `LLM_HOME_LAB_NODE_LEASE` | lease token |
 | `LLM_HOME_LAB_LEASE_HEADER` | `X-LLM-Node-Lease` |
 | `LLM_HOME_LAB_NODE_ID` | reserved `host_id` |
 
-The child sends the header on every completion. The wrapper does not intercept the child's
-sockets.
+The child uses `ORCHESTRATOR_BASE_URL` or `OPENAI_BASE_URL` as its base and does not append
+another `/v1`. A client that posts to `{base}/chat/completions` and reads `{base}/capacity`
+lands on the reserved node without sending `X-LLM-Node-Lease`. A client that does send that
+header to the normal origin still pins. The wrapper does not intercept the child's sockets.
+`--base-url` accepts the orchestrator origin or a base that already ends in `/v1`.
+
+From another repository, without a global install:
+
+```bash
+uv run --project "$LLM_HOME_LAB_REPO" -- llm-home-lab-run --node "$NODE" -- <command>
+```
+
+`LLM_HOME_LAB_REPO` is the llm-home-lab checkout. The wrapper reads `ORCHESTRATOR_BASE_URL`
+and `ORCHESTRATOR_API_KEY` from the environment it inherits. Do not install it with `uv tool`
+or `pipx`.
 
 Exit codes:
 

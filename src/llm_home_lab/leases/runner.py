@@ -23,6 +23,19 @@ HEARTBEAT_INTERVAL_S = 60.0
 _JOIN_TIMEOUT_S = 2.0
 
 
+def orchestrator_origin(base_url: str) -> str:
+    """Origin the wrapper calls. A base that already ends in ``/v1`` is accepted."""
+    root = base_url.strip().rstrip("/")
+    if root.endswith("/v1"):
+        return root[: -len("/v1")]
+    return root
+
+
+def leased_client_base(base_url: str, token: str) -> str:
+    """Base URL an unmodified client uses. It ends in ``/v1`` and carries the token."""
+    return f"{orchestrator_origin(base_url)}/lease/{token}/v1"
+
+
 class ReservationRefused(Exception):
     """The orchestrator refused the reservation. Exit 2."""
 
@@ -63,7 +76,7 @@ class OrchestratorLeaseApi:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         self._client = httpx.Client(
-            base_url=base_url.rstrip("/"),
+            base_url=orchestrator_origin(base_url),
             timeout=timeout,
             headers=headers,
             transport=transport,
@@ -136,12 +149,12 @@ class OrchestratorLeaseApi:
 
 
 def child_environment(base_url: str, lease: Mapping[str, object]) -> dict[str, str]:
-    root = base_url.rstrip("/")
     token = str(lease["token"])
     host_id = str(lease["host_id"])
+    client_base = leased_client_base(base_url, token)
     env = os.environ.copy()
-    env["ORCHESTRATOR_BASE_URL"] = root
-    env["OPENAI_BASE_URL"] = f"{root}/v1"
+    env["ORCHESTRATOR_BASE_URL"] = client_base
+    env["OPENAI_BASE_URL"] = client_base
     env["LLM_HOME_LAB_NODE_LEASE"] = token
     env["LLM_HOME_LAB_LEASE_HEADER"] = LEASE_HEADER_NAME
     env["LLM_HOME_LAB_NODE_ID"] = host_id
@@ -264,7 +277,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--base-url",
         default=os.environ.get("ORCHESTRATOR_BASE_URL", "http://localhost:8080"),
-        help="orchestrator origin (default: ORCHESTRATOR_BASE_URL or http://localhost:8080)",
+        help=(
+            "orchestrator origin, or a base that already ends in /v1 "
+            "(default: ORCHESTRATOR_BASE_URL or http://localhost:8080)"
+        ),
     )
     parser.add_argument(
         "--api-key",

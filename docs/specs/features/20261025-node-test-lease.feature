@@ -17,6 +17,15 @@ Feature: Node test lease
     Then the reservation is refused
     And the message names ada and the time the lease runs until
 
+  Scenario: An unmodified client using only the leased base URL lands on the reserved node
+    Given host-a is reserved and host-b is free
+    When a completion is posted to the exported base URL with an API key and no lease header
+    Then the orchestrator routes it to host-a
+    And a streamed completion on that base is served by host-a
+    And capacity is readable under that base
+    And the same completion without an API key is rejected
+    And a completion on the ordinary URL with no lease header does not select host-a
+
   Scenario: Ordinary traffic skips a leased node and the lease token pins it
     Given host-a and host-b both serve gemma and host-a is reserved
     When a completion for gemma has no lease header

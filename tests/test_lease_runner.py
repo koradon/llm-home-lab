@@ -116,8 +116,8 @@ def test_the_wrapper_exports_the_lease_and_returns_the_command_exit_code():
     assert code == 7
     assert api.released
     assert proc.env is not None
-    assert proc.env["ORCHESTRATOR_BASE_URL"] == "http://orch:8080"
-    assert proc.env["OPENAI_BASE_URL"] == "http://orch:8080/v1"
+    assert proc.env["ORCHESTRATOR_BASE_URL"] == "http://orch:8080/lease/lease-token/v1"
+    assert proc.env["OPENAI_BASE_URL"] == "http://orch:8080/lease/lease-token/v1"
     assert proc.env["LLM_HOME_LAB_NODE_LEASE"] == "lease-token"
     assert proc.env["LLM_HOME_LAB_LEASE_HEADER"] == LEASE_HEADER_NAME
     assert proc.env["LLM_HOME_LAB_NODE_ID"] == "host-a"
@@ -255,13 +255,14 @@ def test_the_http_client_sends_the_lease_header_and_surfaces_refusal():
         return httpx.Response(200, json={})
 
     api = OrchestratorLeaseApi(
-        "http://orchestrator", "test-key", transport=httpx.MockTransport(handler)
+        "http://orchestrator/v1", "test-key", transport=httpx.MockTransport(handler)
     )
     try:
         api.reserve(holder="ada", host_id="host-a", model=None, ceiling_s=None)
         raise AssertionError("expected refusal")
     except ReservationRefused as exc:
         assert "holder=cy" in str(exc)
+    assert seen["path"] == "/v1/node-leases"
     api.close()
 
     def lost(request: httpx.Request) -> httpx.Response:
