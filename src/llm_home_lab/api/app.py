@@ -241,13 +241,14 @@ def create_app(
             )
         return candidates
 
-    async def _reservable_hosts(model: str | None, now: datetime) -> list[ReservableHost]:
+    async def _reservable_hosts(model: str | None) -> list[ReservableHost]:
         capable_ids: set[str] | None
         if model is None:
             capable_ids = None
         else:
             capable, _budget_blocked = await _model_capable_hosts(model)
             capable_ids = {host.host_id for host in capable}
+        now = _lease_now()
         return [
             ReservableHost(
                 host_id=host.host_id,
@@ -510,8 +511,8 @@ def create_app(
 
     @app.post("/v1/node-leases", status_code=201)
     async def create_node_lease(payload: NodeLeaseCreateRequest) -> dict[str, object]:
+        hosts = await _reservable_hosts(payload.model)
         now = _lease_now()
-        hosts = await _reservable_hosts(payload.model, now)
         ceiling = None if payload.ceiling_s is None else timedelta(seconds=payload.ceiling_s)
         lease = lease_book.reserve(
             holder=payload.holder,

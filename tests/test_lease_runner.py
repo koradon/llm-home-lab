@@ -1,7 +1,9 @@
+import subprocess
 import threading
 from collections.abc import Mapping
 
 import httpx
+import pytest
 
 from llm_home_lab.leases.models import LEASE_HEADER_NAME
 from llm_home_lab.leases.runner import (
@@ -76,7 +78,7 @@ class _Proc:
 
     def send_signal(self, sig: int) -> None:
         self.signals.append(sig)
-        self.code = 130
+        self.code = -sig
 
     def kill(self) -> None:
         self.code = -9
@@ -288,3 +290,47 @@ def test_a_connection_error_is_unreachable():
     except OrchestratorUnreachable as exc:
         assert "refused" in str(exc)
     api.close()
+
+
+@pytest.mark.parametrize("status", [-2, -15, -9, 0, 7])
+def test_child_wait_status_is_converted_to_shell_status(status):
+    api = _FakeApi()
+    proc = _Proc(code=status)
+    code = run_leased(
+        ["command"],
+        api,
+        base_url="http://orch",
+        holder="ada",
+        host_id=None,
+        model=None,
+        ceiling_s=None,
+        popen=_popen_factory(proc),
+        stderr=lambda line: None,
+    )
+    assert code == (128 + abs(status) if status < 0 else status)
+    assert api.released
+
+
+def test_interrupt_timeout_kills_child_and_normalizes_kill_status():
+    class SlowInterruptProc(_Proc):
+        def wait(self, timeout=None):
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("command", timeout)
+            return super().wait(timeout)
+
+    api = _FakeApi()
+    proc = SlowInterruptProc(interrupt=True)
+    code = run_leased(
+        ["command"],
+        api,
+        base_url="http://orch",
+        holder="ada",
+        host_id=None,
+        model=None,
+        ceiling_s=None,
+        popen=_popen_factory(proc),
+        stderr=lambda line: None,
+    )
+    assert proc.code == -9
+    assert code == 137
+    assert api.released

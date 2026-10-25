@@ -217,7 +217,7 @@ def run_leased(
         _release(api, token, leased_host, log)
     if lost:
         return EXIT_LOST
-    return code
+    return 128 - code if code < 0 else code
 
 
 def _release(api: LeaseApi, token: str, host_id: str, log: Callable[[str], None]) -> None:

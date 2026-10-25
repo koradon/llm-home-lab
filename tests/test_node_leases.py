@@ -456,3 +456,44 @@ async def test_queued_pinned_request_rejects_expired_or_replaced_lease():
             assert result.status_code in (403, 409)
             assert registry.in_flight("host-a") == 0
             assert app.state.scheduling_queue.depth() == 0
+
+
+def test_reservation_ttl_starts_after_slow_model_discovery():
+    clock = _Clock(T0)
+    discovered = False
+
+    class SlowDiscoveryBackend(RecordingBackend):
+        async def list_models(self):
+            nonlocal discovered
+            if not discovered:
+                await asyncio.sleep(0)
+                clock.now += timedelta(seconds=6)
+                discovered = True
+            return ["gemma"]
+
+    client = TestClient(
+        _app(
+            clock=clock,
+            settings=_settings(ttl=timedelta(seconds=5), expiring_soon=timedelta(seconds=1)),
+            backend_factory=lambda caps: SlowDiscoveryBackend(),
+        ),
+        headers=AUTH_HEADERS,
+    )
+    _register(client, "host-a")
+    _register(client, "host-b")
+    reserved = client.post(
+        "/v1/node-leases",
+        json={"holder": "ada", "model": "gemma"},
+    )
+    assert reserved.status_code == 201
+    lease = reserved.json()
+    assert datetime.fromisoformat(lease["expires_at"]) == clock.now + timedelta(seconds=5)
+    assert datetime.fromisoformat(lease["hard_expires_at"]) == clock.now + timedelta(hours=3)
+    assert lease["expiring_soon"] is False
+    response = client.post(
+        "/v1/chat/completions",
+        json=_chat(),
+        headers={LEASE_HEADER_NAME: lease["token"]},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Backend-Id"] == lease["host_id"]
