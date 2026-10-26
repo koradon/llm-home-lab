@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 
 from textual.widgets import Button, DataTable, Input, Label, Select, Sparkline, Static
@@ -97,10 +98,11 @@ async def test_banner_clears_after_a_successful_poll_following_a_failure():
 
 def _node(
     host_id,
-    in_flight,
+    in_flight=0,
     max_concurrent_requests=4,
     status="online",
     recent_failures=None,
+    lease=None,
 ):
     node = {
         "host_id": host_id,
@@ -112,7 +114,18 @@ def _node(
     }
     if recent_failures is not None:
         node["health"] = {"recent_failures": recent_failures}
+    if lease is not None:
+        node["lease"] = lease
     return node
+
+
+def _lease(holder, until, *, expiring_soon=False):
+    return {
+        "holder": holder,
+        "expires_at": until,
+        "hard_expires_at": until,
+        "expiring_soon": expiring_soon,
+    }
 
 
 async def test_a_sparkline_is_mounted_for_each_node_with_its_load_ratio():
@@ -242,6 +255,86 @@ async def test_the_counter_colours_follow_load_and_availability():
             (("offline", "bold red"), ("0/5", "dim")),
             (("unknown", "bold yellow"), ("2/4", "dim")),
         ]
+
+
+def _span_styles(cell):
+    return {cell.plain[span.start : span.end]: str(span.style) for span in cell.spans}
+
+
+def _enable_screenshot_colour(monkeypatch) -> None:
+    # NO_COLOR and TERM=dumb flatten export_screenshot to grey, so a colour assertion
+    # never sees the palette the chart and the lease status use.
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+
+def _svg_word_fills(svg: str) -> dict[str, set[str]]:
+    rules = dict(re.findall(r"\.(terminal-\d+-r\d+)\s*\{\s*fill:\s*(#[0-9A-Fa-f]{6})", svg))
+    fills: dict[str, set[str]] = {}
+    for match in re.finditer(r'<text class="([^"]+)"[^>]*>([^<]+)</text>', svg):
+        word = match.group(2).replace("&#160;", " ").strip()
+        if word not in {"online", "offline", "reserved", "expiring"}:
+            continue
+        colour = rules.get(match.group(1).split()[0])
+        assert colour is not None
+        fills.setdefault(word, set()).add(colour)
+    return fills
+
+
+async def test_a_reserved_node_is_coloured_apart_from_online_and_offline(monkeypatch):
+    _enable_screenshot_colour(monkeypatch)
+    until = "2026-10-25T13:00:00+00:00"
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _node("normal", in_flight=0),
+                _node("held", in_flight=1, lease=_lease("ada", until)),
+                _node("soon", in_flight=1, lease=_lease("bea", until, expiring_soon=True)),
+                _node("down", in_flight=0, status="offline"),
+                _node(
+                    "down-held",
+                    in_flight=0,
+                    status="offline",
+                    lease=_lease("cy", until),
+                ),
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(160, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        table = app.query_one("#nodes-table", DataTable)
+        cells = [
+            table.get_cell(table.coordinate_to_cell_key((row, 0))[0], table.ordered_columns[1].key)
+            for row in range(5)
+        ]
+        assert cells[0].plain == "online 0/4"
+        assert "reserved ada until 2026-10-25T13:00:00+00:00" in cells[1].plain
+        assert "expiring bea until 2026-10-25T13:00:00+00:00" in cells[2].plain
+        assert cells[3].plain == "offline 0/4"
+        assert cells[4].plain.startswith("offline reserved cy until")
+
+        styles = [_span_styles(cell) for cell in cells]
+        assert styles[0]["online"] == "bold green"
+        assert "c000ff" in styles[1]["reserved"].lower()
+        assert "ff8800" in styles[2]["expiring"].lower()
+        assert styles[3]["offline"] == "bold red"
+        assert styles[4]["offline"] == "bold red"
+        assert "c000ff" in styles[4]["reserved"].lower()
+        svg = app.export_screenshot()
+
+    fills = _svg_word_fills(svg)
+    assert fills["reserved"] == {"#c000ff"}
+    assert fills["expiring"] == {"#ff8800"}
+    assert fills["online"] and fills["offline"]
+    assert fills["online"].isdisjoint(fills["offline"])
+    assert fills["offline"].isdisjoint(fills["reserved"])
+    assert fills["reserved"].isdisjoint(fills["expiring"])
+    assert fills["online"].isdisjoint(fills["reserved"])
 
 
 async def test_the_status_cell_shows_load_counter_next_to_the_status():
@@ -1301,7 +1394,8 @@ async def test_a_small_dip_from_full_load_stays_visually_small():
         assert {line[:3] for line in lines} == {"███"}
 
 
-async def test_the_exported_screenshot_shows_green_orange_and_red_bars():
+async def test_the_exported_screenshot_shows_green_orange_and_red_bars(monkeypatch):
+    _enable_screenshot_colour(monkeypatch)
     client = _FakeClient(nodes={"nodes": [_node("host-a", in_flight=8, max_concurrent_requests=8)]})
     app = DashboardApp(client=client, interval_s=100.0)
 

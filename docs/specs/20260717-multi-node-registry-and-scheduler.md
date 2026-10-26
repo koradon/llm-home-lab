@@ -61,20 +61,26 @@ multiple remote model hosts — this spec does not introduce a distributed contr
   - `in_flight(host_id) -> int` and internal accounting hooks (`acquire_slot`/`release_slot`) the
     scheduler uses to track how many requests a host is currently serving.
 - Provide a `SchedulingQueue` with:
-  - `enqueue(request_id, session_id, priority, at) -> None` — adds a pending request. `priority`
-    is an `int`, lower value dispatches first (default tier `0`).
-  - `dispatch(registry, at) -> str | None` — returns the `request_id` of the next request that can
-    be admitted (some eligible, non-full host exists), removing it from the queue, or `None` if
-    every waiting request's eligible hosts are all at capacity.
+  - `enqueue(request_id, session_id, priority, at, eligible_host_ids=None) -> None` — adds a
+    pending request. `priority` is an `int`, lower value dispatches first (default tier `0`).
+    When `eligible_host_ids` is set, `dispatch` calls it and can admit that request only on
+    those hosts. [Node test lease](20261025-node-test-lease.md) passes it so a waiter is not
+    admitted onto a host reserved for someone else.
+  - `dispatch(registry, at, available_host_ids=None, request_id=None) -> str | None` — returns
+    the `request_id` of the next request that can be admitted on a free host it may use, and
+    removes that entry. A request with no eligible set uses `available_host_ids`, or any host
+    when that argument is omitted. Returns `None` when no such entry is reached. A call that
+    passes `request_id` does not remove a different request's entry: if the next admissible
+    entry belongs to someone else, it stays queued and this call returns `None`.
   - **Priority first**: a lower-priority-number request always dispatches before a
     higher-priority-number one, regardless of enqueue order.
   - **Fair within a priority tier**: within the same priority, dispatch does not let one
     `session_id` monopolize a host while other sessions have requests waiting at that same tier —
     dispatch cycles round-robin across distinct `session_id`s present in that tier, rather than
     strict FIFO, so one chatty session can't starve others queued at the same priority.
-  - A request the queue cannot immediately dispatch is not dropped — it stays queued until
-    `dispatch` is called again (e.g. on the next `release_slot` or heartbeat sweep) and a host has
-    a free slot.
+  - A request the queue cannot immediately dispatch is not dropped — it stays queued until a
+    `dispatch` that is allowed to admit it runs and a host it may use has a free slot. Another
+    request's poll does not remove it.
 - `main.py`'s hardcoded `candidates` list is replaced: `RoutingEngine.select_backend`'s
   `candidates` argument is now built from `HostRegistry.hosts()` (converted to
   `RoutingCandidate`), filtered by `HealthMonitor.is_healthy` exactly as today, so registry
@@ -189,9 +195,10 @@ registered host, any field absent from the request body keeps its existing value
 the request is at `max_concurrent_requests`, `dispatch` returns `None` for that request and it
 remains queued rather than failing.
 
-**Freeing a slot unblocks the highest-priority waiter**: when `release_slot` frees capacity on a
-host, the next `dispatch` call admits the lowest-priority-number request among those the
-now-available host is eligible to serve.
+**Freeing a slot unblocks the highest-priority waiter that host can serve**: when `release_slot`
+frees capacity on a host, `dispatch` admits the lowest-priority-number request among those that
+host is eligible to serve. A `dispatch` scoped to a different `request_id` leaves that waiter
+queued.
 
 **No priority starves indefinitely under fairness**: within one priority tier, round-robin across
 `session_id`s means a session with many queued requests does not get consecutive dispatch slots
@@ -211,6 +218,7 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-multi-no
 - Spec: [failover-and-health-policy](20260717-failover-and-health-policy.md) — `HealthMonitor.is_healthy`
   still filters candidates exactly as today; registry capacity filtering is an additional,
   independent filter, not a replacement for health filtering.
+- Spec: [node test lease](20261025-node-test-lease.md) — per-request host eligibility on this queue.
 - ADR: [0002-sqlite-for-session-storage](../adr/0002-sqlite-for-session-storage.md) — names this
   milestone as the SQLite-vs-PostgreSQL revisit trigger; confirmed with the user that "multi-node"
   here means one orchestrator process managing multiple remote model hosts, not multiple
