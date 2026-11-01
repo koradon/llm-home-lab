@@ -29,11 +29,8 @@ limits, and auth, with zero changes upstream of backend selection
   `list_models`) from `llm_home_lab.backends.base`, backed by an HTTP client calling a configured
   llama-server host's OpenAI-compatible `/v1/chat/completions` endpoint.
 - Configuration: base URL and a request timeout are required inputs; a maximum retry count has
-  a sane default. Mirrors `LMSTUDIO_*` env var naming: `LLAMASERVER_TIMEOUT` (default 1800 seconds of read silence,
-  per [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md)), `LLAMASERVER_MAX_RETRIES` (default `2`), `LLAMASERVER_CONNECT_TIMEOUT` (default `10`),
-  `LLAMASERVER_POOL_TIMEOUT` (default `10`) and `LLAMASERVER_WRITE_TIMEOUT` (default `60`).
-  Empty string, `0`, or `none` explicitly disables the read bound while retaining finite phase
-  bounds. This permits multi-minute prefill and arbitrarily long progressing responses.
+  a sane default. Environment variable names, defaults and timeout overrides are owned by the
+  [README configuration reference](../../README.md#configuration-reference).
   llama-server's standard default port is `8080` (vs. LM Studio's `1234`), though `base_url` is
   always explicit at node registration time.
 - **`complete()` talks to llama-server via its streaming protocol internally**, accumulating
@@ -41,7 +38,7 @@ limits, and auth, with zero changes upstream of backend selection
   `complete()` still gets one accumulated result, not a stream. This mirrors
   [ADR-0003](../adr/0003-lmstudio-backend-always-streams-internally.md)'s rationale for
   `LMStudioBackend`: httpx's read timeout resets on every received chunk, so a streaming
-  transport turns the timeout into "max gap between tokens" instead of "max total generation
+  transport turns the timeout into "max gap between received bytes" instead of "max total generation
   time." Requests `stream_options: {"include_usage": true}`; usage falls back to `0`/`0` if the
   backend doesn't honor it, same as `LMStudioBackend`.
 - **Health check uses llama-server's native `GET /health`**, not a proxy through a chat/model

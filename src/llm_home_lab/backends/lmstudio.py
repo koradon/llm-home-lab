@@ -88,7 +88,7 @@ class LMStudioBackend:
     async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
         # Talks to LM Studio via streaming even for a non-streaming caller: httpx's read timeout
         # resets on every received chunk, so this turns "max total generation time" into "max gap
-        # between tokens" for every caller, not just ones that pass stream=True (ADR-0003).
+        # between received bytes" for every caller, not just ones that pass stream=True (ADR-0003).
         content_parts: list[str] = []
         finish_reason = "stop"
         usage: dict[str, int] | None = None

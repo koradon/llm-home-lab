@@ -33,7 +33,7 @@ real requests instead of a test fake.
   gets one accumulated result, not a stream. This is deliberate (see
   [ADR-0003](../adr/0003-lmstudio-backend-always-streams-internally.md)): httpx's read timeout
   resets on every received chunk, so a streaming transport turns the timeout into "max gap
-  between tokens" instead of "max total generation time" — for both `complete()` and `stream()`.
+  between received bytes" instead of "max total generation time" — for both `complete()` and `stream()`.
   Requests `stream_options: {"include_usage": true}` so the accumulated response still carries
   accurate `prompt_tokens`/`completion_tokens`; if the backend doesn't honor that option, usage
   falls back to `0`/`0` for that response rather than failing the request.
@@ -44,9 +44,9 @@ real requests instead of a test fake.
   - non-2xx HTTP response from LM Studio → a new `BackendResponseError` carrying the upstream
     status code
 - Retry a connection failure that occurs before any chunk has been received, up to the configured
-  maximum, before raising `BackendConnectionError`. **Do not retry a transport timeout, ever** — once a
-  request has reached the backend, a timeout means "still generating," not "transient failure";
-  resending the same prompt from scratch only compounds the wait instead of helping. Do not retry
+  maximum, before raising `BackendConnectionError`. **Do not retry a transport timeout**:
+  retrying can compound a stalled request, and a timeout does not establish whether the backend
+  is still generating. Do not retry
   a non-2xx HTTP response either, since that reflects a real backend-reported error.
 - Log each backend call with backend id/host, latency, and outcome (success / classified
   failure), so requests are traceable per the [program plan](../plans/20260711-orchestrator-program.md)'s
@@ -54,12 +54,9 @@ real requests instead of a test fake.
 
 ## Transport bounds and cancellation
 
-`LMSTUDIO_TIMEOUT` defaults to 1800 seconds, covering first-byte and later read silence, not total
-inference duration. Explicit empty string, `0`, or `none` preserves unbounded reads. Independently,
-`LMSTUDIO_CONNECT_TIMEOUT`, `LMSTUDIO_POOL_TIMEOUT` and `LMSTUDIO_WRITE_TIMEOUT` default to 10, 10
-and 60 seconds. `LMSTUDIO_HEALTH_TIMEOUT` remains 10 seconds. The corresponding `LLAMASERVER_*`
-settings have identical semantics. The configuration reference in this section supersedes earlier
-unbounded defaults; see [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md).
+Timeout settings, defaults and unbounded-read overrides are owned by the
+[README configuration reference](../../README.md#configuration-reference). The decision rationale
+is recorded in [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md).
 
 All transport timeouts raise `BackendTimeoutError` without retry. Cancellation explicitly closes
 the active HTTP response, including nested iterators paused at a yield, with cancellation-safe
@@ -118,8 +115,6 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260711-lmstudio
 
 ## Open Questions
 
-- Read silence defaults to 1800s and max retries to 2 under ADR-0014; deployments with prefill
-  beyond 30 minutes must tune the read budget or explicitly opt out.
 - Whether retry backoff should be fixed or exponential; fixed is simpler and likely sufficient
   for a single local host.
 - The concurrency slot is held for a request's entire streaming duration — a very long generation

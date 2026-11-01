@@ -73,7 +73,8 @@ iteration and failure sending response headers. Backend HTTP responses close bef
 released; repeated closure cannot decrement twice.
 
 A connected caller with silent inference is bounded by the adapter's configured first-byte /
-byte-gap timeout (default 1800 seconds). A timeout before headers returns HTTP 504 with the
+byte-gap timeout (see the [configuration reference](../../README.md#configuration-reference)).
+A timeout before headers returns HTTP 504 with the
 OpenAI envelope and `error.code=backend_timeout`. After streaming headers are sent, errors close
 the stream. A response making byte progress can exceed the gap budget in total duration.
 See [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md).

@@ -91,10 +91,8 @@ multiple remote model hosts — this spec does not introduce a distributed contr
 
 ## Capacity ownership
 
-An admitted call releases exactly once after its backend task and active HTTP response stop.
-Inbound disconnect cancels non-streaming work as well as streaming work; queue wait cancellation
-removes its entry. Streaming closure before first iteration also returns its acquired slot.
-Connected silent inference has a configurable finite read-gap bound by default (ADR-0014).
+Admission lifetime and cancellation follow the
+[API gateway request-lifetime contract](20260711-openai-compatible-api-gateway.md#request-lifetime).
 Health probes and external `/slots` reports never overwrite admitted in-flight accounting.
 
 ## Model availability control

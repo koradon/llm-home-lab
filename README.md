@@ -293,10 +293,10 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 **Long-running generations**: the orchestrator always talks to LM Studio via its streaming
 protocol internally, even for a non-streaming caller — so `LMSTUDIO_TIMEOUT` is a *gap* timeout
 (max silence between received bytes), not a cap on total generation time. A response that's just slow to
-produce (not stuck) is never retried: once the backend has started responding, a timeout means
-"still generating," not "transient failure," and resending the same prompt would only compound
-the wait. `LMSTUDIO_MAX_RETRIES` only covers a connection failure before any output has arrived at
-all (e.g. LM Studio not running yet).
+produce is never retried on timeout: read silence does not establish whether the backend is
+still generating or stalled, and resending the same prompt could compound the wait.
+`LMSTUDIO_MAX_RETRIES` only covers a connection failure before any output has arrived at all
+(e.g. LM Studio not running yet).
 
 `LMSTUDIO_TIMEOUT` and `LLAMASERVER_TIMEOUT` default to **1800 seconds of read silence**,
 covering the first response bytes and later gaps. This generous ceiling permits multi-minute

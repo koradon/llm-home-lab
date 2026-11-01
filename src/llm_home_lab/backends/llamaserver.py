@@ -73,7 +73,7 @@ class LlamaCPPServerBackend:
     async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
         # Talks to llama-server via streaming even for a non-streaming caller: httpx's read
         # timeout resets on every received chunk, so this turns "max total generation time"
-        # into "max gap between tokens" for every caller, not just ones that pass stream=True
+        # into "max gap between received bytes" for both response modes
         # (mirrors LMStudioBackend's ADR-0003 rationale).
         content_parts: list[str] = []
         finish_reason = "stop"
