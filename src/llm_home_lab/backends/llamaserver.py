@@ -13,6 +13,7 @@ from llm_home_lab.backends.base import (
     BackendResponseError,
     BackendTimeoutError,
 )
+from llm_home_lab.backends.http_stream import closing_chunks, inference_response
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,8 @@ class LlamaCPPServerBackend:
         connect_timeout: float = 10.0,
         health_timeout: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        pool_timeout: float = 10.0,
+        write_timeout: float = 60.0,
     ) -> None:
         self.backend_id = base_url
         self.timeout = timeout
@@ -34,16 +37,14 @@ class LlamaCPPServerBackend:
         self.health_timeout = health_timeout
         self._client = httpx.AsyncClient(
             base_url=base_url,
-            timeout=httpx.Timeout(timeout, connect=connect_timeout),
+            timeout=httpx.Timeout(
+                timeout, connect=connect_timeout, pool=pool_timeout, write=write_timeout
+            ),
             transport=transport,
         )
 
     async def check_health(self) -> BackendHealth:
-        # llama-server ships a dedicated liveness endpoint (unlike LM Studio, which has none),
-        # so this reads it directly rather than proxying through a chat/model endpoint. Uses its
-        # own bounded timeout rather than inheriting the (possibly unbounded, per ADR-0010) gap
-        # timeout: ADR-0010 relies on this check to independently catch a hung backend, which
-        # only holds if the check itself can't hang too.
+        # Control-plane liveness is bounded independently of inference progress.
         try:
             response = await self._client.get("/health", timeout=self.health_timeout)
         except httpx.TransportError as exc:
@@ -78,13 +79,14 @@ class LlamaCPPServerBackend:
         finish_reason = "stop"
         usage: dict[str, int] | None = None
 
-        async for chunk in self._stream_chunks(request):
-            if chunk.content:
-                content_parts.append(chunk.content)
-            if chunk.finish_reason is not None:
-                finish_reason = chunk.finish_reason
-            if chunk.usage is not None:
-                usage = chunk.usage
+        async with closing_chunks(self._stream_chunks(request)) as chunks:
+            async for chunk in chunks:
+                if chunk.content:
+                    content_parts.append(chunk.content)
+                if chunk.finish_reason is not None:
+                    finish_reason = chunk.finish_reason
+                if chunk.usage is not None:
+                    usage = chunk.usage
 
         if usage is None:
             logger.warning(
@@ -112,9 +114,7 @@ class LlamaCPPServerBackend:
         for _ in range(attempts):
             received_any = False
             try:
-                async with self._client.stream(
-                    "POST", "/v1/chat/completions", json=payload
-                ) as response:
+                async with inference_response(self._client, payload) as response:
                     if response.status_code // 100 != 2:
                         body = await response.aread()
                         raise BackendResponseError(
@@ -145,12 +145,11 @@ class LlamaCPPServerBackend:
                             received_any = True
                             yield BackendChunk(content="", finish_reason=None, usage=chunk_usage)
                 return
-            except httpx.ReadTimeout as exc:
-                # The request reached the backend; it's just still generating. Retrying would
-                # resend the same prompt and wait the same timeout again, compounding the delay
-                # instead of helping — fail immediately regardless of attempts remaining.
-                logger.error("backend %s timed out waiting for a response", self.backend_id)
-                raise BackendTimeoutError(str(exc)) from exc
+            except httpx.TimeoutException as exc:
+                # Retrying a timeout can compound a stalled request. Keep transport
+                # phase bounds independent of prefill/read silence and fail immediately.
+                logger.error("backend %s request timed out: %s", self.backend_id, exc)
+                raise BackendTimeoutError(str(exc) or "backend request timed out") from exc
             except httpx.TransportError as exc:
                 if received_any:
                     # Some output already reached the caller (or, for complete(), was already

@@ -85,13 +85,13 @@ def test_default_app_respects_dispatch_wait_timeout_env_override(monkeypatch):
     assert app.state.dispatch_wait_timeout == 90.0
 
 
-def test_lmstudio_backend_factory_has_an_unbounded_gap_timeout_by_default(monkeypatch):
+def test_lmstudio_backend_factory_has_a_generous_finite_gap_timeout_by_default(monkeypatch):
     monkeypatch.delenv("LMSTUDIO_TIMEOUT", raising=False)
     caps = HostCapabilities(backend_type="lmstudio", context_window=8192, base_url="http://x:1234")
 
     backend = BACKEND_FACTORIES["lmstudio"](caps)
 
-    assert backend.timeout is None
+    assert backend.timeout == 1800.0
 
 
 @pytest.mark.parametrize("sentinel", ["", "0", "none", "NONE"])
@@ -113,7 +113,7 @@ def test_lmstudio_backend_factory_respects_gap_timeout_env_override(monkeypatch)
     assert backend.timeout == 45.0
 
 
-def test_llamaserver_backend_factory_has_an_unbounded_gap_timeout_by_default(monkeypatch):
+def test_llamaserver_backend_factory_has_a_generous_finite_gap_timeout_by_default(monkeypatch):
     monkeypatch.delenv("LLAMASERVER_TIMEOUT", raising=False)
     caps = HostCapabilities(
         backend_type="llamaserver", context_window=8192, base_url="http://x:8080"
@@ -121,7 +121,7 @@ def test_llamaserver_backend_factory_has_an_unbounded_gap_timeout_by_default(mon
 
     backend = BACKEND_FACTORIES["llamaserver"](caps)
 
-    assert backend.timeout is None
+    assert backend.timeout == 1800.0
 
 
 def test_llamaserver_backend_factory_respects_gap_timeout_env_override(monkeypatch):
@@ -300,3 +300,40 @@ def test_a_missing_alert_rules_file_yields_an_empty_evaluator_not_a_crash(monkey
     evaluator = _load_alert_evaluator()
 
     assert evaluator.current_state() == []
+
+
+@pytest.mark.parametrize(
+    "backend_type,prefix", [("lmstudio", "LMSTUDIO"), ("llamaserver", "LLAMASERVER")]
+)
+@pytest.mark.parametrize("sentinel", ["", "0", "none", "NONE"])
+def test_explicit_unbounded_read_keeps_other_transport_phases_finite(
+    monkeypatch, backend_type, prefix, sentinel
+):
+    monkeypatch.setenv(f"{prefix}_TIMEOUT", sentinel)
+    for phase in ("CONNECT", "POOL", "WRITE"):
+        monkeypatch.delenv(f"{prefix}_{phase}_TIMEOUT", raising=False)
+    caps = HostCapabilities(backend_type=backend_type, context_window=8192, base_url="http://fake")
+    backend = BACKEND_FACTORIES[backend_type](caps)
+
+    timeouts = backend._client.timeout
+
+    assert timeouts.read is None
+    assert timeouts.connect == 10
+    assert timeouts.pool == 10
+    assert timeouts.write == 60
+
+
+@pytest.mark.parametrize(
+    "backend_type,prefix", [("lmstudio", "LMSTUDIO"), ("llamaserver", "LLAMASERVER")]
+)
+def test_pool_and_write_bounds_can_be_tuned_independently(monkeypatch, backend_type, prefix):
+    monkeypatch.setenv(f"{prefix}_TIMEOUT", "1800")
+    monkeypatch.setenv(f"{prefix}_POOL_TIMEOUT", "3")
+    monkeypatch.setenv(f"{prefix}_WRITE_TIMEOUT", "90")
+    caps = HostCapabilities(backend_type=backend_type, context_window=8192, base_url="http://fake")
+
+    backend = BACKEND_FACTORIES[backend_type](caps)
+
+    assert backend._client.timeout.read == 1800
+    assert backend._client.timeout.pool == 3
+    assert backend._client.timeout.write == 90

@@ -44,13 +44,27 @@ real requests instead of a test fake.
   - non-2xx HTTP response from LM Studio → a new `BackendResponseError` carrying the upstream
     status code
 - Retry a connection failure that occurs before any chunk has been received, up to the configured
-  maximum, before raising `BackendConnectionError`. **Do not retry a read timeout, ever** — once a
+  maximum, before raising `BackendConnectionError`. **Do not retry a transport timeout, ever** — once a
   request has reached the backend, a timeout means "still generating," not "transient failure";
   resending the same prompt from scratch only compounds the wait instead of helping. Do not retry
   a non-2xx HTTP response either, since that reflects a real backend-reported error.
 - Log each backend call with backend id/host, latency, and outcome (success / classified
   failure), so requests are traceable per the [program plan](../plans/20260711-orchestrator-program.md)'s
   M1 telemetry goal.
+
+## Transport bounds and cancellation
+
+`LMSTUDIO_TIMEOUT` defaults to 1800 seconds, covering first-byte and later read silence, not total
+inference duration. Explicit empty string, `0`, or `none` preserves unbounded reads. Independently,
+`LMSTUDIO_CONNECT_TIMEOUT`, `LMSTUDIO_POOL_TIMEOUT` and `LMSTUDIO_WRITE_TIMEOUT` default to 10, 10
+and 60 seconds. `LMSTUDIO_HEALTH_TIMEOUT` remains 10 seconds. The corresponding `LLAMASERVER_*`
+settings have identical semantics. The configuration reference in this section supersedes earlier
+unbounded defaults; see [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md).
+
+All transport timeouts raise `BackendTimeoutError` without retry. Cancellation explicitly closes
+the active HTTP response, including nested iterators paused at a yield, with cancellation-safe
+cleanup before the gateway releases its slot. Slow responses delivering bytes within each gap
+budget continue even when their total duration exceeds that budget.
 
 ## Behavior
 
@@ -62,7 +76,7 @@ a `BackendResponse`.
 chunk from LM Studio's response, and yields a `BackendChunk` per chunk (including a `usage` field
 when the backend supplies one), terminating when LM Studio sends its own `[DONE]` marker.
 
-**Timeout**: if an individual streaming read exceeds the configured timeout, raise
+**Timeout**: if a connect, pool, write or individual streaming read exceeds its bound, raise
 `BackendTimeoutError` immediately — no retry, regardless of whether any chunks were already
 received.
 
@@ -104,9 +118,8 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260711-lmstudio
 
 ## Open Questions
 
-- Default timeout and max-retry values — raised to 120s / 2 retries per ADR-0003 after real-world
-  long-generation load exposed the original 30s default as too short; revisit again if 120s still
-  proves insufficient (see ADR-0003's revisit trigger).
+- Read silence defaults to 1800s and max retries to 2 under ADR-0014; deployments with prefill
+  beyond 30 minutes must tune the read budget or explicitly opt out.
 - Whether retry backoff should be fixed or exponential; fixed is simpler and likely sufficient
   for a single local host.
 - The concurrency slot is held for a request's entire streaming duration — a very long generation

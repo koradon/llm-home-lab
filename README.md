@@ -269,13 +269,17 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 | `ORCHESTRATOR_API_KEYS_FILE` | `./config/api_keys.json` | Client/key/authorization config |
 | `ORCHESTRATOR_AUTH_ENABLED` | `true` | Set `false` to disable auth entirely (local testing only) |
 | `LMSTUDIO_BASE_URL` | unset | LM Studio host registered at startup only when explicitly set |
-| `LMSTUDIO_TIMEOUT` | unbounded | Per-chunk read timeout to LM Studio (seconds) — see note below |
+| `LMSTUDIO_TIMEOUT` | `1800` | Per-chunk read timeout to LM Studio (seconds) — see note below |
 | `LMSTUDIO_CONNECT_TIMEOUT` | `10` | TCP connect timeout to LM Studio (seconds) — separate from `LMSTUDIO_TIMEOUT`, see note below |
+| `LMSTUDIO_POOL_TIMEOUT` | `10` | Connection-pool acquisition timeout (seconds), independent of inference reads |
+| `LMSTUDIO_WRITE_TIMEOUT` | `60` | Maximum gap while uploading request bytes (seconds) |
 | `LMSTUDIO_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives — see note below |
 | `LMSTUDIO_CONTEXT_WINDOW` | `8192` | Context window advertised for routing |
 | `LMSTUDIO_MAX_CONCURRENT_REQUESTS` | `4` | Capacity used by the scheduling queue |
-| `LLAMASERVER_TIMEOUT` | unbounded | Per-chunk read timeout to a `llamaserver` host (seconds) — same gap-timeout semantics as `LMSTUDIO_TIMEOUT` above |
+| `LLAMASERVER_TIMEOUT` | `1800` | Per-chunk read timeout to a `llamaserver` host (seconds) — same gap-timeout semantics as `LMSTUDIO_TIMEOUT` above |
 | `LLAMASERVER_CONNECT_TIMEOUT` | `10` | TCP connect timeout to a `llamaserver` host (seconds) |
+| `LLAMASERVER_POOL_TIMEOUT` | `10` | Connection-pool acquisition timeout (seconds), independent of inference reads |
+| `LLAMASERVER_WRITE_TIMEOUT` | `60` | Maximum gap while uploading request bytes (seconds) |
 | `LLAMASERVER_MAX_RETRIES` | `2` | Retry count for a connection failure before any chunk arrives, for `llamaserver` hosts |
 | `ORCHESTRATOR_DISPATCH_WAIT_TIMEOUT_S` | `120` | How long a queued request waits for a free host slot before failing with `503` |
 | `ORCHESTRATOR_THROUGHPUT_WINDOW_S` | `3600` | Rolling window (seconds) behind the `tasks/h` and `tasks/h/slot` columns; kept in memory; after an orchestrator restart the rate is computed over the time observed so far (at least 60 s, at most the window), so it is usable from the first completions |
@@ -288,26 +292,28 @@ to be slower. A node with no `model_aliases` entry for a model behaves exactly a
 
 **Long-running generations**: the orchestrator always talks to LM Studio via its streaming
 protocol internally, even for a non-streaming caller — so `LMSTUDIO_TIMEOUT` is a *gap* timeout
-(max silence between tokens), not a cap on total generation time. A response that's just slow to
+(max silence between received bytes), not a cap on total generation time. A response that's just slow to
 produce (not stuck) is never retried: once the backend has started responding, a timeout means
 "still generating," not "transient failure," and resending the same prompt would only compound
 the wait. `LMSTUDIO_MAX_RETRIES` only covers a connection failure before any output has arrived at
 all (e.g. LM Studio not running yet).
 
-`LMSTUDIO_TIMEOUT` is **unbounded by default** — unset, `""`, `"0"`, and `"none"` (any case) all
-mean "never time out on a gap between chunks." A trusted local/LAN backend either keeps streaming
-or is dead/hung, and `GET /health/ready` already detects the hung case independently, so there's
-no fixed number of seconds that's safe to assume across every prompt size, model, and host's
-hardware — a large prompt's prefill alone can legitimately take minutes. Set an explicit numeric
-value only if you specifically want a hard ceiling (e.g. to fail fast in front of an unreliable or
-untrusted network path); `LLAMASERVER_TIMEOUT` follows the same rule.
+`LMSTUDIO_TIMEOUT` and `LLAMASERVER_TIMEOUT` default to **1800 seconds of read silence**,
+covering the first response bytes and later gaps. This generous ceiling permits multi-minute
+prefill and does not limit total generation duration while bytes keep arriving. Increase it for
+workloads needing more than 30 minutes of prefill. Explicit `""`, `"0"`, or `"none"` (any case)
+preserves unbounded reads; unset now selects the finite default. A healthy `/health/ready` does
+not prove that older inference exchanges are progressing (see
+[ADR-0014](docs/adr/0014-request-lifetimes-and-finite-progress.md)).
 
-**Connect vs. gap timeout**: `LMSTUDIO_CONNECT_TIMEOUT` bounds only the initial TCP connect (is
-this host even reachable?), kept short so a powered-off or network-unreachable host fails fast
-instead of tying up `GET /health/ready` for the full `LMSTUDIO_TIMEOUT` duration. `LMSTUDIO_TIMEOUT`
-still governs everything after the connection is established (the per-chunk gap). Raise
-`LMSTUDIO_CONNECT_TIMEOUT` only if a legitimately slow network (e.g. Wi-Fi to another building)
-makes a healthy host's connect attempt regularly exceed 10 seconds.
+**Independent transport bounds**: `*_CONNECT_TIMEOUT`, `*_POOL_TIMEOUT` and `*_WRITE_TIMEOUT`
+default to 10, 10 and 60 seconds. Health checks retain an independent 10-second timeout. These
+bounds remain finite when reads are explicitly unbounded. Timeouts fail without retry and return
+`504 backend_timeout` before response headers; an already-started stream closes on error.
+
+Disconnecting the inbound client cancels and awaits backend work before returning its node slot,
+for both response modes. Queue waits and streaming bodies closed before first iteration also
+clean up their ownership. The slot is released exactly once, after active response cleanup.
 
 For genuinely long responses, also prefer **streaming** (`"stream": true` in the request body):
 the client gets tokens as they're generated instead of waiting in silence for the whole response.

@@ -100,6 +100,20 @@ time, red → green, then a refactor pass once all scenarios pass. Suggested ord
 queue — then `SchedulingQueue` (priority, then fairness) against a fake/in-memory registry, then
 app wiring last.
 
+## Request-lifetime repair (completed 2026-11-01)
+
+- Added a single ASGI receive owner that cancels and awaits disconnected request work, including
+  the queue wait whose existing `finally` removes its entry.
+- Kept non-streaming slot release after backend cleanup; gave streaming an explicit iterator
+  owner and response-finalization fallback for the acquire-to-iteration handoff.
+- Separated finite connect/pool/write bounds from a generous configurable inference byte-gap
+  ceiling; see [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md).
+- Added fake-only loopback API/HTTPX regressions: eight client disconnects and eight caller
+  timeouts, connected silence, progressing output, resets, pool waits, queue cleanup, streaming
+  disconnect and never-started iterators. Delayed HTTP response closure proves slots cannot be
+  returned before cleanup completes. Test sockets use kernel-selected ports, an inert load probe
+  and `ORCHESTRATOR_LMS_BINARY_PATH=/nonexistent`.
+
 ## Risks
 
 - **Polling-based dispatch wait**: the bounded-backoff poll in `chat_completions` (Step 5) adds

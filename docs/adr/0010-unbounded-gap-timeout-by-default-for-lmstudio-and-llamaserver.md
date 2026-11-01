@@ -2,7 +2,8 @@
 
 ## Status
 
-accepted
+superseded by [ADR-0014](0014-request-lifetimes-and-finite-progress.md). The rationale below
+records the historical decision; health checks do not establish inference progress.
 
 ## Context and Problem Statement
 

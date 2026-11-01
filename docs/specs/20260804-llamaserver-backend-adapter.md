@@ -29,8 +29,11 @@ limits, and auth, with zero changes upstream of backend selection
   `list_models`) from `llm_home_lab.backends.base`, backed by an HTTP client calling a configured
   llama-server host's OpenAI-compatible `/v1/chat/completions` endpoint.
 - Configuration: base URL and a request timeout are required inputs; a maximum retry count has
-  a sane default. Mirrors `LMSTUDIO_*` env var naming: `LLAMASERVER_TIMEOUT` (default unbounded,
-  per ADR-0010), `LLAMASERVER_MAX_RETRIES` (default `2`), `LLAMASERVER_CONNECT_TIMEOUT` (default `10`).
+  a sane default. Mirrors `LMSTUDIO_*` env var naming: `LLAMASERVER_TIMEOUT` (default 1800 seconds of read silence,
+  per [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md)), `LLAMASERVER_MAX_RETRIES` (default `2`), `LLAMASERVER_CONNECT_TIMEOUT` (default `10`),
+  `LLAMASERVER_POOL_TIMEOUT` (default `10`) and `LLAMASERVER_WRITE_TIMEOUT` (default `60`).
+  Empty string, `0`, or `none` explicitly disables the read bound while retaining finite phase
+  bounds. This permits multi-minute prefill and arbitrarily long progressing responses.
   llama-server's standard default port is `8080` (vs. LM Studio's `1234`), though `base_url` is
   always explicit at node registration time.
 - **`complete()` talks to llama-server via its streaming protocol internally**, accumulating
@@ -60,7 +63,7 @@ limits, and auth, with zero changes upstream of backend selection
   - non-2xx HTTP response from llama-server → `BackendResponseError` carrying the upstream
     status code
 - Retry a connection failure that occurs before any chunk has been received, up to the
-  configured maximum, before raising `BackendConnectionError`. Do not retry a read timeout or a
+  configured maximum, before raising `BackendConnectionError`. Do not retry a transport timeout or a
   non-2xx response, for the same reasons as `LMStudioBackend` (see its spec).
 - Log each backend call with backend id/host, latency, and outcome (success / classified
   failure).

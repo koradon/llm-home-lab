@@ -89,6 +89,14 @@ multiple remote model hosts — this spec does not introduce a distributed contr
   excluded from the candidates offered to `RoutingEngine` for a given dispatch attempt, the same
   way an unhealthy host is excluded today.
 
+## Capacity ownership
+
+An admitted call releases exactly once after its backend task and active HTTP response stop.
+Inbound disconnect cancels non-streaming work as well as streaming work; queue wait cancellation
+removes its entry. Streaming closure before first iteration also returns its acquired slot.
+Connected silent inference has a configurable finite read-gap bound by default (ADR-0014).
+Health probes and external `/slots` reports never overwrite admitted in-flight accounting.
+
 ## Model availability control
 
 Added after an operational incident: requesting a model that exists in LM Studio's catalog but
