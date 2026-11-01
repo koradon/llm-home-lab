@@ -29,8 +29,8 @@ limits, and auth, with zero changes upstream of backend selection
   `list_models`) from `llm_home_lab.backends.base`, backed by an HTTP client calling a configured
   llama-server host's OpenAI-compatible `/v1/chat/completions` endpoint.
 - Configuration: base URL and a request timeout are required inputs; a maximum retry count has
-  a sane default. Mirrors `LMSTUDIO_*` env var naming: `LLAMASERVER_TIMEOUT` (default unbounded,
-  per ADR-0010), `LLAMASERVER_MAX_RETRIES` (default `2`), `LLAMASERVER_CONNECT_TIMEOUT` (default `10`).
+  a sane default. Environment variable names, defaults and timeout overrides are owned by the
+  [README configuration reference](../../README.md#configuration-reference).
   llama-server's standard default port is `8080` (vs. LM Studio's `1234`), though `base_url` is
   always explicit at node registration time.
 - **`complete()` talks to llama-server via its streaming protocol internally**, accumulating
@@ -38,7 +38,7 @@ limits, and auth, with zero changes upstream of backend selection
   `complete()` still gets one accumulated result, not a stream. This mirrors
   [ADR-0003](../adr/0003-lmstudio-backend-always-streams-internally.md)'s rationale for
   `LMStudioBackend`: httpx's read timeout resets on every received chunk, so a streaming
-  transport turns the timeout into "max gap between tokens" instead of "max total generation
+  transport turns the timeout into "max gap between received bytes" instead of "max total generation
   time." Requests `stream_options: {"include_usage": true}`; usage falls back to `0`/`0` if the
   backend doesn't honor it, same as `LMStudioBackend`.
 - **Health check uses llama-server's native `GET /health`**, not a proxy through a chat/model
@@ -60,7 +60,7 @@ limits, and auth, with zero changes upstream of backend selection
   - non-2xx HTTP response from llama-server → `BackendResponseError` carrying the upstream
     status code
 - Retry a connection failure that occurs before any chunk has been received, up to the
-  configured maximum, before raising `BackendConnectionError`. Do not retry a read timeout or a
+  configured maximum, before raising `BackendConnectionError`. Do not retry a transport timeout or a
   non-2xx response, for the same reasons as `LMStudioBackend` (see its spec).
 - Log each backend call with backend id/host, latency, and outcome (success / classified
   failure).

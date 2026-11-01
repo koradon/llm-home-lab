@@ -33,7 +33,7 @@ real requests instead of a test fake.
   gets one accumulated result, not a stream. This is deliberate (see
   [ADR-0003](../adr/0003-lmstudio-backend-always-streams-internally.md)): httpx's read timeout
   resets on every received chunk, so a streaming transport turns the timeout into "max gap
-  between tokens" instead of "max total generation time" — for both `complete()` and `stream()`.
+  between received bytes" instead of "max total generation time" — for both `complete()` and `stream()`.
   Requests `stream_options: {"include_usage": true}` so the accumulated response still carries
   accurate `prompt_tokens`/`completion_tokens`; if the backend doesn't honor that option, usage
   falls back to `0`/`0` for that response rather than failing the request.
@@ -44,13 +44,24 @@ real requests instead of a test fake.
   - non-2xx HTTP response from LM Studio → a new `BackendResponseError` carrying the upstream
     status code
 - Retry a connection failure that occurs before any chunk has been received, up to the configured
-  maximum, before raising `BackendConnectionError`. **Do not retry a read timeout, ever** — once a
-  request has reached the backend, a timeout means "still generating," not "transient failure";
-  resending the same prompt from scratch only compounds the wait instead of helping. Do not retry
+  maximum, before raising `BackendConnectionError`. **Do not retry a transport timeout**:
+  retrying can compound a stalled request, and a timeout does not establish whether the backend
+  is still generating. Do not retry
   a non-2xx HTTP response either, since that reflects a real backend-reported error.
 - Log each backend call with backend id/host, latency, and outcome (success / classified
   failure), so requests are traceable per the [program plan](../plans/20260711-orchestrator-program.md)'s
   M1 telemetry goal.
+
+## Transport bounds and cancellation
+
+Timeout settings, defaults and unbounded-read overrides are owned by the
+[README configuration reference](../../README.md#configuration-reference). The decision rationale
+is recorded in [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md).
+
+All transport timeouts raise `BackendTimeoutError` without retry. Cancellation explicitly closes
+the active HTTP response, including nested iterators paused at a yield, with cancellation-safe
+cleanup before the gateway releases its slot. Slow responses delivering bytes within each gap
+budget continue even when their total duration exceeds that budget.
 
 ## Behavior
 
@@ -62,7 +73,7 @@ a `BackendResponse`.
 chunk from LM Studio's response, and yields a `BackendChunk` per chunk (including a `usage` field
 when the backend supplies one), terminating when LM Studio sends its own `[DONE]` marker.
 
-**Timeout**: if an individual streaming read exceeds the configured timeout, raise
+**Timeout**: if a connect, pool, write or individual streaming read exceeds its bound, raise
 `BackendTimeoutError` immediately — no retry, regardless of whether any chunks were already
 received.
 
@@ -104,9 +115,6 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260711-lmstudio
 
 ## Open Questions
 
-- Default timeout and max-retry values — raised to 120s / 2 retries per ADR-0003 after real-world
-  long-generation load exposed the original 30s default as too short; revisit again if 120s still
-  proves insufficient (see ADR-0003's revisit trigger).
 - Whether retry backoff should be fixed or exponential; fixed is simpler and likely sufficient
   for a single local host.
 - The concurrency slot is held for a request's entire streaming duration — a very long generation

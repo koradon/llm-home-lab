@@ -89,6 +89,12 @@ multiple remote model hosts — this spec does not introduce a distributed contr
   excluded from the candidates offered to `RoutingEngine` for a given dispatch attempt, the same
   way an unhealthy host is excluded today.
 
+## Capacity ownership
+
+Admission lifetime and cancellation follow the
+[API gateway request-lifetime contract](20260711-openai-compatible-api-gateway.md#request-lifetime).
+Health probes and external `/slots` reports never overwrite admitted in-flight accounting.
+
 ## Model availability control
 
 Added after an operational incident: requesting a model that exists in LM Studio's catalog but

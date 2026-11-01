@@ -4,7 +4,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -14,8 +14,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.types import Receive
 
+from llm_home_lab.api.lifetime import RequestLifetimeMiddleware, SlotStream, SlotStreamingResponse
 from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBackend
+from llm_home_lab.backends.http_stream import closing_chunks
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.leases.book import NodeLeaseBook
 from llm_home_lab.leases.models import (
@@ -746,28 +748,28 @@ def create_app(
         registry.acquire_slot(decision.backend_id)
 
         if request.stream:
-            if failover_in_play:
-                metrics_registry.record_failover_outcome(True, datetime.now(UTC))
-
-            async def _chunks() -> AsyncIterator[str]:
-                try:
-                    async for chunk in _stream_chunks(
-                        backend,
-                        request,
-                        metrics_registry,
-                        completion_log,
-                        health_monitor,
-                        decision.backend_id,
-                    ):
-                        yield chunk
-                finally:
-                    registry.release_slot(decision.backend_id)
-
-            return StreamingResponse(
-                _chunks(),
-                media_type="text/event-stream",
-                headers={"X-Backend-Id": decision.backend_id},
+            chunks = SlotStream(
+                _stream_chunks(
+                    backend,
+                    request,
+                    metrics_registry,
+                    completion_log,
+                    health_monitor,
+                    decision.backend_id,
+                ),
+                lambda: registry.release_slot(decision.backend_id),
             )
+            try:
+                if failover_in_play:
+                    metrics_registry.record_failover_outcome(True, datetime.now(UTC))
+                return SlotStreamingResponse(
+                    chunks,
+                    media_type="text/event-stream",
+                    headers={"X-Backend-Id": decision.backend_id},
+                )
+            except BaseException:
+                await chunks.aclose()
+                raise
 
         backend_call_start = time.perf_counter()
         try:
@@ -840,6 +842,7 @@ def create_app(
                     return
             await self._app(scope, receive, send)
 
+    app.add_middleware(RequestLifetimeMiddleware)
     app.add_middleware(_LeasePathMiddleware)
     return app
 
@@ -855,7 +858,7 @@ async def _stream_chunks(
     completion_log: CompletionLog,
     health_monitor: HealthMonitor,
     backend_id: str,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     usage: dict[str, int] | None = None
@@ -863,32 +866,33 @@ async def _stream_chunks(
     last_finish_reason: str | None = None
 
     stream_start = time.perf_counter()
-    async for chunk in backend.stream(request):
-        if chunk.usage is not None:
-            usage = chunk.usage
-        if chunk.content.strip():
-            saw_content = True
-        if chunk.finish_reason is not None:
-            last_finish_reason = chunk.finish_reason
-        if not chunk.content and chunk.finish_reason is None:
-            # A usage-only accounting chunk (no content, no finish_reason) — consumed for
-            # metrics below, not forwarded as a delta to the external client.
-            continue
+    async with closing_chunks(backend.stream(request)) as chunks:
+        async for chunk in chunks:
+            if chunk.usage is not None:
+                usage = chunk.usage
+            if chunk.content.strip():
+                saw_content = True
+            if chunk.finish_reason is not None:
+                last_finish_reason = chunk.finish_reason
+            if not chunk.content and chunk.finish_reason is None:
+                # A usage-only accounting chunk (no content, no finish_reason) — consumed for
+                # metrics below, not forwarded as a delta to the external client.
+                continue
 
-        payload = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": request.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": chunk.content},
-                    "finish_reason": chunk.finish_reason,
-                }
-            ],
-        }
-        yield f"data: {json.dumps(payload)}\n\n"
+            payload = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": request.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": chunk.content},
+                        "finish_reason": chunk.finish_reason,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
 
     stream_latency_ms = (time.perf_counter() - stream_start) * 1000
     is_healthy_completion = saw_content and last_finish_reason == "stop"

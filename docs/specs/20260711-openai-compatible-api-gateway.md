@@ -61,6 +61,24 @@ shape, per the backend adapter's error classification.
   `chat_template_kwargs` and `response_format`, which are validated and forwarded to the backend
   (see [generation parameter forwarding](20261009-generation-parameter-forwarding.md)).
 
+## Request lifetime
+
+For admitted non-streaming calls, inbound disconnect cancels and awaits backend work before
+releasing the host slot exactly once. A sole ASGI receive owner forwards the body and observes
+disconnect; downstream middleware does not compete for the raw receive channel. A disconnected
+queue waiter is removed without acquiring a slot.
+
+Streaming owns its slot from admission through body closure, including closure before the first
+iteration and failure sending response headers. Backend HTTP responses close before capacity is
+released; repeated closure cannot decrement twice.
+
+A connected caller with silent inference is bounded by the adapter's configured first-byte /
+byte-gap timeout (see the [configuration reference](../../README.md#configuration-reference)).
+A timeout before headers returns HTTP 504 with the
+OpenAI envelope and `error.code=backend_timeout`. After streaming headers are sent, errors close
+the stream. A response making byte progress can exceed the gap budget in total duration.
+See [ADR-0014](../adr/0014-request-lifetimes-and-finite-progress.md).
+
 ## Acceptance scenarios (BDD)
 
 Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260711-openai-compatible-api-gateway.feature`.

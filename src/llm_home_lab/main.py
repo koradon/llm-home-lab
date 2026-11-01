@@ -50,17 +50,10 @@ def _load_key_store() -> ApiKeyStore:
 
 
 def _parse_gap_timeout(raw: str | None) -> float | None:
-    """Per-chunk read timeout: unbounded (`None`) unless *raw* holds a number.
-
-    Unset, `""`, `"0"`, and `"none"` (case-insensitive) all mean unbounded — the default,
-    per ADR-0003's revisit trigger: this is a *gap* timeout (max silence between tokens), and
-    a trusted local/LAN backend either keeps streaming or is dead/hung, which
-    `GET /health/ready` already detects independently. Any other fixed value chosen here would
-    eventually be wrong for some prompt/model/hardware combination (a large prompt's prefill can
-    legitimately exceed a couple of minutes), so operators who want a ceiling set one explicitly
-    rather than inheriting an assumed-safe default.
-    """
-    if raw is None or raw.strip().lower() in ("", "0", "none"):
+    """First-byte/byte-gap bound; explicit sentinels preserve unbounded reads (ADR-0014)."""
+    if raw is None:
+        return 1800.0
+    if raw.strip().lower() in ("", "0", "none"):
         return None
     return float(raw)
 
@@ -80,6 +73,8 @@ BACKEND_FACTORIES: Mapping[str, Callable[[HostCapabilities], ChatBackend]] = {
         timeout=_parse_gap_timeout(os.environ.get("LMSTUDIO_TIMEOUT")),
         max_retries=int(os.environ.get("LMSTUDIO_MAX_RETRIES", "2")),
         connect_timeout=float(os.environ.get("LMSTUDIO_CONNECT_TIMEOUT", "10")),
+        pool_timeout=float(os.environ.get("LMSTUDIO_POOL_TIMEOUT", "10")),
+        write_timeout=float(os.environ.get("LMSTUDIO_WRITE_TIMEOUT", "60")),
         health_timeout=float(os.environ.get("LMSTUDIO_HEALTH_TIMEOUT", "10")),
         model_aliases=caps.model_aliases,
     ),
@@ -88,6 +83,8 @@ BACKEND_FACTORIES: Mapping[str, Callable[[HostCapabilities], ChatBackend]] = {
         timeout=_parse_gap_timeout(os.environ.get("LLAMASERVER_TIMEOUT")),
         max_retries=int(os.environ.get("LLAMASERVER_MAX_RETRIES", "2")),
         connect_timeout=float(os.environ.get("LLAMASERVER_CONNECT_TIMEOUT", "10")),
+        pool_timeout=float(os.environ.get("LLAMASERVER_POOL_TIMEOUT", "10")),
+        write_timeout=float(os.environ.get("LLAMASERVER_WRITE_TIMEOUT", "60")),
         health_timeout=float(os.environ.get("LLAMASERVER_HEALTH_TIMEOUT", "10")),
     ),
 }
