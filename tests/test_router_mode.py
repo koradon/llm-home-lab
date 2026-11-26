@@ -918,6 +918,96 @@ def test_patching_swap_mode_switches_node_between_router_and_none():
     assert client.get("/v1/nodes").json()["nodes"][0]["models"] is None
 
 
+def test_half_open_trial_connection_error_reopens_model_cooldown():
+    class _FailingConnectionBackend:
+        backend_id = "mini-1"
+
+        async def check_health(self) -> BackendHealth:
+            return BackendHealth(healthy=True, detail="ok")
+
+        async def list_model_states(self, *, raise_on_timeout: bool = False):
+            return [RouterModelState(id="broken", state="loaded")]
+
+        async def complete(self, request) -> BackendResponse:
+            raise BackendConnectionError("connection refused")
+
+        async def stream(self, request):
+            raise BackendConnectionError("connection refused")
+            yield BackendChunk(content="", finish_reason="stop", usage=None)  # pragma: no cover
+
+    health_monitor = HealthMonitor(
+        failure_threshold=3, recovery_threshold=2, cooldown=timedelta(seconds=30)
+    )
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    app = create_app(
+        registry=HostRegistry(new_registry_db_path()),
+        router=RoutingEngine(policy),
+        health_monitor=health_monitor,
+        scheduling_queue=SchedulingQueue(),
+        backend_factories={"fake": lambda caps: _FailingConnectionBackend()},
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
+        key_store=_permissive_key_store(),
+        external_load_probe=inert_external_load_probe(),
+        dispatch_wait_timeout=0.1,
+    )
+    client = TestClient(app, headers=AUTH_HEADERS)
+    client.post(
+        "/v1/nodes/register",
+        json={
+            "host_id": "mini-1",
+            "backend_type": "fake",
+            "context_window": 8192,
+            "base_url": "http://mini-1.local:8081",
+            "max_concurrent_requests": 4,
+            "allowed_models": ["broken"],
+            "swap_mode": "router",
+        },
+    )
+    client.get("/health/ready")
+
+    opened_at = datetime.now(UTC)
+    for _ in range(3):
+        health_monitor.record_model_probe(
+            "mini-1", "broken", healthy=False, at=opened_at
+        )
+    health_monitor._model_states[("mini-1", "broken")].unhealthy_since = (
+        opened_at - timedelta(seconds=30)
+    )
+
+    non_stream = client.post(
+        "/v1/chat/completions",
+        json={"model": "broken", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert non_stream.status_code == 503
+    now = datetime.now(UTC)
+    assert health_monitor.has_model_trial("mini-1", "broken") is False
+    assert health_monitor.is_model_healthy("mini-1", "broken", now) is False
+    assert health_monitor.may_admit_model("mini-1", "broken", now) is False
+    assert (
+        health_monitor.may_admit_model("mini-1", "broken", now + timedelta(seconds=29))
+        is False
+    )
+    assert client.get("/v1/nodes").json()["nodes"][0]["status"] == "online"
+
+    health_monitor._model_states[("mini-1", "broken")].unhealthy_since = (
+        datetime.now(UTC) - timedelta(seconds=30)
+    )
+    streamed = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "broken",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        },
+    )
+    assert streamed.status_code == 503
+    after_stream = datetime.now(UTC)
+    assert health_monitor.has_model_trial("mini-1", "broken") is False
+    assert health_monitor.may_admit_model("mini-1", "broken", after_stream) is False
+    assert client.get("/v1/nodes").json()["nodes"][0]["status"] == "online"
+
+
 def test_connection_failure_on_router_node_still_records_node_level_failure():
     class _FailingConnectionBackend:
         backend_id = "mini-1"

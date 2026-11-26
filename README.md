@@ -211,9 +211,9 @@ it with `"swap_mode": "router"` (default `"none"`):
 
 For router-mode nodes:
 - Probes read `GET /models` for the router catalog and states (`loaded`, `loading`, `sleeping`,
-  `unloaded`, `failed`) and query `GET /slots?model=<name>` for the loaded model(s) instead of
-  parameterless `GET /slots` (which returns `400` in router mode), restoring `external_load` slot
-  counts and `tasks/h/slot`.
+  `unloaded`, `failed`) and query `GET /slots?model=<name>` for the loaded model (else a sleeping
+  one) instead of parameterless `GET /slots` (which returns `400` in router mode), restoring
+  `external_load` slot counts and `tasks/h/slot`.
 - Model failures are isolated per `(node, model)`: a broken preset takes only that model out of
   routing and reports `0` in `GET /v1/capacity?model=<broken>` until it recovers, while the node
   stays `online` and its other models keep serving.

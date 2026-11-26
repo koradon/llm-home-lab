@@ -46,37 +46,7 @@ class LlamaCPPServerLoadProbe:
     ) -> ExternalLoadStatus:
         if not models:
             return _unavailable(at)
-
-        model_key = tuple(models)
-        cache_key = (host_id, model_key)
-        cached = self._cache.get(cache_key)
-        if cached is not None and at - cached[0] < self._cache_ttl:
-            return cached[1]
-
-        if len(model_key) == 1:
-            status = await self._probe_uncached(base_url, at, model=model_key[0])
-        else:
-            results = [
-                await self._probe_uncached(base_url, at, model=model_name)
-                for model_name in model_key
-            ]
-            available = [item for item in results if item.available]
-            if not available:
-                status = _unavailable(at)
-            else:
-                total_slots = sum(item.total_slots or 0 for item in available)
-                busy_slots = sum(item.busy_slots or 0 for item in available)
-                status = ExternalLoadStatus(
-                    available=True,
-                    status="busy" if busy_slots else "idle",
-                    queued=busy_slots,
-                    checked_at=at,
-                    total_slots=total_slots,
-                    busy_slots=busy_slots,
-                )
-
-        self._cache[cache_key] = (at, status)
-        return status
+        return await self.probe(host_id, base_url, at, model=models[0])
 
     async def _probe_uncached(
         self, base_url: str, at: datetime, *, model: str | None = None

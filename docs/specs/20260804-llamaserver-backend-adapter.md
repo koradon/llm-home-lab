@@ -91,8 +91,8 @@ implement the same `ChatBackend` port against an OpenAI-compatible chat endpoint
 - Registered via `swap_mode: "router"` on `POST /v1/nodes/register` or `PATCH /v1/nodes/{host_id}`
   (defaults to `"none"`).
 - **Per-model state and slot probing**: host probes call `GET /health` for router process liveness,
-  `GET /models` for the model catalog and states, and `GET /slots?model=<name>` for each currently
-  loaded model (falling back to sleeping models if none are loaded; reporting `available: false`
+  `GET /models` for the model catalog and states, and `GET /slots?model=<name>` for the currently
+  loaded model (falling back to one sleeping model if none are loaded; reporting `available: false`
   without calling parameterless `GET /slots` when no model is loaded). This restores
   `external_load.total_slots`, `external_load.busy_slots`, and `tasks/h/slot` telemetry on router
   nodes.
@@ -101,9 +101,10 @@ implement the same `ChatBackend` port against an OpenAI-compatible chat endpoint
   disable only the failing `(node, model)` pair, keeping the router node `online` and its other
   models serving. `GET /v1/capacity?model=<name>` reports `0` for an unhealthy/failed
   `(node, model)` pair until it recovers. After cooldown, exactly one half-open trial
-  completion may be admitted for an unhealthy pair; success closes it, failure restarts
-  cooldown, and capacity stays `0` until closed. Router transport failures
-  (`BackendConnectionError`) and `GET /health` failures remain node-level.
+  completion may be admitted for an unhealthy pair; success closes it, failure (including a
+  trial `BackendConnectionError`) restarts cooldown, and capacity stays `0` until closed.
+  Router transport failures (`BackendConnectionError`) outside a claimed half-open trial and
+  `GET /health` failures remain node-level.
 - **`503 model_loading`**: when a chat completion targets a model currently in `"loading"` state on
   every eligible router host (or on a leased router host, or if a router responds with a loading
   `503`), the gateway returns HTTP `503` with `error.code = "model_loading"`,
@@ -125,8 +126,8 @@ external-load signal LM Studio nodes get from
 CLI subprocess, since llama-server exposes this natively:
 
 - Reads `GET {base_url}/slots` for single-model nodes (`swap_mode: "none"`), or
-  `GET {base_url}/slots?model=<name>` for each loaded model on router-mode nodes
-  (`swap_mode: "router"`), where parameterless `GET /slots` returns HTTP `400`.
+  `GET {base_url}/slots?model=<name>` for the loaded model (else one sleeping model) on
+  router-mode nodes (`swap_mode: "router"`), where parameterless `GET /slots` returns HTTP `400`.
 - Each slot reports `is_processing: bool`. Status is `"busy"` if any slot is processing, else
   `"idle"`.
 - llama-server exposes no true queue-depth metric (unlike LM Studio's `queued` count from

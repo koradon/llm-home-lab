@@ -188,7 +188,7 @@ async def test_probe_with_model_passes_model_query_param():
     assert seen_urls == ["http://192.168.1.10:8081/slots?model=google%2Fgemma-4-26B-A4B"]
 
 
-async def test_probe_models_aggregates_multiple_loaded_models_and_skips_empty_list():
+async def test_probe_models_probes_first_model_only_and_skips_empty_list():
     calls: list[str] = []
 
     def handler(request):
@@ -202,13 +202,13 @@ async def test_probe_models_aggregates_multiple_loaded_models_and_skips_empty_li
     probe = LlamaCPPServerLoadProbe(transport=httpx.MockTransport(handler))
 
     empty = await probe.probe_models("mini-1", "http://192.168.1.10:8081", [], at=T0)
-    combined = await probe.probe_models(
+    single = await probe.probe_models(
         "mini-1", "http://192.168.1.10:8081", ["model-a", "model-b"], at=T0
     )
 
     assert empty.available is False
-    assert combined.available is True
-    assert combined.status == "busy"
-    assert combined.total_slots == 3
-    assert combined.busy_slots == 2
-    assert len(calls) == 2
+    assert single.available is True
+    assert single.status == "busy"
+    assert single.total_slots == 1
+    assert single.busy_slots == 1
+    assert calls == ["http://192.168.1.10:8081/slots?model=model-a"]
