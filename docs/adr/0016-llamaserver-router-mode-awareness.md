@@ -46,7 +46,7 @@ Key contracts:
    - `HealthMonitor` tracks per-`(backend_id, model)` health using the same `failure_threshold`, `recovery_threshold`, and `cooldown` rules as node-level health.
    - On router nodes, transport connection failures (`BackendConnectionError`) and `GET /health` failures remain node-level; model/completion failures (`BackendResponseError`, `BackendTimeoutError`, degenerate completions) and router-reported `failed: true` model entries isolate to `(node, model)`.
    - An unhealthy or router-failed `(node, model)` pair is excluded from routing and contributes `0` to `GET /v1/capacity?model=<name>`, while the node stays `online` and other models on the same node continue serving and reporting capacity.
-   - Recovery occurs when `GET /models` clears `failed` and healthy probes succeed after cooldown.
+   - Completion-failure recovery is half-open: after cooldown exactly one trial request may be admitted for that `(node, model)`; success closes the circuit, failure restarts cooldown, and capacity stays `0` until closed. Router-reported `failed` entries still block admission until `GET /models` clears `failed`.
 4. **`503 model_loading` with retry hint**:
    - When a request arrives for a model that is currently `loading` on every eligible router host (or on a leased router host, or if a router responds with a loading `503`), the gateway returns HTTP `503` with `error.code = "model_loading"`, `error.type = "backend_error"`, and a `Retry-After` header (default `5` seconds), without counting a node or model failure.
 5. **TUI visibility**:

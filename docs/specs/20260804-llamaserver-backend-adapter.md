@@ -100,8 +100,10 @@ implement the same `ChatBackend` port against an OpenAI-compatible chat endpoint
   `BackendTimeoutError`, degenerate completions) and router-reported `failed: true` model entries
   disable only the failing `(node, model)` pair, keeping the router node `online` and its other
   models serving. `GET /v1/capacity?model=<name>` reports `0` for an unhealthy/failed
-  `(node, model)` pair until it recovers. Router transport failures (`BackendConnectionError`) and
-  `GET /health` failures remain node-level.
+  `(node, model)` pair until it recovers. After cooldown, exactly one half-open trial
+  completion may be admitted for an unhealthy pair; success closes it, failure restarts
+  cooldown, and capacity stays `0` until closed. Router transport failures
+  (`BackendConnectionError`) and `GET /health` failures remain node-level.
 - **`503 model_loading`**: when a chat completion targets a model currently in `"loading"` state on
   every eligible router host (or on a leased router host, or if a router responds with a loading
   `503`), the gateway returns HTTP `503` with `error.code = "model_loading"`,

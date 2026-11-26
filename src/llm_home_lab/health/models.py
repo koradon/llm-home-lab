@@ -24,6 +24,7 @@ class BackendHealthState:
     consecutive_failures: int = 0
     consecutive_successes: int = 0
     unhealthy_since: datetime | None = None
+    trial_in_flight: bool = False
     history: deque[bool] = field(default_factory=lambda: deque(maxlen=20))
 
 

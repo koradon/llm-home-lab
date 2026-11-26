@@ -253,6 +253,13 @@ def create_app(
             _is_router_model_failed(host, model)
         )
 
+    def _host_model_may_admit(host: HostInfo, model: str | None, at: datetime) -> bool:
+        if model is None or host.capabilities.swap_mode != "router":
+            return True
+        if _is_router_model_failed(host, model):
+            return False
+        return health_monitor.may_admit_model(host.host_id, model, at)
+
     def _sync_router_models(host: HostInfo, states: list[RouterModelState] | None) -> None:
         if states is None:
             return
@@ -292,7 +299,7 @@ def create_app(
         return any(
             host.capabilities.swap_mode == "router"
             and health_monitor.is_healthy(host.host_id, at)
-            and _is_host_model_healthy(host, model, at)
+            and _host_model_may_admit(host, model, at)
             and (
                 host.capabilities.allowed_models is None
                 or model in host.capabilities.allowed_models
@@ -424,7 +431,7 @@ def create_app(
         for host in hosts:
             if not health_monitor.is_healthy(host.host_id, at):
                 continue
-            if not _is_host_model_healthy(host, model, at):
+            if not _host_model_may_admit(host, model, at):
                 continue
             if model is not None and _is_router_model_loading(host, model):
                 continue
@@ -1011,7 +1018,7 @@ def create_app(
                 host
                 for host in matching_now
                 if health_monitor.is_healthy(host.host_id, check_now)
-                and _is_host_model_healthy(host, request.model, check_now)
+                and _host_model_may_admit(host, request.model, check_now)
             ]
             if healthy_matching and all(
                 _is_router_model_loading(host, request.model) for host in healthy_matching
@@ -1115,7 +1122,7 @@ def create_app(
                     current is not reserved_host
                     or backends_by_id.get(decision.backend_id) is not reserved_backend
                     or not health_monitor.is_healthy(decision.backend_id, revalidate_now)
-                    or not _is_host_model_healthy(current, request.model, revalidate_now)
+                    or not _host_model_may_admit(current, request.model, revalidate_now)
                     or _is_router_model_loading(current, request.model)
                     or (live is not None and live.host_id != decision.backend_id)
                     or (live is None and lease_book.is_held(decision.backend_id, at))
@@ -1131,6 +1138,11 @@ def create_app(
 
         backend = backends_by_id[decision.backend_id]
         is_router_host = reserved_host.capabilities.swap_mode == "router"
+        if is_router_host and not health_monitor.claim_model_trial(
+            decision.backend_id, request.model, datetime.now(UTC)
+        ):
+            registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
+            raise NoAvailableBackendError("no healthy backend available for model trial")
 
         if request.stream:
             chunks = SlotStream(
@@ -1159,14 +1171,19 @@ def create_app(
             except BackendError as exc:
                 await chunks.aclose()
                 if is_router_host and _is_loading_response_error(exc):
+                    health_monitor.release_model_trial(decision.backend_id, request.model)
                     raise ModelLoadingError(
                         f"model {request.model!r} is currently loading; retry shortly"
                     ) from exc
+                if is_router_host and isinstance(exc, BackendConnectionError):
+                    health_monitor.release_model_trial(decision.backend_id, request.model)
                 if failover_in_play:
                     metrics_registry.record_failover_outcome(False, datetime.now(UTC))
                 raise
             except BaseException:
                 await chunks.aclose()
+                if is_router_host:
+                    health_monitor.release_model_trial(decision.backend_id, request.model)
                 raise
 
         backend_call_start = time.perf_counter()
@@ -1174,6 +1191,7 @@ def create_app(
             result = await backend.complete(request)
         except BackendError as exc:
             if is_router_host and _is_loading_response_error(exc):
+                health_monitor.release_model_trial(decision.backend_id, request.model)
                 raise ModelLoadingError(
                     f"model {request.model!r} is currently loading; retry shortly"
                 ) from exc
@@ -1184,6 +1202,8 @@ def create_app(
                     decision.backend_id, request.model, healthy=False, at=datetime.now(UTC)
                 )
             else:
+                if is_router_host:
+                    health_monitor.release_model_trial(decision.backend_id, request.model)
                 health_monitor.record_probe(
                     decision.backend_id, healthy=False, at=datetime.now(UTC)
                 )
@@ -1322,8 +1342,11 @@ async def _stream_chunks(
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
     except BackendError as exc:
-        if router_mode and not _is_loading_response_error(exc):
-            if isinstance(exc, BackendConnectionError):
+        if router_mode:
+            if _is_loading_response_error(exc):
+                health_monitor.release_model_trial(backend_id, request.model)
+            elif isinstance(exc, BackendConnectionError):
+                health_monitor.release_model_trial(backend_id, request.model)
                 health_monitor.record_probe(backend_id, healthy=False, at=datetime.now(UTC))
             else:
                 health_monitor.record_model_probe(

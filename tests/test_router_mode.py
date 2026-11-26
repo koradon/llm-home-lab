@@ -492,6 +492,140 @@ def test_broken_model_does_not_take_router_node_down_and_zeros_only_its_capacity
         assert good_res.status_code == 200
 
 
+def test_unhealthy_model_recovers_via_half_open_trial_after_cooldown():
+    with _FakeRouterServer(
+        models={
+            "broken-missing": {"value": "unloaded"},
+            "hy-mt2": {"value": "loaded"},
+        },
+        slots_by_model={
+            "broken-missing": [{"id": 0, "is_processing": False}],
+            "hy-mt2": [{"id": 0, "is_processing": False}],
+        },
+        broken_models={"broken-missing"},
+    ) as router:
+        health_monitor = HealthMonitor(
+            failure_threshold=3, recovery_threshold=2, cooldown=timedelta(seconds=0)
+        )
+        client = TestClient(
+            _build_llamaserver_app(health_monitor=health_monitor), headers=AUTH_HEADERS
+        )
+        client.post(
+            "/v1/nodes/register",
+            json=_node_payload(
+                "mini-1",
+                router.base_url,
+                swap_mode="router",
+                max_concurrent_requests=4,
+                allowed_models=["broken-missing", "hy-mt2"],
+            ),
+        )
+        client.get("/health/ready")
+
+        for _ in range(3):
+            assert (
+                client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "broken-missing",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                ).status_code
+                == 503
+            )
+
+        assert client.get("/v1/capacity", params={"model": "broken-missing"}).json() == {
+            "total_max_concurrent_requests": 0
+        }
+
+        router.broken_models.discard("broken-missing")
+        router.models["broken-missing"] = {"value": "loaded", "failed": False, "exit_code": 0}
+
+        assert client.get("/v1/capacity", params={"model": "broken-missing"}).json() == {
+            "total_max_concurrent_requests": 0
+        }
+        recovered = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "broken-missing",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert recovered.status_code == 200
+        assert client.get("/v1/capacity", params={"model": "broken-missing"}).json() == {
+            "total_max_concurrent_requests": 4
+        }
+        assert health_monitor.is_model_healthy("mini-1", "broken-missing", datetime.now(UTC))
+
+
+def test_half_open_model_failed_trial_reopens_cooldown_and_keeps_capacity_zero():
+    with _FakeRouterServer(
+        models={"broken-missing": {"value": "unloaded"}},
+        slots_by_model={"broken-missing": [{"id": 0, "is_processing": False}]},
+        broken_models={"broken-missing"},
+    ) as router:
+        health_monitor = HealthMonitor(
+            failure_threshold=3, recovery_threshold=2, cooldown=timedelta(seconds=30)
+        )
+        client = TestClient(
+            _build_llamaserver_app(health_monitor=health_monitor), headers=AUTH_HEADERS
+        )
+        client.post(
+            "/v1/nodes/register",
+            json=_node_payload(
+                "mini-1",
+                router.base_url,
+                swap_mode="router",
+                allowed_models=["broken-missing"],
+            ),
+        )
+        client.get("/health/ready")
+
+        for _ in range(3):
+            assert (
+                client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "broken-missing",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                ).status_code
+                == 503
+            )
+
+        opened_at = datetime.now(UTC)
+        assert health_monitor.may_admit_model("mini-1", "broken-missing", opened_at) is False
+        # Elapse cooldown without a poller so the next request is the half-open trial.
+        health_monitor._model_states[("mini-1", "broken-missing")].unhealthy_since = (
+            opened_at - timedelta(seconds=30)
+        )
+
+        assert client.get("/v1/capacity", params={"model": "broken-missing"}).json() == {
+            "total_max_concurrent_requests": 0
+        }
+        trial = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "broken-missing",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert trial.status_code == 503
+        assert client.get("/v1/capacity", params={"model": "broken-missing"}).json() == {
+            "total_max_concurrent_requests": 0
+        }
+        now = datetime.now(UTC)
+        assert health_monitor.is_model_healthy("mini-1", "broken-missing", now) is False
+        assert health_monitor.has_model_trial("mini-1", "broken-missing") is False
+        assert health_monitor.may_admit_model("mini-1", "broken-missing", now) is False
+        assert (
+            health_monitor.may_admit_model(
+                "mini-1", "broken-missing", now + timedelta(seconds=29)
+            )
+            is False
+        )
+
+
 def test_router_reported_failed_model_zeros_capacity_until_recovery():
     with _FakeRouterServer(
         models={

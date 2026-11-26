@@ -45,6 +45,36 @@ class HealthMonitor:
     def is_model_healthy(self, backend_id: str, model: str, at: datetime) -> bool:
         return self._model_states.get((backend_id, model), BackendHealthState()).is_healthy
 
+    def may_admit_model(self, backend_id: str, model: str, at: datetime) -> bool:
+        state = self._model_states.get((backend_id, model))
+        if state is None or state.is_healthy:
+            return True
+        if state.trial_in_flight:
+            return False
+        unhealthy_since = state.unhealthy_since
+        return unhealthy_since is not None and at >= unhealthy_since + self._cooldown
+
+    def has_model_trial(self, backend_id: str, model: str) -> bool:
+        state = self._model_states.get((backend_id, model))
+        return state is not None and state.trial_in_flight
+
+    def claim_model_trial(self, backend_id: str, model: str, at: datetime) -> bool:
+        state = self._model_states.get((backend_id, model))
+        if state is None or state.is_healthy:
+            return True
+        if state.trial_in_flight:
+            return False
+        unhealthy_since = state.unhealthy_since
+        if unhealthy_since is None or at < unhealthy_since + self._cooldown:
+            return False
+        state.trial_in_flight = True
+        return True
+
+    def release_model_trial(self, backend_id: str, model: str) -> None:
+        state = self._model_states.get((backend_id, model))
+        if state is not None:
+            state.trial_in_flight = False
+
     def model_failure_count(self, backend_id: str, model: str) -> int:
         state = self._model_states.get((backend_id, model))
         if state is None:
@@ -77,6 +107,7 @@ class HealthMonitor:
             self._update_unhealthy_state(state, backend_id, healthy, at, model=model)
             return
 
+        state.trial_in_flight = False
         if healthy:
             state.consecutive_failures = 0
             return
@@ -99,6 +130,9 @@ class HealthMonitor:
         *,
         model: str | None = None,
     ) -> None:
+        was_trial = state.trial_in_flight
+        state.trial_in_flight = False
+
         if not healthy:
             state.consecutive_successes = 0
             state.unhealthy_since = at
@@ -106,6 +140,16 @@ class HealthMonitor:
 
         unhealthy_since = state.unhealthy_since
         if unhealthy_since is None or at < unhealthy_since + self._cooldown:
+            return
+
+        if was_trial:
+            state.is_healthy = True
+            state.consecutive_failures = 0
+            state.consecutive_successes = 0
+            state.unhealthy_since = None
+            self._record_transition(
+                backend_id, from_healthy=False, to_healthy=True, at=at, model=model
+            )
             return
 
         state.consecutive_successes += 1
