@@ -693,6 +693,60 @@ async def test_queue_reserves_slot_before_discovery_cleanup():
         )
 
 
+@pytest.mark.parametrize("change", ["patch", "delete", "lease"])
+async def test_queued_reservation_revalidated_after_cleanup(change):
+    class SlowInventory(_FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.cancelling = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def list_models(self):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelling.set()
+                await self.release.wait()
+
+    backend, slow = _BlockingBackend(), SlowInventory()
+    backends = {"http://mini-3.local:8081": backend, "http://slow.local:8081": slow}
+    app = _app(backend_factory=lambda caps: backends[caps.base_url], dispatch_wait_timeout=1)
+    payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        await client.post(
+            "/v1/nodes/register",
+            json=_node_payload(max_concurrent_requests=1, allowed_models=["model"]),
+        )
+        first = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await backend.reached_expected.wait()
+        second = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await asyncio.sleep(0.03)
+        await client.post("/v1/nodes/register", json=_node_payload("slow"))
+        await slow.started.wait()
+        backend.release_event.set()
+        assert (await first).status_code == 200
+        await slow.cancelling.wait()
+        if change == "patch":
+            response = await client.patch("/v1/nodes/mini-3", json={"allowed_models": ["other"]})
+        elif change == "delete":
+            response = await client.delete("/v1/nodes/mini-3")
+        else:
+            response = await client.post(
+                "/v1/node-leases", json={"holder": "test", "host_id": "mini-3"}
+            )
+        assert response.is_success
+        slow.release.set()
+        assert (await second).status_code == 503
+        assert backend.peak_in_flight == 1
+        if change != "delete":
+            nodes = (await client.get("/v1/nodes")).json()["nodes"]
+            assert next(node for node in nodes if node["host_id"] == "mini-3")["in_flight"] == 0
+
+
 async def test_queued_discovery_can_exceed_poll_interval():
     class DelayedInventory(_BlockingBackend):
         async def list_models(self):
