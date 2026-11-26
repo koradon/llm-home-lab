@@ -506,3 +506,59 @@ async def test_queue_deadline_survives_stalled_inventory_after_patch():
         assert response.status_code == 503
         backend.release_event.set()
         assert (await first).status_code == 200
+
+
+async def test_capacity_isolates_stalled_inventory_and_keeps_replaced_host():
+    class Inventory(_FakeBackend):
+        def __init__(self, stalled):
+            super().__init__(models=["model"])
+            self.stalled = stalled
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def list_models(self):
+            self.started.set()
+            await self.release.wait()
+            return self._models
+
+    slow, good = Inventory(True), Inventory(False)
+    backends = {"http://slow.local:8081": slow, "http://good.local:8081": good}
+    app = _app(backend_factory=lambda caps: backends[caps.base_url])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        for name in ("slow", "good"):
+            await client.post("/v1/nodes/register", json=_node_payload(name))
+        await client.get("/health/ready")
+        capacity = asyncio.create_task(client.get("/v1/capacity", params={"model": "model"}))
+        await good.started.wait()
+        await client.patch("/v1/nodes/good", json={"position": 1})
+        good.release.set()
+        result = await asyncio.wait_for(capacity, 2)
+        assert result.json() == {"total_max_concurrent_requests": 4}
+
+
+async def test_queued_discovery_can_exceed_poll_interval():
+    class DelayedInventory(_BlockingBackend):
+        async def list_models(self):
+            await asyncio.sleep(0.05)
+            return ["model"]
+
+    backend = DelayedInventory()
+    app = _app(backend_factory=lambda caps: backend, dispatch_wait_timeout=0.5)
+    payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        await client.post(
+            "/v1/nodes/register",
+            json=_node_payload(max_concurrent_requests=1, allowed_models=["model"]),
+        )
+        first = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await backend.reached_expected.wait()
+        second = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await asyncio.sleep(0.03)
+        await client.patch("/v1/nodes/mini-3", json={"allowed_models": None})
+        backend.release_event.set()
+        assert (await first).status_code == 200
+        assert (await second).status_code == 200
