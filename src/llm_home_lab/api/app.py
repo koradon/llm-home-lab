@@ -1159,40 +1159,40 @@ def create_app(
                     decision.backend_id, reserved_host.registration_id
                 ),
             )
-            try:
-                await chunks.prefetch()
-                if failover_in_play:
-                    metrics_registry.record_failover_outcome(True, datetime.now(UTC))
-                return SlotStreamingResponse(
-                    chunks,
-                    media_type="text/event-stream",
-                    headers={"X-Backend-Id": decision.backend_id},
-                )
-            except BackendError as exc:
-                await chunks.aclose()
-                if is_router_host and _is_loading_response_error(exc):
-                    health_monitor.release_model_trial(decision.backend_id, request.model)
-                    raise ModelLoadingError(
-                        f"model {request.model!r} is currently loading; retry shortly"
-                    ) from exc
-                if is_router_host and isinstance(exc, BackendConnectionError):
-                    if health_monitor.has_model_trial(decision.backend_id, request.model):
-                        health_monitor.record_model_probe(
-                            decision.backend_id,
-                            request.model,
-                            healthy=False,
-                            at=datetime.now(UTC),
-                        )
-                    else:
+            if is_router_host:
+                try:
+                    await chunks.prefetch()
+                except BackendError as exc:
+                    await chunks.aclose()
+                    if _is_loading_response_error(exc):
                         health_monitor.release_model_trial(decision.backend_id, request.model)
-                if failover_in_play:
-                    metrics_registry.record_failover_outcome(False, datetime.now(UTC))
-                raise
-            except BaseException:
-                await chunks.aclose()
-                if is_router_host:
+                        raise ModelLoadingError(
+                            f"model {request.model!r} is currently loading; retry shortly"
+                        ) from exc
+                    if isinstance(exc, BackendConnectionError):
+                        if health_monitor.has_model_trial(decision.backend_id, request.model):
+                            health_monitor.record_model_probe(
+                                decision.backend_id,
+                                request.model,
+                                healthy=False,
+                                at=datetime.now(UTC),
+                            )
+                        else:
+                            health_monitor.release_model_trial(decision.backend_id, request.model)
+                    if failover_in_play:
+                        metrics_registry.record_failover_outcome(False, datetime.now(UTC))
+                    raise
+                except BaseException:
+                    await chunks.aclose()
                     health_monitor.release_model_trial(decision.backend_id, request.model)
-                raise
+                    raise
+            if failover_in_play:
+                metrics_registry.record_failover_outcome(True, datetime.now(UTC))
+            return SlotStreamingResponse(
+                chunks,
+                media_type="text/event-stream",
+                headers={"X-Backend-Id": decision.backend_id},
+            )
 
         backend_call_start = time.perf_counter()
         try:
