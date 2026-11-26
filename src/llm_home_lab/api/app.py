@@ -242,6 +242,8 @@ def create_app(
                 continue
 
             loaded = await list_models()
+            if not any(current is host for current in registry.hosts()):
+                continue
             if loaded is None:
                 if not require_known:
                     capable.append(host)
@@ -251,7 +253,10 @@ def create_app(
                 capable.append(host)
             elif host.capabilities.memory_budget_gb is not None:
                 any_budget_blocked = True
-        return capable, any_budget_blocked
+        current_hosts = registry.hosts()
+        return [
+            host for host in capable if any(host is current for current in current_hosts)
+        ], any_budget_blocked
 
     def _node_status(host_id: str, at: datetime) -> str:
         if not health_monitor.has_probe_history(host_id):
@@ -657,7 +662,16 @@ def create_app(
         capable, _budget_blocked = await _model_capable_hosts(
             model, hosts=online_unleased, require_known=True
         )
-        total = sum(host.effective_max_concurrent_requests(model) for host in capable)
+        at = datetime.now(UTC)
+        lease_at = _lease_now()
+        current_hosts = registry.hosts()
+        total = sum(
+            host.effective_max_concurrent_requests(model)
+            for host in capable
+            if any(host is current for current in current_hosts)
+            and _node_status(host.host_id, at) == "online"
+            and not lease_book.is_held(host.host_id, lease_at)
+        )
         return {"total_max_concurrent_requests": total}
 
     @app.get("/v1/alerts")
@@ -775,7 +789,7 @@ def create_app(
         if not candidates:
             request_id = uuid.uuid4().hex
             queue_session_id = request.session_id or request_id
-            waited = 0.0
+            deadline = time.monotonic() + dispatch_wait_timeout
             scheduling_queue.enqueue(
                 request_id,
                 session_id=queue_session_id,
@@ -785,14 +799,31 @@ def create_app(
                 model=request.model,
             )
             try:
-                while waited < dispatch_wait_timeout:
-                    await asyncio.sleep(dispatch_poll_interval)
-                    waited += dispatch_poll_interval
-                    refreshed_hosts, _ = await _model_capable_hosts(request.model)
-                    known_model_hosts = {host.host_id: host for host in refreshed_hosts}
+                while (remaining := deadline - time.monotonic()) > 0:
+                    await asyncio.sleep(min(dispatch_poll_interval, remaining))
                     candidates = current_candidates()
+                    if not candidates and (remaining := deadline - time.monotonic()) > 0:
+                        unknown_hosts = [
+                            host
+                            for host in registry.hosts()
+                            if host.capabilities.allowed_models is None
+                            and known_model_hosts.get(host.host_id) is not host
+                        ]
+                        if unknown_hosts:
+                            try:
+                                refreshed_hosts, _ = await asyncio.wait_for(
+                                    _model_capable_hosts(request.model, hosts=unknown_hosts),
+                                    timeout=min(dispatch_poll_interval, remaining),
+                                )
+                                known_model_hosts.update(
+                                    {host.host_id: host for host in refreshed_hosts}
+                                )
+                            except TimeoutError:
+                                pass
+                        candidates = current_candidates()
                     if (
-                        candidates
+                        time.monotonic() <= deadline
+                        and candidates
                         and scheduling_queue.dispatch(
                             registry,
                             datetime.now(UTC),

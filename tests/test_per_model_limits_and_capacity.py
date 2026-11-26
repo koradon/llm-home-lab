@@ -444,3 +444,65 @@ async def test_queued_request_refreshes_host_after_patch(flip):
         first_response, second_response = await asyncio.gather(first, second)
         assert first_response.status_code == 200
         assert second_response.status_code == (503 if flip else 200)
+
+
+@pytest.mark.parametrize("change", ["lease", "patch", "delete"])
+async def test_filtered_capacity_rechecks_state_after_inventory(change):
+    class SlowInventory(_FakeBackend):
+        def __init__(self):
+            super().__init__(models=["model"])
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def list_models(self):
+            self.started.set()
+            await self.release.wait()
+            return self._models
+
+    backend = SlowInventory()
+    app = _app(backend_factory=lambda caps: backend)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        await client.post("/v1/nodes/register", json=_node_payload())
+        await client.get("/health/ready")
+        capacity = asyncio.create_task(client.get("/v1/capacity", params={"model": "model"}))
+        await backend.started.wait()
+        if change == "lease":
+            response = await client.post(
+                "/v1/node-leases", json={"holder": "test", "host_id": "mini-3"}
+            )
+        elif change == "patch":
+            response = await client.patch("/v1/nodes/mini-3", json={"allowed_models": ["other"]})
+        else:
+            response = await client.delete("/v1/nodes/mini-3")
+        assert response.is_success
+        backend.release.set()
+        assert (await capacity).json() == {"total_max_concurrent_requests": 0}
+
+
+async def test_queue_deadline_survives_stalled_inventory_after_patch():
+    class SlowInventory(_BlockingBackend):
+        async def list_models(self):
+            await asyncio.Event().wait()
+            return ["model"]
+
+    backend = SlowInventory()
+    app = _app(backend_factory=lambda caps: backend, dispatch_wait_timeout=0.15)
+    payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        await client.post(
+            "/v1/nodes/register",
+            json=_node_payload(max_concurrent_requests=1, allowed_models=["model"]),
+        )
+        first = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await backend.reached_expected.wait()
+        second = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await asyncio.sleep(0.04)
+        await client.patch("/v1/nodes/mini-3", json={"allowed_models": None})
+        response = await asyncio.wait_for(second, timeout=0.5)
+        assert response.status_code == 503
+        backend.release_event.set()
+        assert (await first).status_code == 200
