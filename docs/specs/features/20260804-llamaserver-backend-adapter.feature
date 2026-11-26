@@ -83,3 +83,16 @@ Feature: llama-server backend adapter
     When a chat completion arrives for that model
     Then the gateway returns HTTP 503 with error code "model_loading" and a Retry-After header
     And no failure is recorded against the node or model
+
+  Scenario: Idle unhealthy loaded model recovers after cooldown without client traffic
+    Given a registered unleased llama-server router node with an unhealthy loaded allowed model
+    And the pair's cooldown window has elapsed with no incoming client requests
+    When the orchestrator probes the node
+    Then it performs one minimal one-token completion trial for that model
+    And a successful probe marks the pair healthy and restores GET /v1/capacity?model=<name>
+
+  Scenario: Proactive recovery probe skips non-loaded, disallowed, and leased models
+    Given a registered llama-server router node with unhealthy models that are unloaded, loading, sleeping, failed, disallowed, or on a leased node
+    And the cooldown window has elapsed
+    When the orchestrator probes the node
+    Then it sends no completion probes for those models and triggers no model load or eviction

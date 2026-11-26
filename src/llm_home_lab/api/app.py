@@ -15,10 +15,11 @@ from pydantic import BaseModel, Field
 from starlette.types import Receive
 
 from llm_home_lab.api.lifetime import RequestLifetimeMiddleware, SlotStream, SlotStreamingResponse
-from llm_home_lab.api.models import ChatCompletionRequest
+from llm_home_lab.api.models import ChatCompletionRequest, Message
 from llm_home_lab.backends.base import (
     BackendConnectionError,
     BackendError,
+    BackendResponse,
     BackendResponseError,
     BackendTimeoutError,
     ChatBackend,
@@ -192,6 +193,7 @@ def create_app(
     lease_book: NodeLeaseBook | None = None,
     lease_settings: LeaseSettings | None = None,
     lease_clock: Callable[[], datetime] | None = None,
+    health_clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     if auth_enabled and key_store is None:
         raise ValueError("key_store is required when auth_enabled is True")
@@ -204,6 +206,11 @@ def create_app(
         if lease_clock is None:
             return datetime.now(UTC)
         return lease_clock()
+
+    def _health_now() -> datetime:
+        if health_clock is None:
+            return datetime.now(UTC)
+        return health_clock()
 
     backends_by_id: dict[str, ChatBackend] = {}
     backend_capabilities_by_id: dict[str, HostCapabilities] = {}
@@ -475,10 +482,91 @@ def create_app(
     # never delays the dashboard's request; a host not probed yet reports "unavailable".
     external_loads: dict[str, ExternalLoadStatus] = {}
 
+    async def _probe_unhealthy_router_models(
+        host: HostInfo,
+        backend: ChatBackend,
+        states: Sequence[RouterModelState],
+    ) -> None:
+        if not callable(getattr(backend, "complete", None)):
+            return
+        probe_timeout = getattr(backend, "health_timeout", 10.0)
+        for entry in states:
+            if entry.failed or entry.state != "loaded":
+                continue
+            current = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
+            if (
+                current is None
+                or current.registration_id is not host.registration_id
+                or current.capabilities.swap_mode != "router"
+                or backends_by_id.get(host.host_id) is not backend
+            ):
+                return
+            allowed = current.capabilities.allowed_models
+            if allowed is not None and entry.id not in allowed:
+                continue
+            if lease_book.is_held(host.host_id, _lease_now()):
+                return
+            probe_now = _health_now()
+            if not health_monitor.is_healthy(host.host_id, probe_now):
+                return
+            if current.in_flight >= current.effective_max_concurrent_requests(entry.id):
+                continue
+            if not health_monitor.claim_unhealthy_model_trial(host.host_id, entry.id, probe_now):
+                continue
+
+            registry.acquire_slot(host.host_id)
+            trial_owned = True
+            try:
+                probe_request = ChatCompletionRequest(
+                    model=entry.id,
+                    messages=[Message(role="user", content="hi")],
+                    max_tokens=1,
+                )
+                try:
+                    result = await asyncio.wait_for(
+                        backend.complete(probe_request), timeout=probe_timeout
+                    )
+                except BackendError as exc:
+                    if _is_loading_response_error(exc):
+                        health_monitor.release_model_trial(host.host_id, entry.id)
+                    else:
+                        health_monitor.record_model_probe(
+                            host.host_id, entry.id, healthy=False, at=_health_now()
+                        )
+                    trial_owned = False
+                    continue
+                except TimeoutError:
+                    health_monitor.record_model_probe(
+                        host.host_id, entry.id, healthy=False, at=_health_now()
+                    )
+                    trial_owned = False
+                    continue
+
+                after = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
+                if (
+                    after is None
+                    or after.registration_id is not current.registration_id
+                    or after.capabilities.swap_mode != "router"
+                    or backends_by_id.get(host.host_id) is not backend
+                ):
+                    health_monitor.release_model_trial(host.host_id, entry.id)
+                    trial_owned = False
+                    return
+
+                is_healthy = _is_healthy_probe_completion(result)
+                health_monitor.record_model_probe(
+                    host.host_id, entry.id, healthy=is_healthy, at=_health_now()
+                )
+                trial_owned = False
+            finally:
+                registry.release_owned_slot(host.host_id, current.registration_id)
+                if trial_owned:
+                    health_monitor.release_model_trial(host.host_id, entry.id)
+
     async def _probe_one_host(host: HostInfo) -> dict[str, object]:
         backend = _backend_for(host.host_id, host.capabilities)
         health = await backend.check_health()
-        now = datetime.now(UTC)
+        now = _health_now()
         health_monitor.record_probe(host.host_id, health.healthy, now)
         if host.capabilities.swap_mode == "router":
             list_states = getattr(backend, "list_model_states", None)
@@ -498,6 +586,12 @@ def create_app(
                 external_loads[host.host_id] = ExternalLoadStatus(
                     available=False, status=None, queued=None, checked_at=now
                 )
+            if (
+                health.healthy
+                and health_monitor.is_healthy(host.host_id, now)
+                and states is not None
+            ):
+                await _probe_unhealthy_router_models(host, backend, states)
         else:
             router_models.pop(host.host_id, None)
             external_loads[host.host_id] = await external_load_probe.probe(
@@ -794,7 +888,7 @@ def create_app(
 
     @app.get("/v1/nodes")
     async def list_nodes() -> dict[str, list[dict[str, object]]]:
-        at = datetime.now(UTC)
+        at = _health_now()
         lease_at = _lease_now()
         # sorted() is stable, so unpositioned nodes keep registration order after positioned ones.
         hosts = sorted(
@@ -847,7 +941,7 @@ def create_app(
 
     @app.get("/v1/capacity")
     async def get_capacity(model: str | None = None) -> dict[str, int]:
-        at = datetime.now(UTC)
+        at = _health_now()
         if model is None:
             total = sum(
                 host.capacity.max_concurrent_requests
@@ -867,7 +961,7 @@ def create_app(
         capable, _budget_blocked = await _model_capable_hosts(
             model, hosts=online_unleased, require_known=True
         )
-        at = datetime.now(UTC)
+        at = _health_now()
         lease_at = _lease_now()
         current_hosts = registry.hosts()
         total = sum(
@@ -924,7 +1018,7 @@ def create_app(
         response: Response,
         http_request: Request,
     ) -> StreamingResponse | dict[str, object]:
-        now = datetime.now(UTC)
+        now = _health_now()
         lease_now = _lease_now()
         token = http_request.headers.get(LEASE_HEADER)
         pinned = lease_book.require(token, lease_now) if token else None
@@ -1001,7 +1095,7 @@ def create_app(
 
         def current_candidates() -> list[RoutingCandidate]:
             return _eligible_candidates(
-                current_matching_hosts(), datetime.now(UTC), model=request.model
+                current_matching_hosts(), _health_now(), model=request.model
             )
 
         def queued_host_ids() -> set[str]:
@@ -1012,7 +1106,7 @@ def create_app(
 
         candidates = current_candidates()
         if not candidates:
-            check_now = datetime.now(UTC)
+            check_now = _health_now()
             matching_now = current_matching_hosts()
             healthy_matching = [
                 host
@@ -1080,7 +1174,7 @@ def create_app(
                     ):
                         break
                 else:
-                    timeout_now = datetime.now(UTC)
+                    timeout_now = _health_now()
                     if _any_loading_router_host(
                         current_matching_hosts(), request.model, timeout_now
                     ):
@@ -1117,7 +1211,7 @@ def create_app(
                 )
                 at = _lease_now()
                 live = lease_book.require(token, at) if token else None
-                revalidate_now = datetime.now(UTC)
+                revalidate_now = _health_now()
                 if (
                     current is not reserved_host
                     or backends_by_id.get(decision.backend_id) is not reserved_backend
@@ -1139,7 +1233,7 @@ def create_app(
         backend = backends_by_id[decision.backend_id]
         is_router_host = reserved_host.capabilities.swap_mode == "router"
         if is_router_host and not health_monitor.claim_model_trial(
-            decision.backend_id, request.model, datetime.now(UTC)
+            decision.backend_id, request.model, _health_now()
         ):
             registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
             raise NoAvailableBackendError("no healthy backend available for model trial")
@@ -1154,6 +1248,7 @@ def create_app(
                     health_monitor,
                     decision.backend_id,
                     router_mode=is_router_host,
+                    health_clock=health_clock,
                 ),
                 lambda: registry.release_owned_slot(
                     decision.backend_id, reserved_host.registration_id
@@ -1175,7 +1270,7 @@ def create_app(
                                 decision.backend_id,
                                 request.model,
                                 healthy=False,
-                                at=datetime.now(UTC),
+                                at=_health_now(),
                             )
                         else:
                             health_monitor.release_model_trial(decision.backend_id, request.model)
@@ -1211,13 +1306,13 @@ def create_app(
                     or health_monitor.has_model_trial(decision.backend_id, request.model)
                 ):
                     health_monitor.record_model_probe(
-                        decision.backend_id, request.model, healthy=False, at=datetime.now(UTC)
+                        decision.backend_id, request.model, healthy=False, at=_health_now()
                     )
                 else:
                     if is_router_host:
                         health_monitor.release_model_trial(decision.backend_id, request.model)
                     health_monitor.record_probe(
-                        decision.backend_id, healthy=False, at=datetime.now(UTC)
+                        decision.backend_id, healthy=False, at=_health_now()
                     )
                 raise
             finally:
@@ -1249,11 +1344,11 @@ def create_app(
                     decision.backend_id,
                     request.model,
                     healthy=is_healthy_completion,
-                    at=datetime.now(UTC),
+                    at=_health_now(),
                 )
             else:
                 health_monitor.record_probe(
-                    decision.backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
+                    decision.backend_id, healthy=is_healthy_completion, at=_health_now()
                 )
 
             response.headers["X-Backend-Id"] = decision.backend_id
@@ -1310,6 +1405,14 @@ def _is_degenerate_completion(content: str, finish_reason: str | None) -> bool:
     return not content.strip() or finish_reason != "stop"
 
 
+def _is_healthy_probe_completion(result: BackendResponse) -> bool:
+    if result.finish_reason == "stop":
+        return bool(result.content.strip())
+    if result.finish_reason == "length":
+        return bool(result.content.strip()) or result.completion_tokens > 0
+    return False
+
+
 def _is_loading_response_error(exc: BackendError) -> bool:
     return (
         isinstance(exc, BackendResponseError)
@@ -1327,7 +1430,13 @@ async def _stream_chunks(
     backend_id: str,
     *,
     router_mode: bool = False,
+    health_clock: Callable[[], datetime] | None = None,
 ) -> AsyncGenerator[str, None]:
+    def _health_now() -> datetime:
+        if health_clock is None:
+            return datetime.now(UTC)
+        return health_clock()
+
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     usage: dict[str, int] | None = None
@@ -1372,14 +1481,14 @@ async def _stream_chunks(
                 elif isinstance(exc, BackendConnectionError):
                     if health_monitor.has_model_trial(backend_id, request.model):
                         health_monitor.record_model_probe(
-                            backend_id, request.model, healthy=False, at=datetime.now(UTC)
+                            backend_id, request.model, healthy=False, at=_health_now()
                         )
                     else:
                         health_monitor.release_model_trial(backend_id, request.model)
-                        health_monitor.record_probe(backend_id, healthy=False, at=datetime.now(UTC))
+                        health_monitor.record_probe(backend_id, healthy=False, at=_health_now())
                 else:
                     health_monitor.record_model_probe(
-                        backend_id, request.model, healthy=False, at=datetime.now(UTC)
+                        backend_id, request.model, healthy=False, at=_health_now()
                     )
             raise
 
@@ -1401,12 +1510,10 @@ async def _stream_chunks(
             completion_log.record(backend_id, datetime.now(UTC))
         if router_mode:
             health_monitor.record_model_probe(
-                backend_id, request.model, healthy=is_healthy_completion, at=datetime.now(UTC)
+                backend_id, request.model, healthy=is_healthy_completion, at=_health_now()
             )
         else:
-            health_monitor.record_probe(
-                backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
-            )
+            health_monitor.record_probe(backend_id, healthy=is_healthy_completion, at=_health_now())
 
         yield "data: [DONE]\n\n"
     finally:

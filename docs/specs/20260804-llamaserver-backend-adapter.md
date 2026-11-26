@@ -103,6 +103,14 @@ implement the same `ChatBackend` port against an OpenAI-compatible chat endpoint
   `(node, model)` pair until it recovers. After cooldown, exactly one half-open trial
   completion may be admitted for an unhealthy pair; success closes it, failure (including a
   trial `BackendConnectionError`) restarts cooldown, and capacity stays `0` until closed.
+  To prevent idle unhealthy pairs from staying stuck without client traffic, periodic host probing
+  (and `/health/ready`) also performs that single half-open trial itself via a minimal one-token
+  completion (`max_tokens=1`, bounded by `health_timeout`) once cooldown elapses — strictly when
+  the host is healthy and unleased, the router reports the model as `loaded` (never `unloaded`,
+  `loading`, `sleeping`, or `failed`), the model is in `allowed_models` (when set), and no trial
+  is already in flight (`trial_in_flight`). Success closes the circuit and restores capacity;
+  failure restarts the cooldown; a `503` loading response releases the trial without counting a
+  failure.
   Router transport failures (`BackendConnectionError`) outside a claimed half-open trial and
   `GET /health` failures remain node-level.
 - **`503 model_loading`**: when a chat completion targets a model currently in `"loading"` state on
@@ -184,6 +192,8 @@ Keep scenarios in a sibling Gherkin file:
   decisions above
 - ADR: [0016-llamaserver-router-mode-awareness](../adr/0016-llamaserver-router-mode-awareness.md) —
   router-mode awareness (`swap_mode: "router"`), per-`(node, model)` health, and `503 model_loading`
+- ADR: [0017-proactive-half-open-model-health-recovery](../adr/0017-proactive-half-open-model-health-recovery.md) —
+  proactive half-open recovery probing for idle unhealthy router models without client traffic
 - Acceptance: `docs/specs/features/20260804-llamaserver-backend-adapter.feature`
 
 ## Open Questions

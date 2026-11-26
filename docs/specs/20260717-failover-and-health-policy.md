@@ -112,6 +112,9 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-failover
 - ADR: [0016-llamaserver-router-mode-awareness](../adr/0016-llamaserver-router-mode-awareness.md) —
   owns the per-`(node, model)` health extension and half-open trial recovery on router-mode hosts;
   this spec remains the owner of node-level `HealthMonitor` behavior.
+- ADR: [0017-proactive-half-open-model-health-recovery](../adr/0017-proactive-half-open-model-health-recovery.md) —
+  extends per-`(node, model)` half-open recovery with proactive single-token probing for idle loaded
+  router models after cooldown.
 - Module: [`backends/base.py`](../../src/llm_home_lab/backends/base.py) — `BackendHealth` /
   `ChatBackend.check_health()`, the raw per-probe signal this policy adds hysteresis on top of.
 - Plan: [failover-and-health-policy](../plans/20260717-failover-and-health-policy.md)

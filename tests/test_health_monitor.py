@@ -298,3 +298,34 @@ def test_half_open_model_release_clears_trial_without_closing_circuit():
     assert monitor.is_model_healthy("mini-1", "broken", at) is False
     assert monitor.may_admit_model("mini-1", "broken", at) is True
     assert monitor.claim_model_trial("mini-1", "broken", at) is True
+
+
+def test_claim_unhealthy_model_trial_returns_false_for_healthy_or_untracked_models():
+    monitor = HealthMonitor(failure_threshold=2, cooldown=timedelta(seconds=30))
+
+    assert monitor.claim_unhealthy_model_trial("mini-1", "untracked", T0) is False
+    monitor.record_model_probe("mini-1", "healthy-model", healthy=True, at=T0)
+    assert monitor.claim_unhealthy_model_trial("mini-1", "healthy-model", T0) is False
+    monitor.record_model_probe("mini-1", "almost-unhealthy", healthy=False, at=T0)
+    assert monitor.claim_unhealthy_model_trial("mini-1", "almost-unhealthy", T0) is False
+    assert monitor.has_model_trial("mini-1", "healthy-model") is False
+
+
+def test_claim_unhealthy_model_trial_enforces_cooldown_and_shares_trial_gate():
+    monitor = HealthMonitor(failure_threshold=1, cooldown=timedelta(seconds=30))
+    monitor.record_model_probe("mini-1", "broken", healthy=False, at=T0)
+
+    assert (
+        monitor.claim_unhealthy_model_trial("mini-1", "broken", T0 + timedelta(seconds=29)) is False
+    )
+    at = T0 + timedelta(seconds=30)
+    assert monitor.claim_unhealthy_model_trial("mini-1", "broken", at) is True
+    assert monitor.has_model_trial("mini-1", "broken") is True
+    # Shared gate blocks both another probe trial and a real request trial.
+    assert monitor.claim_unhealthy_model_trial("mini-1", "broken", at) is False
+    assert monitor.claim_model_trial("mini-1", "broken", at) is False
+    assert monitor.may_admit_model("mini-1", "broken", at) is False
+
+    monitor.record_model_probe("mini-1", "broken", healthy=True, at=at)
+    assert monitor.is_model_healthy("mini-1", "broken", at) is True
+    assert monitor.claim_unhealthy_model_trial("mini-1", "broken", at) is False
