@@ -369,7 +369,7 @@ def test_capacity_model_filter_excludes_offline_leased_and_non_matching_hosts():
     assert gemma_capacity == {"total_max_concurrent_requests": 8}
     assert hymt_capacity == {"total_max_concurrent_requests": 6}
     assert unknown_capacity == {"total_max_concurrent_requests": 0}
-    assert total_capacity == {"total_max_concurrent_requests": 22}
+    assert total_capacity == {"total_max_concurrent_requests": 12}
 
 
 def test_capacity_model_filter_works_for_hosts_without_allowed_models():
@@ -394,3 +394,53 @@ def test_capacity_model_filter_works_for_hosts_without_allowed_models():
 
     assert loaded_capacity == {"total_max_concurrent_requests": 5}
     assert other_capacity == {"total_max_concurrent_requests": 0}
+
+
+def test_capacity_uses_base_limit_without_model_filter():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    client.post(
+        "/v1/nodes/register",
+        json=_node_payload(
+            allowed_models=["model"], model_limits={"model": {"max_concurrent_requests": 8}}
+        ),
+    )
+    client.get("/health/ready")
+    assert client.get("/v1/capacity").json() == {"total_max_concurrent_requests": 4}
+    assert client.get("/v1/capacity", params={"model": "model"}).json() == {
+        "total_max_concurrent_requests": 8
+    }
+
+
+def test_filtered_capacity_excludes_unknown_inventory():
+    client = TestClient(_app(), headers=AUTH_HEADERS)
+    client.post("/v1/nodes/register", json=_node_payload())
+    client.get("/health/ready")
+    assert client.get("/v1/capacity", params={"model": "unknown"}).json() == {
+        "total_max_concurrent_requests": 0
+    }
+
+
+@pytest.mark.parametrize("flip", [False, True])
+async def test_queued_request_refreshes_host_after_patch(flip):
+    backend = _BlockingBackend()
+    app = _app(backend_factory=lambda caps: backend, dispatch_wait_timeout=0.2)
+    transport = httpx.ASGITransport(app=app)
+    payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        await client.post(
+            "/v1/nodes/register",
+            json=_node_payload(max_concurrent_requests=1, allowed_models=["model"]),
+        )
+        first = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await backend.reached_expected.wait()
+        second = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await asyncio.sleep(0.05)
+        assert not second.done()
+        patch = {"allowed_models": ["other"]} if flip else {"context_window": 4096}
+        assert (await client.patch("/v1/nodes/mini-3", json=patch)).status_code == 200
+        backend.release_event.set()
+        first_response, second_response = await asyncio.gather(first, second)
+        assert first_response.status_code == 200
+        assert second_response.status_code == (503 if flip else 200)

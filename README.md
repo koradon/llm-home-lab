@@ -181,7 +181,7 @@ declare `model_limits` alongside `allowed_models`:
 }
 ```
 
-Dispatch gating, routing context-window checks, and `/v1/capacity` use the per-model value when
+Dispatch gating, routing context-window checks, and `/v1/capacity?model=<name>` use the per-model value when
 set and fall back to the node-level `max_concurrent_requests` / `context_window` otherwise. On a
 single-model node (`allowed_models` of length 1), flipping `allowed_models` via
 `PATCH /v1/nodes/{host_id}` changes the served model and its effective limits together without a
@@ -354,7 +354,7 @@ it runs; register more hosts if you need to run many long generations at once.
 - `POST /v1/chat/completions` — OpenAI-compatible chat completions (streaming and non-streaming).
 - `POST /v1/nodes/register`, `PATCH /v1/nodes/{host_id}`, `POST /v1/nodes/{host_id}/heartbeat`,
   `DELETE /v1/nodes/{host_id}`, `GET /v1/nodes` — manage model hosts.
-- `GET /v1/capacity` — total effective `max_concurrent_requests` summed across online hosts. Pass
+- `GET /v1/capacity` — configured node-level `max_concurrent_requests` summed across online hosts. Pass
   `?model=<name>` to return the effective capacity for that model only, across online, unleased
   hosts that can serve it.
 - `POST /v1/node-leases`, `POST /v1/node-leases/heartbeat`, `DELETE /v1/node-leases`,

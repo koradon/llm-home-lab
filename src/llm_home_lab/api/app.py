@@ -223,7 +223,7 @@ def create_app(
         return current_usage + requested_size <= budget
 
     async def _model_capable_hosts(
-        model: str, hosts: Sequence[HostInfo] | None = None
+        model: str, hosts: Sequence[HostInfo] | None = None, *, require_known: bool = False
     ) -> tuple[list[HostInfo], bool]:
         capable = []
         any_budget_blocked = False
@@ -237,11 +237,15 @@ def create_app(
             backend = _backend_for(host.host_id, host.capabilities)
             list_models = getattr(backend, "list_models", None)
             if list_models is None:
-                capable.append(host)
+                if not require_known:
+                    capable.append(host)
                 continue
 
             loaded = await list_models()
-            if loaded is None or model in loaded:
+            if loaded is None:
+                if not require_known:
+                    capable.append(host)
+            elif model in loaded:
                 capable.append(host)
             elif _fits_in_budget(host, model, loaded):
                 capable.append(host)
@@ -637,7 +641,7 @@ def create_app(
         at = datetime.now(UTC)
         if model is None:
             total = sum(
-                host.effective_max_concurrent_requests()
+                host.capacity.max_concurrent_requests
                 for host in registry.hosts()
                 if _node_status(host.host_id, at) == "online"
             )
@@ -650,7 +654,9 @@ def create_app(
             if _node_status(host.host_id, at) == "online"
             and not lease_book.is_held(host.host_id, lease_at)
         ]
-        capable, _budget_blocked = await _model_capable_hosts(model, hosts=online_unleased)
+        capable, _budget_blocked = await _model_capable_hosts(
+            model, hosts=online_unleased, require_known=True
+        )
         total = sum(host.effective_max_concurrent_requests(model) for host in capable)
         return {"total_max_concurrent_requests": total}
 
@@ -705,7 +711,7 @@ def create_app(
         model_hosts, budget_blocked = await _model_capable_hosts(request.model)
         lease_now = _lease_now()
         pinned = lease_book.require(token, lease_now) if token else None
-        all_model_hosts = model_hosts
+        known_model_hosts = {host.host_id: host for host in model_hosts}
         if pinned is not None:
             # A leased request stays on that one node. Model matching is unchanged,
             # and a miss does not fall through to any other host.
@@ -743,11 +749,18 @@ def create_app(
             live = lease_book.require(token, at) if token else None
             hosts = [
                 host
-                for host in all_model_hosts
+                for host in registry.hosts()
                 if (
-                    host.host_id == live.host_id
-                    if live
-                    else not lease_book.is_held(host.host_id, at)
+                    (
+                        request.model in host.capabilities.allowed_models
+                        if host.capabilities.allowed_models is not None
+                        else known_model_hosts.get(host.host_id) is host
+                    )
+                    and (
+                        host.host_id == live.host_id
+                        if live
+                        else not lease_book.is_held(host.host_id, at)
+                    )
                 )
             ]
             return _eligible_candidates(hosts, datetime.now(UTC), model=request.model)
@@ -775,6 +788,8 @@ def create_app(
                 while waited < dispatch_wait_timeout:
                     await asyncio.sleep(dispatch_poll_interval)
                     waited += dispatch_poll_interval
+                    refreshed_hosts, _ = await _model_capable_hosts(request.model)
+                    known_model_hosts = {host.host_id: host for host in refreshed_hosts}
                     candidates = current_candidates()
                     if (
                         candidates

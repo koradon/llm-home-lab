@@ -38,12 +38,12 @@ Resolution rules:
 3. **Observability and backward compatibility**:
    - `GET /v1/nodes` retains `max_concurrent_requests` and `context_window` as the node's configured base/fallback values (so existing edit forms and clients never clobber fallbacks) and adds `model_limits`, `effective_max_concurrent_requests`, and `effective_context_window`.
    - The TUI displays `effective_max_concurrent_requests` (falling back to `max_concurrent_requests` when absent) in both the Nodes table load counter and the Node Load sparklines.
-   - Unscoped `GET /v1/capacity` sums `effective_max_concurrent_requests()` over online hosts, which is identical to `max_concurrent_requests` for every node without `model_limits`.
+   - Unscoped `GET /v1/capacity` sums configured node-level `max_concurrent_requests` over online hosts.
    - `HostRegistryStore` defaults missing `model_limits` in legacy SQLite JSON rows to `None`.
 
 ### Consequences
 
-- Good, because flipping a single-model router node requires only `PATCH /v1/nodes/{host_id} {"allowed_models": ["<next-model>"]}` — dispatch gating, `/v1/capacity`, `/v1/nodes`, and the TUI immediately reflect the new model's slot limit and context window.
+- Good, because flipping a single-model router node requires only `PATCH /v1/nodes/{host_id} {"allowed_models": ["<next-model>"]}` — dispatch gating, model-filtered `/v1/capacity`, `/v1/nodes`, and the TUI immediately reflect the new model's slot limit and context window.
 - Good, because existing configs, SQLite databases, and clients that omit `model_limits` behave identically to before.
 - Good, because `model_limits` is a single optional field that can be extended later if needed without breaking callers.
 - Bad, because older orchestrator binaries cannot deserialize SQLite rows that contain the new `model_limits` key if rolled back without migrating the stored JSON (the same forward-only caveat noted for earlier capability fields like `position`).
