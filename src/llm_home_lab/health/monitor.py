@@ -45,9 +45,6 @@ class HealthMonitor:
     def is_model_healthy(self, backend_id: str, model: str, at: datetime) -> bool:
         return self._model_states.get((backend_id, model), BackendHealthState()).is_healthy
 
-    def has_model_probe_history(self, backend_id: str, model: str) -> bool:
-        return (backend_id, model) in self._model_states
-
     def model_failure_count(self, backend_id: str, model: str) -> int:
         state = self._model_states.get((backend_id, model))
         if state is None:

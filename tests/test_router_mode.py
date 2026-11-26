@@ -620,6 +620,29 @@ def test_backend_503_loading_response_on_router_maps_to_model_loading_without_fa
         assert node["health"]["recent_failures"] == 0
 
 
+def test_streaming_backend_loading_response_before_first_probe():
+    with _FakeRouterServer(models={"hy-mt2": {"value": "loading"}}) as router:
+        client = TestClient(_build_llamaserver_app(), headers=AUTH_HEADERS)
+        client.post(
+            "/v1/nodes/register",
+            json=_node_payload(
+                "mini-1", router.base_url, swap_mode="router", allowed_models=["hy-mt2"]
+            ),
+        )
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "hy-mt2",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "model_loading"
+        assert int(response.headers["Retry-After"]) > 0
+        assert client.get("/v1/nodes").json()["nodes"][0]["health"]["recent_failures"] == 0
+
+
 def test_request_routes_to_ready_node_when_peer_router_node_is_loading():
     with (
         _FakeRouterServer(models={"hy-mt2": {"value": "loading"}}) as loading_router,
@@ -870,6 +893,7 @@ def test_streaming_failure_on_router_node_isolates_to_failing_model():
                 "stream": True,
             },
         )
+        client.get("/health/ready")
 
     node = client.get("/v1/nodes").json()["nodes"][0]
     assert node["status"] == "online"

@@ -253,19 +253,10 @@ def create_app(
             _is_router_model_failed(host, model)
         )
 
-    def _sync_router_models(
-        host: HostInfo, states: list[RouterModelState] | None, at: datetime
-    ) -> None:
+    def _sync_router_models(host: HostInfo, states: list[RouterModelState] | None) -> None:
         if states is None:
             return
         router_models[host.host_id] = states
-        for entry in states:
-            if entry.failed or entry.state == "failed":
-                health_monitor.record_model_probe(host.host_id, entry.id, healthy=False, at=at)
-            elif entry.state in ("loaded", "sleeping", "unloaded") and (
-                health_monitor.has_model_probe_history(host.host_id, entry.id)
-            ):
-                health_monitor.record_model_probe(host.host_id, entry.id, healthy=True, at=at)
 
     def _serialize_node_models(host: HostInfo, at: datetime) -> list[dict[str, object]] | None:
         if host.capabilities.swap_mode != "router":
@@ -361,7 +352,7 @@ def create_app(
                             return None, False
                     else:
                         if states is not None:
-                            _sync_router_models(host, states, datetime.now(UTC))
+                            _sync_router_models(host, states)
                             loaded = [
                                 entry.id
                                 for entry in states
@@ -485,7 +476,7 @@ def create_app(
         if host.capabilities.swap_mode == "router":
             list_states = getattr(backend, "list_model_states", None)
             states = await list_states() if list_states is not None else None
-            _sync_router_models(host, states, now)
+            _sync_router_models(host, states)
             slot_models: list[str] = []
             if states is not None:
                 slot_models = [entry.id for entry in states if entry.state == "loaded"]
@@ -1157,6 +1148,7 @@ def create_app(
                 ),
             )
             try:
+                await chunks.prefetch()
                 if failover_in_play:
                     metrics_registry.record_failover_outcome(True, datetime.now(UTC))
                 return SlotStreamingResponse(
@@ -1164,6 +1156,15 @@ def create_app(
                     media_type="text/event-stream",
                     headers={"X-Backend-Id": decision.backend_id},
                 )
+            except BackendError as exc:
+                await chunks.aclose()
+                if is_router_host and _is_loading_response_error(exc):
+                    raise ModelLoadingError(
+                        f"model {request.model!r} is currently loading; retry shortly"
+                    ) from exc
+                if failover_in_play:
+                    metrics_registry.record_failover_outcome(False, datetime.now(UTC))
+                raise
             except BaseException:
                 await chunks.aclose()
                 raise
