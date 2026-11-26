@@ -522,6 +522,7 @@ async def test_capacity_isolates_stalled_inventory_and_keeps_replaced_host():
             return self._models
 
     slow, good = Inventory(True), Inventory(False)
+    slow.health_timeout = 0.1
     backends = {"http://slow.local:8081": slow, "http://good.local:8081": good}
     app = _app(backend_factory=lambda caps: backends[caps.base_url])
     async with httpx.AsyncClient(
@@ -536,6 +537,67 @@ async def test_capacity_isolates_stalled_inventory_and_keeps_replaced_host():
         good.release.set()
         result = await asyncio.wait_for(capacity, 2)
         assert result.json() == {"total_max_concurrent_requests": 4}
+
+
+async def test_capacity_uses_backend_health_timeout_and_logs_timeout(caplog):
+    class Inventory(_FakeBackend):
+        def __init__(self, delay, timeout):
+            super().__init__(models=["model"])
+            self.delay = delay
+            self.health_timeout = timeout
+
+        async def list_models(self):
+            await asyncio.sleep(self.delay)
+            return self._models
+
+    backends = {
+        "http://good.local:8081": Inventory(1.05, 1.5),
+        "http://slow.local:8081": Inventory(1, 0.05),
+    }
+    app = _app(backend_factory=lambda caps: backends[caps.base_url])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        for name in ("good", "slow"):
+            await client.post("/v1/nodes/register", json=_node_payload(name))
+        await client.get("/health/ready")
+        response = await client.get("/v1/capacity", params={"model": "model"})
+        assert response.json() == {"total_max_concurrent_requests": 4}
+        assert any(
+            "slow" in record.message and "timed out" in record.message for record in caplog.records
+        )
+
+
+async def test_queue_does_not_repeat_negative_inventory_for_unchanged_host():
+    class Inventory(_FakeBackend):
+        def __init__(self):
+            super().__init__(models=[])
+            self.calls = 0
+
+        async def list_models(self):
+            self.calls += 1
+            return self._models
+
+    busy, other = _BlockingBackend(), Inventory()
+    backends = {"http://mini-3.local:8081": busy, "http://other.local:8081": other}
+    app = _app(backend_factory=lambda caps: backends[caps.base_url], dispatch_wait_timeout=0.2)
+    payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        await client.post(
+            "/v1/nodes/register",
+            json=_node_payload(max_concurrent_requests=1, allowed_models=["model"]),
+        )
+        first = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await busy.reached_expected.wait()
+        second = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await asyncio.sleep(0.03)
+        await client.post("/v1/nodes/register", json=_node_payload("other"))
+        assert (await second).status_code == 503
+        assert other.calls == 1
+        busy.release_event.set()
+        assert (await first).status_code == 200
 
 
 async def test_queued_discovery_can_exceed_poll_interval():

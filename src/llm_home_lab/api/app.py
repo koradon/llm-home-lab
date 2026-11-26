@@ -227,7 +227,6 @@ def create_app(
         hosts: Sequence[HostInfo] | None = None,
         *,
         require_known: bool = False,
-        timeout: float | None = None,
     ) -> tuple[list[HostInfo], bool]:
         async def discover(host: HostInfo) -> tuple[HostInfo | None, bool]:
             loaded = None
@@ -235,7 +234,18 @@ def create_app(
                 backend = _backend_for(host.host_id, host.capabilities)
                 list_models = getattr(backend, "list_models", None)
                 if list_models is not None:
-                    loaded = await list_models()
+                    if require_known:
+                        try:
+                            loaded = await asyncio.wait_for(
+                                list_models(), timeout=getattr(backend, "health_timeout", 10.0)
+                            )
+                        except TimeoutError:
+                            health_logger.warning(
+                                "Model inventory timed out for host %s", host.host_id
+                            )
+                            return None, False
+                    else:
+                        loaded = await list_models()
             current = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
             if current is None:
                 return None, False
@@ -260,7 +270,7 @@ def create_app(
         if not tasks:
             return [], False
         try:
-            done, _ = await asyncio.wait(tasks, timeout=timeout)
+            done, _ = await asyncio.wait(tasks)
             results = [task.result() for task in done]
             return [host for host, _ in results if host is not None], any(
                 blocked for _, blocked in results
@@ -673,7 +683,7 @@ def create_app(
             and not lease_book.is_held(host.host_id, lease_at)
         ]
         capable, _budget_blocked = await _model_capable_hosts(
-            model, hosts=online_unleased, require_known=True, timeout=1.0
+            model, hosts=online_unleased, require_known=True
         )
         at = datetime.now(UTC)
         lease_at = _lease_now()
@@ -735,6 +745,7 @@ def create_app(
         lease_now = _lease_now()
         token = http_request.headers.get(LEASE_HEADER)
         pinned = lease_book.require(token, lease_now) if token else None
+        probed_hosts = {host.host_id: host for host in registry.hosts()}
         model_hosts, budget_blocked = await _model_capable_hosts(request.model)
         lease_now = _lease_now()
         pinned = lease_book.require(token, lease_now) if token else None
@@ -811,13 +822,16 @@ def create_app(
                 eligible_host_ids=queued_host_ids,
                 model=request.model,
             )
-            discovery_tasks: dict[str, asyncio.Task[tuple[list[HostInfo], bool]]] = {}
+            discovery_tasks: dict[
+                str, tuple[HostInfo, asyncio.Task[tuple[list[HostInfo], bool]]]
+            ] = {}
             try:
                 while (remaining := deadline - time.monotonic()) > 0:
                     await asyncio.sleep(min(dispatch_poll_interval, remaining))
-                    for host_id, task in list(discovery_tasks.items()):
+                    for host_id, (probed_host, task) in list(discovery_tasks.items()):
                         if task.done():
                             refreshed_hosts, _ = task.result()
+                            probed_hosts[host_id] = probed_host
                             known_model_hosts.update(
                                 {host.host_id: host for host in refreshed_hosts}
                             )
@@ -825,11 +839,14 @@ def create_app(
                     for host in registry.hosts():
                         if (
                             host.capabilities.allowed_models is None
-                            and known_model_hosts.get(host.host_id) is not host
+                            and probed_hosts.get(host.host_id) is not host
                             and host.host_id not in discovery_tasks
                         ):
-                            discovery_tasks[host.host_id] = asyncio.create_task(
-                                _model_capable_hosts(request.model, hosts=[host])
+                            discovery_tasks[host.host_id] = (
+                                host,
+                                asyncio.create_task(
+                                    _model_capable_hosts(request.model, hosts=[host])
+                                ),
                             )
                     candidates = current_candidates()
                     if (
@@ -852,9 +869,11 @@ def create_app(
                         "no host became available before the dispatch timeout"
                     )
             finally:
-                for task in discovery_tasks.values():
+                for _, task in discovery_tasks.values():
                     task.cancel()
-                await asyncio.gather(*discovery_tasks.values(), return_exceptions=True)
+                await asyncio.gather(
+                    *(task for _, task in discovery_tasks.values()), return_exceptions=True
+                )
                 scheduling_queue.cancel(request_id, session_id=queue_session_id, priority=0)
 
         decision = router.select_backend(request, candidates, session_id=request.session_id)
