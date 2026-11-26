@@ -284,3 +284,17 @@ def test_half_open_model_trial_failure_reopens_cooldown():
     assert monitor.may_admit_model("mini-1", "broken", at) is False
     assert monitor.may_admit_model("mini-1", "broken", at + timedelta(seconds=29)) is False
     assert monitor.may_admit_model("mini-1", "broken", at + timedelta(seconds=30)) is True
+
+
+def test_half_open_model_release_clears_trial_without_closing_circuit():
+    monitor = HealthMonitor(failure_threshold=1, cooldown=timedelta(seconds=30))
+    monitor.record_model_probe("mini-1", "broken", healthy=False, at=T0)
+    at = T0 + timedelta(seconds=30)
+
+    assert monitor.claim_model_trial("mini-1", "broken", at) is True
+    monitor.release_model_trial("mini-1", "broken")
+
+    assert monitor.has_model_trial("mini-1", "broken") is False
+    assert monitor.is_model_healthy("mini-1", "broken", at) is False
+    assert monitor.may_admit_model("mini-1", "broken", at) is True
+    assert monitor.claim_model_trial("mini-1", "broken", at) is True

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 import threading
@@ -5,11 +6,14 @@ from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from fastapi.testclient import TestClient
 from registry_test_helpers import inert_external_load_probe, new_registry_db_path
 
-from llm_home_lab.api.app import create_app
+from llm_home_lab.api.app import _stream_chunks, create_app
+from llm_home_lab.api.models import ChatCompletionRequest
 from llm_home_lab.backends.base import (
+    BackendChunk,
     BackendConnectionError,
     BackendHealth,
     BackendResponse,
@@ -1037,3 +1041,107 @@ def test_streaming_failure_on_router_node_isolates_to_failing_model():
     assert client.get("/v1/capacity", params={"model": "good"}).json() == {
         "total_max_concurrent_requests": 4
     }
+
+
+def test_cancelled_half_open_complete_releases_model_trial():
+    class _CancellingBackend:
+        backend_id = "mini-1"
+
+        async def check_health(self) -> BackendHealth:
+            return BackendHealth(healthy=True, detail="ok")
+
+        async def list_model_states(self, *, raise_on_timeout: bool = False):
+            return [RouterModelState(id="broken", state="loaded")]
+
+        async def complete(self, request) -> BackendResponse:
+            if request.model == "broken" and getattr(self, "_fail_count", 0) < 3:
+                self._fail_count = getattr(self, "_fail_count", 0) + 1
+                raise BackendResponseError(500, "model failed")
+            raise asyncio.CancelledError()
+
+    health_monitor = HealthMonitor(
+        failure_threshold=3, recovery_threshold=2, cooldown=timedelta(seconds=0)
+    )
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    app = create_app(
+        registry=HostRegistry(new_registry_db_path()),
+        router=RoutingEngine(policy),
+        health_monitor=health_monitor,
+        scheduling_queue=SchedulingQueue(),
+        backend_factories={"fake": lambda caps: _CancellingBackend()},
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
+        key_store=_permissive_key_store(),
+        external_load_probe=inert_external_load_probe(),
+        dispatch_wait_timeout=0.1,
+    )
+    client = TestClient(app, headers=AUTH_HEADERS, raise_server_exceptions=True)
+    client.post(
+        "/v1/nodes/register",
+        json={
+            "host_id": "mini-1",
+            "backend_type": "fake",
+            "context_window": 8192,
+            "base_url": "http://mini-1.local:8081",
+            "max_concurrent_requests": 4,
+            "allowed_models": ["broken"],
+            "swap_mode": "router",
+        },
+    )
+    client.get("/health/ready")
+
+    for _ in range(3):
+        assert (
+            client.post(
+                "/v1/chat/completions",
+                json={"model": "broken", "messages": [{"role": "user", "content": "hi"}]},
+            ).status_code
+            == 503
+        )
+
+    assert health_monitor.is_model_healthy("mini-1", "broken", datetime.now(UTC)) is False
+    with pytest.raises((asyncio.CancelledError, RuntimeError)):
+        client.post(
+            "/v1/chat/completions",
+            json={"model": "broken", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    now = datetime.now(UTC)
+    assert health_monitor.has_model_trial("mini-1", "broken") is False
+    assert health_monitor.is_model_healthy("mini-1", "broken", now) is False
+    assert health_monitor.may_admit_model("mini-1", "broken", now) is True
+    assert client.get("/v1/capacity", params={"model": "broken"}).json() == {
+        "total_max_concurrent_requests": 0
+    }
+
+
+async def test_stream_chunks_aclose_releases_outstanding_model_trial():
+    class _HangingStreamBackend:
+        async def stream(self, request):
+            yield BackendChunk(
+                content="partial",
+                finish_reason=None,
+                usage=None,
+            )
+            await asyncio.Event().wait()
+
+    health_monitor = HealthMonitor(failure_threshold=1, cooldown=timedelta(seconds=30))
+    health_monitor.record_model_probe("mini-1", "broken", healthy=False, at=datetime.now(UTC))
+    at = datetime.now(UTC) + timedelta(seconds=30)
+    assert health_monitor.claim_model_trial("mini-1", "broken", at) is True
+
+    chunks = _stream_chunks(
+        _HangingStreamBackend(),
+        ChatCompletionRequest(model="broken", messages=[{"role": "user", "content": "hi"}]),
+        MetricsRegistry(),
+        CompletionLog(),
+        health_monitor,
+        "mini-1",
+        router_mode=True,
+    )
+    assert await anext(chunks)
+    await chunks.aclose()
+
+    assert health_monitor.has_model_trial("mini-1", "broken") is False
+    assert health_monitor.is_model_healthy("mini-1", "broken", at) is False
+    assert health_monitor.may_admit_model("mini-1", "broken", at) is True

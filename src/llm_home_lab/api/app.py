@@ -1188,76 +1188,84 @@ def create_app(
 
         backend_call_start = time.perf_counter()
         try:
-            result = await backend.complete(request)
-        except BackendError as exc:
-            if is_router_host and _is_loading_response_error(exc):
-                health_monitor.release_model_trial(decision.backend_id, request.model)
-                raise ModelLoadingError(
-                    f"model {request.model!r} is currently loading; retry shortly"
-                ) from exc
+            try:
+                result = await backend.complete(request)
+            except BackendError as exc:
+                if is_router_host and _is_loading_response_error(exc):
+                    health_monitor.release_model_trial(decision.backend_id, request.model)
+                    raise ModelLoadingError(
+                        f"model {request.model!r} is currently loading; retry shortly"
+                    ) from exc
+                if failover_in_play:
+                    metrics_registry.record_failover_outcome(False, datetime.now(UTC))
+                if is_router_host and not isinstance(exc, BackendConnectionError):
+                    health_monitor.record_model_probe(
+                        decision.backend_id, request.model, healthy=False, at=datetime.now(UTC)
+                    )
+                else:
+                    if is_router_host:
+                        health_monitor.release_model_trial(decision.backend_id, request.model)
+                    health_monitor.record_probe(
+                        decision.backend_id, healthy=False, at=datetime.now(UTC)
+                    )
+                raise
+            finally:
+                registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
+            backend_call_latency_ms = (time.perf_counter() - backend_call_start) * 1000
+
             if failover_in_play:
-                metrics_registry.record_failover_outcome(False, datetime.now(UTC))
-            if is_router_host and not isinstance(exc, BackendConnectionError):
+                metrics_registry.record_failover_outcome(True, datetime.now(UTC))
+            metrics_registry.record_token_usage(
+                decision.backend_id, result.prompt_tokens, result.completion_tokens, datetime.now(UTC)
+            )
+            is_healthy_completion = not _is_degenerate_completion(
+                result.content, result.finish_reason
+            )
+            if is_healthy_completion:
+                metrics_registry.record_host_completion(
+                    decision.backend_id,
+                    backend_call_latency_ms,
+                    result.prompt_tokens,
+                    result.completion_tokens,
+                    datetime.now(UTC),
+                )
+                completion_log.record(decision.backend_id, datetime.now(UTC))
+            if is_router_host:
                 health_monitor.record_model_probe(
-                    decision.backend_id, request.model, healthy=False, at=datetime.now(UTC)
+                    decision.backend_id,
+                    request.model,
+                    healthy=is_healthy_completion,
+                    at=datetime.now(UTC),
                 )
             else:
-                if is_router_host:
-                    health_monitor.release_model_trial(decision.backend_id, request.model)
                 health_monitor.record_probe(
-                    decision.backend_id, healthy=False, at=datetime.now(UTC)
+                    decision.backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
                 )
-            raise
+
+            response.headers["X-Backend-Id"] = decision.backend_id
+            return {
+                "id": f"chatcmpl-{uuid.uuid4().hex}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": result.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": result.content},
+                        "finish_reason": result.finish_reason,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": result.prompt_tokens,
+                    "completion_tokens": result.completion_tokens,
+                    "total_tokens": result.prompt_tokens + result.completion_tokens,
+                },
+            }
         finally:
-            registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
-        backend_call_latency_ms = (time.perf_counter() - backend_call_start) * 1000
-
-        if failover_in_play:
-            metrics_registry.record_failover_outcome(True, datetime.now(UTC))
-        metrics_registry.record_token_usage(
-            decision.backend_id, result.prompt_tokens, result.completion_tokens, datetime.now(UTC)
-        )
-        is_healthy_completion = not _is_degenerate_completion(result.content, result.finish_reason)
-        if is_healthy_completion:
-            metrics_registry.record_host_completion(
-                decision.backend_id,
-                backend_call_latency_ms,
-                result.prompt_tokens,
-                result.completion_tokens,
-                datetime.now(UTC),
-            )
-            completion_log.record(decision.backend_id, datetime.now(UTC))
-        if is_router_host:
-            health_monitor.record_model_probe(
-                decision.backend_id,
-                request.model,
-                healthy=is_healthy_completion,
-                at=datetime.now(UTC),
-            )
-        else:
-            health_monitor.record_probe(
-                decision.backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
-            )
-
-        response.headers["X-Backend-Id"] = decision.backend_id
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": result.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": result.content},
-                    "finish_reason": result.finish_reason,
-                }
-            ],
-            "usage": {
-                "prompt_tokens": result.prompt_tokens,
-                "completion_tokens": result.completion_tokens,
-                "total_tokens": result.prompt_tokens + result.completion_tokens,
-            },
-        }
+            if is_router_host and health_monitor.has_model_trial(
+                decision.backend_id, request.model
+            ):
+                health_monitor.release_model_trial(decision.backend_id, request.model)
 
     class _LeasePathMiddleware:
         """Outermost on purpose: auth and routing see the path with the token removed."""
@@ -1314,67 +1322,73 @@ async def _stream_chunks(
 
     stream_start = time.perf_counter()
     try:
-        async with closing_chunks(backend.stream(request)) as chunks:
-            async for chunk in chunks:
-                if chunk.usage is not None:
-                    usage = chunk.usage
-                if chunk.content.strip():
-                    saw_content = True
-                if chunk.finish_reason is not None:
-                    last_finish_reason = chunk.finish_reason
-                if not chunk.content and chunk.finish_reason is None:
-                    # A usage-only accounting chunk (no content, no finish_reason) — consumed for
-                    # metrics below, not forwarded as a delta to the external client.
-                    continue
+        try:
+            async with closing_chunks(backend.stream(request)) as chunks:
+                async for chunk in chunks:
+                    if chunk.usage is not None:
+                        usage = chunk.usage
+                    if chunk.content.strip():
+                        saw_content = True
+                    if chunk.finish_reason is not None:
+                        last_finish_reason = chunk.finish_reason
+                    if not chunk.content and chunk.finish_reason is None:
+                        # A usage-only accounting chunk (no content, no finish_reason) — consumed for
+                        # metrics below, not forwarded as a delta to the external client.
+                        continue
 
-                payload = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": request.model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"role": "assistant", "content": chunk.content},
-                            "finish_reason": chunk.finish_reason,
-                        }
-                    ],
-                }
-                yield f"data: {json.dumps(payload)}\n\n"
-    except BackendError as exc:
-        if router_mode:
-            if _is_loading_response_error(exc):
-                health_monitor.release_model_trial(backend_id, request.model)
-            elif isinstance(exc, BackendConnectionError):
-                health_monitor.release_model_trial(backend_id, request.model)
-                health_monitor.record_probe(backend_id, healthy=False, at=datetime.now(UTC))
-            else:
-                health_monitor.record_model_probe(
-                    backend_id, request.model, healthy=False, at=datetime.now(UTC)
-                )
-        raise
+                    payload = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": request.model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant", "content": chunk.content},
+                                "finish_reason": chunk.finish_reason,
+                            }
+                        ],
+                    }
+                    yield f"data: {json.dumps(payload)}\n\n"
+        except BackendError as exc:
+            if router_mode:
+                if _is_loading_response_error(exc):
+                    health_monitor.release_model_trial(backend_id, request.model)
+                elif isinstance(exc, BackendConnectionError):
+                    health_monitor.release_model_trial(backend_id, request.model)
+                    health_monitor.record_probe(backend_id, healthy=False, at=datetime.now(UTC))
+                else:
+                    health_monitor.record_model_probe(
+                        backend_id, request.model, healthy=False, at=datetime.now(UTC)
+                    )
+            raise
 
-    stream_latency_ms = (time.perf_counter() - stream_start) * 1000
-    is_healthy_completion = saw_content and last_finish_reason == "stop"
-    if usage is not None:
-        metrics_registry.record_token_usage(
-            backend_id, usage["prompt_tokens"], usage["completion_tokens"], datetime.now(UTC)
-        )
-        if is_healthy_completion:
-            metrics_registry.record_host_completion(
-                backend_id,
-                stream_latency_ms,
-                usage["prompt_tokens"],
-                usage["completion_tokens"],
-                datetime.now(UTC),
+        stream_latency_ms = (time.perf_counter() - stream_start) * 1000
+        is_healthy_completion = saw_content and last_finish_reason == "stop"
+        if usage is not None:
+            metrics_registry.record_token_usage(
+                backend_id, usage["prompt_tokens"], usage["completion_tokens"], datetime.now(UTC)
             )
-    if is_healthy_completion:
-        completion_log.record(backend_id, datetime.now(UTC))
-    if router_mode:
-        health_monitor.record_model_probe(
-            backend_id, request.model, healthy=is_healthy_completion, at=datetime.now(UTC)
-        )
-    else:
-        health_monitor.record_probe(backend_id, healthy=is_healthy_completion, at=datetime.now(UTC))
+            if is_healthy_completion:
+                metrics_registry.record_host_completion(
+                    backend_id,
+                    stream_latency_ms,
+                    usage["prompt_tokens"],
+                    usage["completion_tokens"],
+                    datetime.now(UTC),
+                )
+        if is_healthy_completion:
+            completion_log.record(backend_id, datetime.now(UTC))
+        if router_mode:
+            health_monitor.record_model_probe(
+                backend_id, request.model, healthy=is_healthy_completion, at=datetime.now(UTC)
+            )
+        else:
+            health_monitor.record_probe(
+                backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
+            )
 
-    yield "data: [DONE]\n\n"
+        yield "data: [DONE]\n\n"
+    finally:
+        if router_mode and health_monitor.has_model_trial(backend_id, request.model):
+            health_monitor.release_model_trial(backend_id, request.model)
