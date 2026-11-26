@@ -899,6 +899,7 @@ def create_app(
                 if (
                     current is not reserved_host
                     or backends_by_id.get(decision.backend_id) is not reserved_backend
+                    or not health_monitor.is_healthy(decision.backend_id, datetime.now(UTC))
                     or (live is not None and live.host_id != decision.backend_id)
                     or (live is None and lease_book.is_held(decision.backend_id, at))
                 ):

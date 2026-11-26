@@ -693,7 +693,7 @@ async def test_queue_reserves_slot_before_discovery_cleanup():
         )
 
 
-@pytest.mark.parametrize("change", ["patch", "delete", "lease"])
+@pytest.mark.parametrize("change", ["patch", "delete", "lease", "health"])
 async def test_queued_reservation_revalidated_after_cleanup(change):
     class SlowInventory(_FakeBackend):
         def __init__(self):
@@ -712,7 +712,12 @@ async def test_queued_reservation_revalidated_after_cleanup(change):
 
     backend, slow = _BlockingBackend(), SlowInventory()
     backends = {"http://mini-3.local:8081": backend, "http://slow.local:8081": slow}
-    app = _app(backend_factory=lambda caps: backends[caps.base_url], dispatch_wait_timeout=1)
+    health = HealthMonitor(failure_threshold=1)
+    app = _app(
+        backend_factory=lambda caps: backends[caps.base_url],
+        dispatch_wait_timeout=1,
+        health_monitor=health,
+    )
     payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
@@ -734,11 +739,14 @@ async def test_queued_reservation_revalidated_after_cleanup(change):
             response = await client.patch("/v1/nodes/mini-3", json={"allowed_models": ["other"]})
         elif change == "delete":
             response = await client.delete("/v1/nodes/mini-3")
-        else:
+        elif change == "lease":
             response = await client.post(
                 "/v1/node-leases", json={"holder": "test", "host_id": "mini-3"}
             )
-        assert response.is_success
+        else:
+            health.record_probe("mini-3", healthy=False, at=datetime.now(UTC))
+        if change != "health":
+            assert response.is_success
         slow.release.set()
         assert (await second).status_code == 503
         assert backend.peak_in_flight == 1
