@@ -17,7 +17,7 @@ In practice, an idle unhealthy pair receives no client requests — for example,
 - **Option A — Proactive half-open single-token trial probe during periodic host probing (strictly gated to `loaded`, allowed, unleased router models)**:
   - During `_probe_one_host` (driven by the existing background health poller and `/health/ready`), after `GET /health` succeeds and `GET /models` is read on a `swap_mode: "router"` node, check each model that the router reports as `state == "loaded"` (and `failed == False`).
   - If the host is healthy, not leased, has a free concurrency slot, the model is permitted by `allowed_models` (when set), and `HealthMonitor.claim_unhealthy_model_trial` succeeds (pair is unhealthy, cooldown has elapsed, and `trial_in_flight` is `False`), send a single minimal completion (`max_tokens=1`, bounded by `health_timeout`).
-  - Success closes the circuit via `record_model_probe(..., healthy=True)`; failure (backend error, timeout, or degenerate empty output) restarts the cooldown via `record_model_probe(..., healthy=False)`; a `503` loading response releases the trial without counting a failure.
+  - Success closes the circuit via `record_model_probe(..., healthy=True)`; failure (backend error, timeout, unexpected exception, or degenerate empty output) restarts the cooldown via `record_model_probe(..., healthy=False)`; a `503` loading response releases the trial without counting a failure.
   - Shares `trial_in_flight` with request-driven trials (`claim_model_trial`), so a probe and a client request can never run concurrent trials against the same `(node, model)` pair.
   - Non-router nodes (`swap_mode == "none"`) and healthy pairs send zero extra requests.
 - **Option B — Clear the failure counter / mark the pair healthy whenever `GET /models` reports `state == "loaded"` and `failed == False`**:
@@ -40,12 +40,13 @@ Key contracts:
    - Only runs on `swap_mode == "router"` nodes when node-level health is healthy.
    - Only probes models reported by `GET /models` as `state == "loaded"` and `failed == False` — never `unloaded`, `loading`, `sleeping`, or `failed`.
    - Never probes a model excluded by `allowed_models` (when `allowed_models` is not `None`).
-   - Never probes a leased node (`lease_book.is_held`).
-   - Skips probing if the host is currently at its effective concurrency limit, and holds a registry concurrency slot while the probe is in flight.
+   - Never probes a leased node (`lease_book.is_held`), and never settles a probe if a lease appears mid-flight.
+   - Skips probing if the host is currently at its effective concurrency limit, and holds a registry concurrency slot while the probe is in flight (released by the `registration_id` that was acquired).
+   - Bail without settling if the live `HostInfo` object identity changes mid-probe (soft re-register or DELETE+re-register), matching the chat-completions reservation check.
 3. **Minimal probe payload and outcome classification**:
    - Sends a minimal 1-token completion (`max_tokens=1`), bounded by the backend's `health_timeout` (default 10 s), without recording synthetic probes in user throughput (`completion_log`) or completion metrics.
    - Because `max_tokens=1` naturally stops at the token limit, probe responses accept `finish_reason == "stop"` with non-empty content as well as `finish_reason == "length"` when content is non-empty or `completion_tokens > 0` (covering reasoning models whose first token may be emitted as reasoning).
-   - Success closes the circuit; backend errors, timeouts, or degenerate outputs record a model failure and restart the cooldown; `503` loading responses release `trial_in_flight` without counting a failure.
+   - Success closes the circuit; backend errors, timeouts, unexpected exceptions, or degenerate outputs record a model failure and restart the cooldown; `503` loading responses release `trial_in_flight` without counting a failure.
 4. **Non-router nodes unchanged**:
    - Nodes with `swap_mode == "none"` never execute router model recovery probing.
 
