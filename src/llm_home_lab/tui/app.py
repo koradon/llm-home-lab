@@ -286,21 +286,27 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         align: center middle;
     }
     #edit-dialog {
-        width: 76;
-        max-width: 95%;
+        width: 96;
+        max-width: 96%;
         height: auto;
-        max-height: 90%;
+        max-height: 96%;
         border: round $accent;
-        padding: 1 2;
+        padding: 0 1;
         background: $panel;
     }
     #form-body {
         height: auto;
-        max-height: 14;
     }
     #edit-error {
         height: auto;
         color: $error;
+    }
+    #form-actions {
+        height: auto;
+        margin-top: 1;
+    }
+    #form-actions Button {
+        margin-right: 1;
     }
     #edit-dialog Label {
         height: 1;
@@ -308,12 +314,37 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
     #edit-dialog Input {
         border: none;
         height: 1;
+        padding: 0 1;
+    }
+    .field-row {
+        height: auto;
+    }
+    .field-col {
+        width: 1fr;
+        height: auto;
+        margin-right: 1;
+    }
+    .field-col-wide {
+        width: 2fr;
+        height: auto;
+        margin-right: 1;
+    }
+    .section-header {
+        height: 1;
+        margin-top: 1;
+    }
+    .section-header Label {
+        width: 1fr;
+    }
+    .mapping-rows {
+        height: auto;
     }
     .mapping-row {
-        height: 3;
+        height: 1;
     }
     .mapping-row Input {
         width: 1fr;
+        margin-right: 1;
     }
     .limit-row .limit-model {
         width: 2fr;
@@ -360,49 +391,67 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
             title = "Register new node" if self._mode == "register" else f"Edit {self._host_id}"
             yield Label(title)
             with VerticalScroll(id="form-body"):
-                if self._mode == "register":
-                    yield Label("host_id")
-                    yield Input(value="", id="host_id")
-                yield Label("backend_type")
-                yield Select(
-                    [(name, name) for name in backend_type_options],
-                    value=backend_type,
-                    allow_blank=False,
-                    id="backend_type",
-                )
-                yield Label("context_window")
-                yield Input(value=str(node.get("context_window", "")), id="context_window")
-                yield Label("max_concurrent_requests")
-                yield Input(
-                    value=str(node.get("max_concurrent_requests", "")),
-                    id="max_concurrent_requests",
-                )
-                yield Label("base_url")
-                yield Input(value=base_url, id="base_url")
+                with Horizontal(classes="field-row"):
+                    if self._mode == "register":
+                        with Vertical(classes="field-col"):
+                            yield Label("host_id")
+                            yield Input(value="", id="host_id")
+                    with Vertical(classes="field-col"):
+                        yield Label("backend_type")
+                        yield Select(
+                            [(name, name) for name in backend_type_options],
+                            value=backend_type,
+                            allow_blank=False,
+                            compact=True,
+                            id="backend_type",
+                        )
+                    with Vertical(classes="field-col-wide"):
+                        yield Label("base_url")
+                        yield Input(value=base_url, id="base_url")
+                with Horizontal(classes="field-row"):
+                    with Vertical(classes="field-col"):
+                        yield Label("context_window")
+                        yield Input(value=str(node.get("context_window", "")), id="context_window")
+                    with Vertical(classes="field-col"):
+                        yield Label("max_concurrent_requests")
+                        yield Input(
+                            value=str(node.get("max_concurrent_requests", "")),
+                            id="max_concurrent_requests",
+                        )
+                    with Vertical(classes="field-col"):
+                        yield Label("memory_budget_gb (blank = unset)")
+                        yield Input(
+                            value="" if memory_budget_gb is None else str(memory_budget_gb),
+                            id="memory_budget_gb",
+                        )
                 yield Label("allowed_models (comma-separated, blank = unrestricted)")
                 yield Input(value=", ".join(allowed_models), id="allowed_models")
-                yield Label("model_limits (model | max slots | context window; blank = default)")
-                yield Vertical(id="model-limits-rows")
-                yield Button("+ Add limit", id="add-limit")
-                yield Label("memory_budget_gb (blank = unset)")
-                yield Input(
-                    value="" if memory_budget_gb is None else str(memory_budget_gb),
-                    id="memory_budget_gb",
-                )
-                yield Label("model_sizes_gb")
-                yield Vertical(id="model-sizes-rows")
-                yield Button("+ Add size", id="add-size")
-                yield Label("model_aliases (aliases: comma-separated)")
-                yield Vertical(id="model-aliases-rows")
-                yield Button("+ Add mapping", id="add-mapping")
+                with Horizontal(classes="section-header"):
+                    yield Label(
+                        "model_limits (model | max slots | context window; blank = default)"
+                    )
+                    yield Button("+ Add limit", id="add-limit", compact=True)
+                yield Vertical(id="model-limits-rows", classes="mapping-rows")
+                with Horizontal(classes="section-header"):
+                    yield Label("model_sizes_gb")
+                    yield Button("+ Add size", id="add-size", compact=True)
+                yield Vertical(id="model-sizes-rows", classes="mapping-rows")
+                with Horizontal(classes="section-header"):
+                    yield Label("model_aliases (aliases: comma-separated)")
+                    yield Button("+ Add mapping", id="add-mapping", compact=True)
+                yield Vertical(id="model-aliases-rows", classes="mapping-rows")
             yield Static("", id="edit-error")
-            with Horizontal():
+            with Horizontal(id="form-actions"):
                 yield Button(
-                    "Register" if self._mode == "register" else "Save", id="save", variant="primary"
+                    "Register" if self._mode == "register" else "Save",
+                    id="save",
+                    variant="primary",
+                    compact=True,
                 )
-                yield Button("Cancel", id="cancel")
+                yield Button("Cancel", id="cancel", compact=True)
 
     async def on_mount(self) -> None:
+        self._sync_form_body_max_height()
         allowed_models = cast("list[str] | None", self._node.get("allowed_models")) or []
         model_limits = (
             cast("dict[str, dict[str, object]] | None", self._node.get("model_limits")) or {}
@@ -429,6 +478,16 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         for name, aliases in model_aliases.items():
             await self._add_alias_row(name, ", ".join(aliases))
 
+    def on_resize(self) -> None:
+        self._sync_form_body_max_height()
+
+    def _sync_form_body_max_height(self) -> None:
+        # Reserve rows for the dialog border, title, inline error line, and action buttons so
+        # the body uses all remaining terminal height and only scrolls when it genuinely overflows.
+        self.query_one("#form-body", VerticalScroll).styles.max_height = max(
+            3, self.size.height - 8
+        )
+
     async def _add_limit_row(
         self, name: str = "", max_concurrent: str = "", context_window: str = ""
     ) -> None:
@@ -446,7 +505,7 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                     placeholder="context window",
                     classes="limit-context-window",
                 ),
-                Button("✕", classes="mapping-remove"),
+                Button("✕", classes="mapping-remove", compact=True),
                 id=f"limit-row-{self._limit_row_seq}",
                 classes="mapping-row limit-row",
             )
@@ -458,7 +517,7 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
             Horizontal(
                 Input(value=name, placeholder="model name", classes="mapping-name"),
                 Input(value=value, placeholder="size_gb", classes="mapping-value"),
-                Button("✕", classes="mapping-remove"),
+                Button("✕", classes="mapping-remove", compact=True),
                 id=f"size-row-{self._size_row_seq}",
                 classes="mapping-row",
             )
@@ -470,7 +529,7 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
             Horizontal(
                 Input(value=name, placeholder="model name", classes="mapping-name"),
                 Input(value=value, placeholder="alias1, alias2", classes="mapping-value"),
-                Button("✕", classes="mapping-remove"),
+                Button("✕", classes="mapping-remove", compact=True),
                 id=f"alias-row-{self._alias_row_seq}",
                 classes="mapping-row",
             )

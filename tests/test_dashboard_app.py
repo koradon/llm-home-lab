@@ -1795,3 +1795,58 @@ async def test_invalid_model_limits_keep_modal_open_with_clear_error(monkeypatch
         svg_text = svg.replace("&#160;", " ")
         assert "eurollm-22b" in svg_text
         assert "missing a model name" in svg_text
+
+
+async def test_node_edit_dialog_fits_without_scrolling_at_typical_terminal_sizes():
+    node = _full_node(
+        "mini-1",
+        backend_type="llamaserver",
+        max_concurrent_requests=8,
+        allowed_models=["gemma-e4b", "eurollm-22b", "hy-mt2"],
+        model_limits={
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384},
+            "hy-mt2": {"max_concurrent_requests": 6},
+        },
+    )
+
+    for size in ((100, 24), (120, 30), (120, 40)):
+        client = _FakeClient(nodes={"nodes": [node]})
+        app = DashboardApp(client=client, interval_s=100.0)
+        async with app.run_test(size=size) as pilot:
+            await app.poll()
+            await pilot.press("e")
+            await pilot.pause()
+
+            form_body = app.screen.query_one("#form-body")
+            save_button = app.screen.query_one("#save", Button)
+            assert form_body.max_scroll_y == 0, f"unexpected scroll at {size}"
+            assert save_button.region.bottom <= size[1], f"save button clipped at {size}"
+
+
+async def test_node_edit_dialog_falls_back_to_scrolling_when_terminal_is_too_small():
+    node = _full_node(
+        "mini-1",
+        backend_type="llamaserver",
+        max_concurrent_requests=8,
+        allowed_models=["gemma-e4b", "eurollm-22b", "hy-mt2"],
+        model_limits={
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384},
+            "hy-mt2": {"max_concurrent_requests": 6},
+        },
+    )
+    client = _FakeClient(nodes={"nodes": [node]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(100, 14)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        form_body = app.screen.query_one("#form-body")
+        save_button = app.screen.query_one("#save", Button)
+        assert form_body.max_scroll_y > 0
+        assert save_button.region.bottom <= 14
+        await pilot.click("#save")
+        await pilot.pause()
+
+    assert len(client.update_node_calls) == 1

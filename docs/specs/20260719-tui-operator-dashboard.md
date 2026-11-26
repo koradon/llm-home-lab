@@ -50,11 +50,13 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     without limits display `—`, and router models without overrides remain unchanged. A toolbar
     above the table (`+ New Node` / `✕ Remove Node` buttons, plus `n`/`x`/`e` keybindings) opens
     `NodeFormScreen` to register a new node, edit the row currently selected via cursor, or
-    deregister it after a confirm dialog. The form includes `model_limits` (prefilled with one row
-    per model in `allowed_models` plus any model already in `model_limits`, with optional positive
-    whole-number `max_concurrent_requests` and `context_window` overrides where blank means no
-    override), `model_sizes_gb`, and `model_aliases`, each edited as repeating input rows rather
-    than free text. Display order is managed separately (see **Node order** below).
+    deregister it after a confirm dialog. The form uses a compact multi-column layout sized to the
+    available terminal height so typical terminal sizes display all fields without scrolling and
+    only fall back to scrolling when the terminal is too small; it includes `model_limits`
+    (prefilled with one row per model in `allowed_models` plus any model already in `model_limits`,
+    with optional positive whole-number `max_concurrent_requests` and `context_window` overrides
+    where blank means no override), `model_sizes_gb`, and `model_aliases`, each edited as
+    repeating input rows rather than free text. Display order is managed separately (see **Node order** below).
   - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
     `in_flight / effective_max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
     (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours. Full utilization is the desired lab state.
