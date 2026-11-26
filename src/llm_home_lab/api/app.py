@@ -826,6 +826,7 @@ def create_app(
             discovery_tasks: dict[
                 str, tuple[HostInfo, asyncio.Task[tuple[list[HostInfo], bool]]]
             ] = {}
+            decision = None
             try:
                 while (remaining := deadline - time.monotonic()) > 0:
                     await asyncio.sleep(min(dispatch_poll_interval, remaining))
@@ -869,17 +870,25 @@ def create_app(
                     raise NoAvailableBackendError(
                         "no host became available before the dispatch timeout"
                     )
+                decision = router.select_backend(request, candidates, session_id=request.session_id)
+                registry.acquire_slot(decision.backend_id)
             finally:
                 for _, task in discovery_tasks.values():
                     task.cancel()
-                await asyncio.gather(
-                    *(task for _, task in discovery_tasks.values()), return_exceptions=True
-                )
                 scheduling_queue.cancel(request_id, session_id=queue_session_id, priority=0)
+                try:
+                    await asyncio.gather(
+                        *(task for _, task in discovery_tasks.values()), return_exceptions=True
+                    )
+                except BaseException:
+                    if decision is not None:
+                        registry.release_slot(decision.backend_id)
+                    raise
+        else:
+            decision = router.select_backend(request, candidates, session_id=request.session_id)
+            registry.acquire_slot(decision.backend_id)
 
-        decision = router.select_backend(request, candidates, session_id=request.session_id)
         backend = backends_by_id[decision.backend_id]
-        registry.acquire_slot(decision.backend_id)
 
         if request.stream:
             chunks = SlotStream(

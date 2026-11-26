@@ -627,6 +627,72 @@ async def test_queue_does_not_repeat_negative_inventory_for_unchanged_host():
         assert (await first).status_code == 200
 
 
+async def test_queue_reserves_slot_before_discovery_cleanup():
+    class Backend(_FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Queue()
+            self.releases = [asyncio.Event() for _ in range(3)]
+            self.count = 0
+
+        async def complete(self, request):
+            index = self.count
+            self.count += 1
+            self.started.put_nowait(index)
+            await self.releases[index].wait()
+            return await super().complete(request)
+
+    class SlowInventory(_FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.cancelling = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+
+        async def list_models(self):
+            self.calls += 1
+            if self.calls > 1:
+                return []
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelling.set()
+                await self.release.wait()
+
+    backend, slow = Backend(), SlowInventory()
+    backends = {"http://mini-3.local:8081": backend, "http://slow.local:8081": slow}
+    app = _app(backend_factory=lambda caps: backends[caps.base_url], dispatch_wait_timeout=1)
+    payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        await client.post(
+            "/v1/nodes/register",
+            json=_node_payload(max_concurrent_requests=1, allowed_models=["model"]),
+        )
+        first = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        assert await backend.started.get() == 0
+        second = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await asyncio.sleep(0.03)
+        await client.post("/v1/nodes/register", json=_node_payload("slow"))
+        await slow.started.wait()
+        backend.releases[0].set()
+        await slow.cancelling.wait()
+        third = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
+        await asyncio.sleep(0.04)
+        assert backend.count == 1
+        slow.release.set()
+        assert await backend.started.get() == 1
+        backend.releases[1].set()
+        assert await backend.started.get() == 2
+        backend.releases[2].set()
+        assert all(
+            response.status_code == 200 for response in await asyncio.gather(first, second, third)
+        )
+
+
 async def test_queued_discovery_can_exceed_poll_interval():
     class DelayedInventory(_BlockingBackend):
         async def list_models(self):
