@@ -1961,3 +1961,196 @@ def test_proactive_probe_timeout_keeps_model_unhealthy_and_restarts_cooldown():
     assert (
         health_monitor.may_admit_model("mini-1", "gemma", clock() + timedelta(seconds=29)) is False
     )
+
+
+def test_proactive_probe_releases_trial_when_acquire_slot_raises():
+    clock = _FakeClock()
+
+    class _DeregisterOnAcquire(HostRegistry):
+        def acquire_slot(self, host_id: str) -> None:
+            self.deregister(host_id)
+            super().acquire_slot(host_id)
+
+    class _HealthyListBackend:
+        backend_id = "mini-1"
+        health_timeout = 5.0
+
+        async def check_health(self) -> BackendHealth:
+            return BackendHealth(healthy=True, detail="ok")
+
+        async def list_model_states(self, *, raise_on_timeout: bool = False):
+            return [RouterModelState(id="gemma", state="loaded")]
+
+        async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
+            raise AssertionError("probe must not run after acquire failure")
+
+    backend = _HealthyListBackend()
+    health_monitor = HealthMonitor(failure_threshold=1, cooldown=timedelta(seconds=30))
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    app = create_app(
+        registry=_DeregisterOnAcquire(new_registry_db_path()),
+        router=RoutingEngine(policy),
+        health_monitor=health_monitor,
+        scheduling_queue=SchedulingQueue(),
+        backend_factories={"fake": lambda caps: backend},
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
+        key_store=_permissive_key_store(),
+        external_load_probe=inert_external_load_probe(),
+        health_clock=clock,
+        lease_clock=clock,
+    )
+    client = TestClient(app, headers=AUTH_HEADERS)
+    client.post(
+        "/v1/nodes/register",
+        json={
+            "host_id": "mini-1",
+            "backend_type": "fake",
+            "context_window": 8192,
+            "base_url": "http://mini-1.local:8081",
+            "max_concurrent_requests": 4,
+            "allowed_models": ["gemma"],
+            "swap_mode": "router",
+        },
+    )
+    health_monitor.record_model_probe("mini-1", "gemma", healthy=False, at=clock())
+    clock.advance(seconds=30)
+
+    assert client.get("/health/ready").status_code == 200
+    assert health_monitor.has_model_trial("mini-1", "gemma") is False
+    assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is True
+
+
+def test_proactive_probe_unexpected_complete_error_restarts_cooldown_without_failing_ready():
+    clock = _FakeClock()
+
+    class _MalformedCompleteBackend:
+        backend_id = "mini-1"
+        health_timeout = 5.0
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def check_health(self) -> BackendHealth:
+            return BackendHealth(healthy=True, detail="ok")
+
+        async def list_model_states(self, *, raise_on_timeout: bool = False):
+            return [RouterModelState(id="gemma", state="loaded")]
+
+        async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
+            self.calls += 1
+            raise json.JSONDecodeError("Expecting value", "", 0)
+
+    backend = _MalformedCompleteBackend()
+    registry = HostRegistry(new_registry_db_path())
+    health_monitor = HealthMonitor(failure_threshold=1, cooldown=timedelta(seconds=30))
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    app = create_app(
+        registry=registry,
+        router=RoutingEngine(policy),
+        health_monitor=health_monitor,
+        scheduling_queue=SchedulingQueue(),
+        backend_factories={"fake": lambda caps: backend},
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
+        key_store=_permissive_key_store(),
+        external_load_probe=inert_external_load_probe(),
+        health_clock=clock,
+        lease_clock=clock,
+    )
+    client = TestClient(app, headers=AUTH_HEADERS)
+    client.post(
+        "/v1/nodes/register",
+        json={
+            "host_id": "mini-1",
+            "backend_type": "fake",
+            "context_window": 8192,
+            "base_url": "http://mini-1.local:8081",
+            "max_concurrent_requests": 4,
+            "allowed_models": ["gemma"],
+            "swap_mode": "router",
+        },
+    )
+    health_monitor.record_model_probe("mini-1", "gemma", healthy=False, at=clock())
+    clock.advance(seconds=30)
+
+    assert client.get("/health/ready").status_code == 200
+    assert backend.calls == 1
+    assert registry.in_flight("mini-1") == 0
+    assert health_monitor.has_model_trial("mini-1", "gemma") is False
+    assert health_monitor.is_model_healthy("mini-1", "gemma", clock()) is False
+    assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is False
+    assert (
+        health_monitor.may_admit_model("mini-1", "gemma", clock() + timedelta(seconds=29)) is False
+    )
+
+    client.get("/health/ready")
+    assert backend.calls == 1
+
+    clock.advance(seconds=30)
+    assert client.get("/health/ready").status_code == 200
+    assert backend.calls == 2
+
+
+def test_proactive_probe_releases_slot_for_registration_acquired():
+    clock = _FakeClock()
+
+    class _SwapRegistrationOnAcquire(HostRegistry):
+        def acquire_slot(self, host_id: str) -> None:
+            host = self.get(host_id)
+            self.deregister(host_id)
+            self.register(host_id, host.capabilities, host.capacity, at=host.last_seen)
+            super().acquire_slot(host_id)
+
+    class _HealthyListBackend:
+        backend_id = "mini-1"
+        health_timeout = 5.0
+
+        async def check_health(self) -> BackendHealth:
+            return BackendHealth(healthy=True, detail="ok")
+
+        async def list_model_states(self, *, raise_on_timeout: bool = False):
+            return [RouterModelState(id="gemma", state="loaded")]
+
+        async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
+            raise AssertionError("probe must not run after registration swap")
+
+    backend = _HealthyListBackend()
+    registry = _SwapRegistrationOnAcquire(new_registry_db_path())
+    health_monitor = HealthMonitor(failure_threshold=1, cooldown=timedelta(seconds=30))
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    app = create_app(
+        registry=registry,
+        router=RoutingEngine(policy),
+        health_monitor=health_monitor,
+        scheduling_queue=SchedulingQueue(),
+        backend_factories={"fake": lambda caps: backend},
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
+        key_store=_permissive_key_store(),
+        external_load_probe=inert_external_load_probe(),
+        health_clock=clock,
+        lease_clock=clock,
+    )
+    client = TestClient(app, headers=AUTH_HEADERS)
+    client.post(
+        "/v1/nodes/register",
+        json={
+            "host_id": "mini-1",
+            "backend_type": "fake",
+            "context_window": 8192,
+            "base_url": "http://mini-1.local:8081",
+            "max_concurrent_requests": 4,
+            "allowed_models": ["gemma"],
+            "swap_mode": "router",
+        },
+    )
+    original = registry.get("mini-1").registration_id
+    health_monitor.record_model_probe("mini-1", "gemma", healthy=False, at=clock())
+    clock.advance(seconds=30)
+
+    assert client.get("/health/ready").status_code == 200
+    assert registry.get("mini-1").registration_id is not original
+    assert registry.in_flight("mini-1") == 0
+    assert health_monitor.has_model_trial("mini-1", "gemma") is False
+    assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is True

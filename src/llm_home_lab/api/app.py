@@ -511,12 +511,33 @@ def create_app(
                 return
             if current.in_flight >= current.effective_max_concurrent_requests(entry.id):
                 continue
-            if not health_monitor.claim_unhealthy_model_trial(host.host_id, entry.id, probe_now):
-                continue
 
-            registry.acquire_slot(host.host_id)
-            trial_owned = True
+            trial_owned = False
+            acquired_registration_id: object | None = None
             try:
+                if not health_monitor.claim_unhealthy_model_trial(
+                    host.host_id, entry.id, probe_now
+                ):
+                    continue
+                trial_owned = True
+
+                live = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
+                if (
+                    live is None
+                    or live.registration_id is not current.registration_id
+                    or live.capabilities.swap_mode != "router"
+                    or backends_by_id.get(host.host_id) is not backend
+                ):
+                    continue
+                try:
+                    registry.acquire_slot(host.host_id)
+                except KeyError:
+                    continue
+                reserved = registry.get(host.host_id)
+                acquired_registration_id = reserved.registration_id
+                if reserved.registration_id is not current.registration_id:
+                    continue
+
                 probe_request = ChatCompletionRequest(
                     model=entry.id,
                     messages=[Message(role="user", content="hi")],
@@ -541,6 +562,12 @@ def create_app(
                     )
                     trial_owned = False
                     continue
+                except Exception:
+                    health_monitor.record_model_probe(
+                        host.host_id, entry.id, healthy=False, at=_health_now()
+                    )
+                    trial_owned = False
+                    continue
 
                 after = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
                 if (
@@ -559,7 +586,8 @@ def create_app(
                 )
                 trial_owned = False
             finally:
-                registry.release_owned_slot(host.host_id, current.registration_id)
+                if acquired_registration_id is not None:
+                    registry.release_owned_slot(host.host_id, acquired_registration_id)
                 if trial_owned:
                     health_monitor.release_model_trial(host.host_id, entry.id)
 
