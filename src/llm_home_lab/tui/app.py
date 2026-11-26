@@ -132,9 +132,16 @@ def _styled_node_status(
     return Text.assemble((str(status), style), " ", reservation, " ", counter)
 
 
+def _effective_max_concurrent(host: dict[str, object]) -> object:
+    effective = host.get("effective_max_concurrent_requests")
+    if effective is not None:
+        return effective
+    return host["max_concurrent_requests"]
+
+
 def _load_label(host: dict[str, object]) -> Text:
     in_flight = host["in_flight"]
-    max_concurrent = host["max_concurrent_requests"]
+    max_concurrent = _effective_max_concurrent(host)
     if isinstance(in_flight, int) and isinstance(max_concurrent, int) and max_concurrent > 0:
         ratio = in_flight / max_concurrent
         percent = Text(f"{round(ratio * 100)}%", style=bar_style(ratio))
@@ -656,7 +663,7 @@ class DashboardApp(App[None]):
                 _styled_node_status(
                     host["status"],
                     host["in_flight"],
-                    host["max_concurrent_requests"],
+                    _effective_max_concurrent(host),
                     host.get("lease"),
                 ),
                 _styled_failure_count(health.get("recent_failures")),
@@ -842,7 +849,7 @@ class DashboardApp(App[None]):
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
             hosts[host_id] = host
-            max_concurrent = cast(int, host["max_concurrent_requests"]) or 1
+            max_concurrent = cast(int, _effective_max_concurrent(host)) or 1
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
 
         self._load_history = update_load_history(self._load_history, ratios)

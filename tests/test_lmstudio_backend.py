@@ -493,6 +493,18 @@ async def test_lmstudio_never_forwards_chat_template_kwargs():
     assert "chat_template_kwargs" not in payload
 
 
+async def test_lmstudio_never_forwards_reasoning_effort():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[Message(role="user", content="Hi")],
+        reasoning_effort="off",
+    )
+
+    payload = await _lmstudio_payload_for(request)
+
+    assert "reasoning_effort" not in payload
+
+
 async def test_lmstudio_payload_omits_unset_generation_parameters():
     request = ChatCompletionRequest(
         model="test-model", messages=[Message(role="user", content="Hi")]

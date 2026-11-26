@@ -4,14 +4,14 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.types import Receive
 
 from llm_home_lab.api.lifetime import RequestLifetimeMiddleware, SlotStream, SlotStreamingResponse
@@ -41,6 +41,7 @@ from llm_home_lab.registry.models import (
     HostCapacity,
     HostInfo,
     HostNotRegisteredError,
+    ModelLimits,
 )
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
@@ -63,6 +64,11 @@ class ModelCapacityExceededError(Exception):
     """A host could serve the model but loading it now would exceed its memory budget."""
 
 
+class ModelLimitsPayload(BaseModel):
+    max_concurrent_requests: int | None = Field(default=None, gt=0)
+    context_window: int | None = Field(default=None, gt=0)
+
+
 class NodeRegistrationRequest(BaseModel):
     host_id: str
     backend_type: str
@@ -74,6 +80,7 @@ class NodeRegistrationRequest(BaseModel):
     model_sizes_gb: dict[str, float] | None = None
     model_aliases: dict[str, list[str]] | None = None
     position: int | None = None
+    model_limits: dict[str, ModelLimitsPayload] | None = None
 
 
 class NodeLeaseCreateRequest(BaseModel):
@@ -97,6 +104,7 @@ class NodeUpdateRequest(BaseModel):
     model_sizes_gb: dict[str, float] | None = None
     model_aliases: dict[str, list[str]] | None = None
     position: int | None = None
+    model_limits: dict[str, ModelLimitsPayload] | None = None
 
 
 _NODE_CAPABILITY_FIELDS = {
@@ -108,8 +116,31 @@ _NODE_CAPABILITY_FIELDS = {
     "model_sizes_gb",
     "model_aliases",
     "position",
+    "model_limits",
 }
 _NODE_CAPACITY_FIELDS = {"max_concurrent_requests"}
+
+
+def _to_model_limits(
+    raw: dict[str, ModelLimitsPayload] | None,
+) -> dict[str, ModelLimits] | None:
+    if raw is None:
+        return None
+    return {
+        model: ModelLimits(
+            max_concurrent_requests=entry.max_concurrent_requests,
+            context_window=entry.context_window,
+        )
+        for model, entry in raw.items()
+    }
+
+
+def _serialize_model_limits(
+    limits: dict[str, ModelLimits] | None,
+) -> dict[str, dict[str, int]] | None:
+    if limits is None:
+        return None
+    return {model: entry.to_dict() for model, entry in limits.items()}
 
 
 def _error_response(status_code: int, message: str, error_type: str, code: str) -> JSONResponse:
@@ -191,10 +222,12 @@ def create_app(
 
         return current_usage + requested_size <= budget
 
-    async def _model_capable_hosts(model: str) -> tuple[list[HostInfo], bool]:
+    async def _model_capable_hosts(
+        model: str, hosts: Sequence[HostInfo] | None = None
+    ) -> tuple[list[HostInfo], bool]:
         capable = []
         any_budget_blocked = False
-        for host in registry.hosts():
+        for host in registry.hosts() if hosts is None else hosts:
             allowed_models = host.capabilities.allowed_models
             if allowed_models is not None:
                 if model in allowed_models:
@@ -224,23 +257,26 @@ def create_app(
     def _node_health(host_id: str) -> dict[str, int]:
         return {"recent_failures": health_monitor.failure_count(host_id)}
 
-    def _eligible_candidates(hosts: list[HostInfo], at: datetime) -> list[RoutingCandidate]:
+    def _eligible_candidates(
+        hosts: list[HostInfo], at: datetime, model: str | None = None
+    ) -> list[RoutingCandidate]:
         candidates = []
         for host in hosts:
             if not health_monitor.is_healthy(host.host_id, at):
                 continue
-            if host.in_flight >= host.capacity.max_concurrent_requests:
+            effective_max = host.effective_max_concurrent_requests(model)
+            if host.in_flight >= effective_max:
                 continue
             # No real latency measurement yet (see routing spec's Open Questions), so use
             # each host's current load relative to its own capacity as a least-connections
             # proxy — otherwise every request ties and falls back to alphabetical backend_id,
             # filling one host before ever trying the others.
-            load_ratio = host.in_flight / host.capacity.max_concurrent_requests
+            load_ratio = host.in_flight / effective_max
             candidates.append(
                 RoutingCandidate(
                     backend=_backend_for(host.host_id, host.capabilities),
                     latency_ms=load_ratio,
-                    context_window=host.capabilities.context_window,
+                    context_window=host.effective_context_window(model),
                 )
             )
         return candidates
@@ -474,6 +510,7 @@ def create_app(
                 model_sizes_gb=payload.model_sizes_gb,
                 model_aliases=payload.model_aliases,
                 position=payload.position,
+                model_limits=_to_model_limits(payload.model_limits),
             ),
             HostCapacity(max_concurrent_requests=payload.max_concurrent_requests),
             at=datetime.now(UTC),
@@ -560,13 +597,16 @@ def create_app(
                     "host_id": host.host_id,
                     "backend_type": host.capabilities.backend_type,
                     "context_window": host.capabilities.context_window,
+                    "effective_context_window": host.effective_context_window(),
                     "base_url": host.capabilities.base_url,
                     "allowed_models": host.capabilities.allowed_models,
                     "memory_budget_gb": host.capabilities.memory_budget_gb,
                     "model_sizes_gb": host.capabilities.model_sizes_gb,
                     "model_aliases": host.capabilities.model_aliases,
+                    "model_limits": _serialize_model_limits(host.capabilities.model_limits),
                     "position": host.capabilities.position,
                     "max_concurrent_requests": host.capacity.max_concurrent_requests,
+                    "effective_max_concurrent_requests": host.effective_max_concurrent_requests(),
                     "in_flight": host.in_flight,
                     "last_seen": host.last_seen.isoformat(),
                     "status": _node_status(host.host_id, at),
@@ -593,13 +633,25 @@ def create_app(
         }
 
     @app.get("/v1/capacity")
-    async def get_capacity() -> dict[str, int]:
+    async def get_capacity(model: str | None = None) -> dict[str, int]:
         at = datetime.now(UTC)
-        total = sum(
-            host.capacity.max_concurrent_requests
+        if model is None:
+            total = sum(
+                host.effective_max_concurrent_requests()
+                for host in registry.hosts()
+                if _node_status(host.host_id, at) == "online"
+            )
+            return {"total_max_concurrent_requests": total}
+
+        lease_at = _lease_now()
+        online_unleased = [
+            host
             for host in registry.hosts()
             if _node_status(host.host_id, at) == "online"
-        )
+            and not lease_book.is_held(host.host_id, lease_at)
+        ]
+        capable, _budget_blocked = await _model_capable_hosts(model, hosts=online_unleased)
+        total = sum(host.effective_max_concurrent_requests(model) for host in capable)
         return {"total_max_concurrent_requests": total}
 
     @app.get("/v1/alerts")
@@ -698,7 +750,7 @@ def create_app(
                     else not lease_book.is_held(host.host_id, at)
                 )
             ]
-            return _eligible_candidates(hosts, datetime.now(UTC))
+            return _eligible_candidates(hosts, datetime.now(UTC), model=request.model)
 
         def queued_host_ids() -> set[str]:
             try:
@@ -717,6 +769,7 @@ def create_app(
                 priority=0,
                 at=now,
                 eligible_host_ids=queued_host_ids,
+                model=request.model,
             )
             try:
                 while waited < dispatch_wait_timeout:
@@ -730,6 +783,7 @@ def create_app(
                             datetime.now(UTC),
                             available_host_ids={c.backend.backend_id for c in candidates},
                             request_id=request_id,
+                            model=request.model,
                         )
                         == request_id
                     ):

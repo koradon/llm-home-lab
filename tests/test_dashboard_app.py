@@ -1470,3 +1470,23 @@ def test_the_load_label_percent_uses_the_chart_colour_band():
     assert percent_style(_node("half", in_flight=2)) == ORANGE
     assert percent_style(_node("low", in_flight=1)) == RED
     assert percent_style(_node("none", in_flight=0, max_concurrent_requests=0)) is None
+
+
+async def test_dashboard_displays_effective_max_concurrent_requests_when_present():
+    node = _node("mini-3", in_flight=2, max_concurrent_requests=4)
+    node["effective_max_concurrent_requests"] = 8
+    client = _FakeClient(nodes={"nodes": [node]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        table = app.query_one("#nodes-table", DataTable)
+        status_cell = str(table.get_row_at(0)[1])
+        label_text = str(app.query_one("#label-mini-3", Label).render())
+        sparkline_data = list(app.query_one(Sparkline).data)
+
+    assert "2/8" in status_cell
+    assert label_text == "mini-3 · 2/8 · 25%"
+    assert sparkline_data == [0.25]

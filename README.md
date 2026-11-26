@@ -87,7 +87,7 @@ orchestrator won't just load it for you.
 
 ### Generation parameters
 
-Besides `model` and `messages`, the request accepts four optional parameters that are forwarded
+Besides `model` and `messages`, the request accepts five optional parameters that are forwarded
 to the backend unchanged when you set them (and omitted when you do not):
 
 | Field | Type | Notes |
@@ -96,6 +96,7 @@ to the backend unchanged when you set them (and omitted when you do not):
 | `max_tokens` | integer > 0 | Generation cap (a runaway guard); no upper bound. |
 | `chat_template_kwargs` | object | llama-server nodes only, e.g. `{"enable_thinking": false}` to switch Gemma-4 thinking off per call. Never sent to LM Studio nodes. |
 | `response_format` | object | e.g. `{"type": "json_object"}` or a `json_schema` format. |
+| `reasoning_effort` | non-empty string | llama-server nodes only, e.g. `"off"` or `"no_think"`. Never sent to LM Studio nodes. |
 
 Invalid values return `400 invalid_request_error`. Other fields (`top_p`, `stop`, …) are still
 ignored. The response exposes the backend's `finish_reason` (`choices[0].finish_reason`, or on the
@@ -160,6 +161,33 @@ by registering with a fixed list:
 ```json
 { "host_id": "gpu-box", "...": "...", "allowed_models": ["qwen2.5-coder-14b-instruct-mlx"] }
 ```
+
+**Per-model concurrency and context limits**: when a node switches between models whose safe slot
+count or context window differs (such as a `llama-server` router node with `--models-max 1`),
+declare `model_limits` alongside `allowed_models`:
+
+```json
+{
+  "host_id": "mini-3",
+  "backend_type": "llamaserver",
+  "base_url": "http://mini-3.local:8081",
+  "context_window": 8192,
+  "max_concurrent_requests": 4,
+  "allowed_models": ["gemma-4-26B-A4B"],
+  "model_limits": {
+    "gemma-4-26B-A4B": {"max_concurrent_requests": 8, "context_window": 16384},
+    "Hy-MT2-30B-A3B": {"max_concurrent_requests": 6, "context_window": 16384}
+  }
+}
+```
+
+Dispatch gating, routing context-window checks, and `/v1/capacity` use the per-model value when
+set and fall back to the node-level `max_concurrent_requests` / `context_window` otherwise. On a
+single-model node (`allowed_models` of length 1), flipping `allowed_models` via
+`PATCH /v1/nodes/{host_id}` changes the served model and its effective limits together without a
+second PATCH. `GET /v1/nodes` exposes `model_limits`, `effective_max_concurrent_requests`, and
+`effective_context_window`, and the TUI displays the effective concurrency limit. See
+[ADR-0015](docs/adr/0015-per-model-node-limits.md).
 
 If you actually *want* on-demand loading (rather than requiring everything pre-loaded), declare a
 memory budget instead — LM Studio has no API to report model size or host memory usage, so you
@@ -326,7 +354,9 @@ it runs; register more hosts if you need to run many long generations at once.
 - `POST /v1/chat/completions` — OpenAI-compatible chat completions (streaming and non-streaming).
 - `POST /v1/nodes/register`, `PATCH /v1/nodes/{host_id}`, `POST /v1/nodes/{host_id}/heartbeat`,
   `DELETE /v1/nodes/{host_id}`, `GET /v1/nodes` — manage model hosts.
-- `GET /v1/capacity` — total `max_concurrent_requests` summed across online hosts.
+- `GET /v1/capacity` — total effective `max_concurrent_requests` summed across online hosts. Pass
+  `?model=<name>` to return the effective capacity for that model only, across online, unleased
+  hosts that can serve it.
 - `POST /v1/node-leases`, `POST /v1/node-leases/heartbeat`, `DELETE /v1/node-leases`,
   `POST /v1/node-leases/force-release` — reserve a node for a real-LLM check. See below.
 - `GET /health/live`, `GET /health/ready` — liveness/readiness (no auth required).
