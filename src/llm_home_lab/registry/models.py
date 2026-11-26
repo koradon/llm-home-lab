@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -49,6 +49,7 @@ class HostInfo:
     capacity: HostCapacity
     in_flight: int
     last_seen: datetime
+    registration_id: object = field(default_factory=object, repr=False, compare=False)
 
     def _resolved_model_limits(self, model: str | None = None) -> ModelLimits | None:
         limits = self.capabilities.model_limits

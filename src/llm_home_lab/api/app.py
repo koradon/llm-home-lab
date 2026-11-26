@@ -884,13 +884,12 @@ def create_app(
                         *(task for _, task in discovery_tasks.values()), return_exceptions=True
                     )
                 except BaseException:
-                    if decision is not None:
-                        current = next(
-                            (h for h in registry.hosts() if h.host_id == decision.backend_id), None
+                    if decision is not None and reserved_host is not None:
+                        registry.release_owned_slot(
+                            decision.backend_id, reserved_host.registration_id
                         )
-                        if current is not None and current.in_flight > 0:
-                            registry.release_slot(decision.backend_id)
                     raise
+            assert reserved_host is not None
             try:
                 current = next(
                     (h for h in registry.hosts() if h.host_id == decision.backend_id), None
@@ -905,12 +904,12 @@ def create_app(
                 ):
                     raise NoAvailableBackendError("reserved host changed before dispatch")
             except BaseException:
-                if current is not None and current.in_flight > 0:
-                    registry.release_slot(decision.backend_id)
+                registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
                 raise
         else:
             decision = router.select_backend(request, candidates, session_id=request.session_id)
             registry.acquire_slot(decision.backend_id)
+            reserved_host = registry.get(decision.backend_id)
 
         backend = backends_by_id[decision.backend_id]
 
@@ -924,7 +923,9 @@ def create_app(
                     health_monitor,
                     decision.backend_id,
                 ),
-                lambda: registry.release_slot(decision.backend_id),
+                lambda: registry.release_owned_slot(
+                    decision.backend_id, reserved_host.registration_id
+                ),
             )
             try:
                 if failover_in_play:
@@ -947,7 +948,7 @@ def create_app(
             health_monitor.record_probe(decision.backend_id, healthy=False, at=datetime.now(UTC))
             raise
         finally:
-            registry.release_slot(decision.backend_id)
+            registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
         backend_call_latency_ms = (time.perf_counter() - backend_call_start) * 1000
 
         if failover_in_play:

@@ -65,6 +65,25 @@ def test_reregistering_updates_capacity_without_resetting_in_flight_count(tmp_pa
     assert registry.hosts()[0].capacity.max_concurrent_requests == 5
 
 
+def test_owned_release_tracks_registration_across_update_and_replacement(tmp_path):
+    registry = HostRegistry(str(tmp_path / "registry.db"))
+    registry.register("host-a", _capabilities(), _capacity(), at=T0)
+    original = registry.get("host-a").registration_id
+    registry.acquire_slot("host-a")
+    registry.register("host-a", _capabilities(), _capacity(), at=T0)
+    registry.release_owned_slot("host-a", original)
+    assert registry.in_flight("host-a") == 0
+
+    registry.acquire_slot("host-a")
+    registry.deregister("host-a")
+    registry.register("host-a", _capabilities(), _capacity(), at=T0)
+    registry.acquire_slot("host-a")
+    registry.release_owned_slot("host-a", original)
+    assert registry.in_flight("host-a") == 1
+    registry.release_slot("host-a")
+    assert registry.in_flight("host-a") == 0
+
+
 def test_get_returns_the_registered_host(tmp_path):
     registry = HostRegistry(str(tmp_path / "registry.db"))
     registry.register("host-a", _capabilities(), _capacity(), at=T0)
