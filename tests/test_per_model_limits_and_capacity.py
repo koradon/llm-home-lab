@@ -600,14 +600,18 @@ async def test_queue_does_not_repeat_negative_inventory_for_unchanged_host():
         def __init__(self):
             super().__init__(models=[])
             self.calls = 0
+            self.probed = asyncio.Event()
 
         async def list_models(self):
             self.calls += 1
+            self.probed.set()
             return self._models
 
     busy, other = _BlockingBackend(), Inventory()
     backends = {"http://mini-3.local:8081": busy, "http://other.local:8081": other}
-    app = _app(backend_factory=lambda caps: backends[caps.base_url], dispatch_wait_timeout=0.2)
+    # Timeout must outlast register + first probe + a few poll intervals that prove
+    # the negative inventory is not re-queried; the old 0.2s race lost under CI load.
+    app = _app(backend_factory=lambda caps: backends[caps.base_url], dispatch_wait_timeout=0.5)
     payload = {"model": "model", "messages": [{"role": "user", "content": "hi"}]}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
@@ -621,6 +625,10 @@ async def test_queue_does_not_repeat_negative_inventory_for_unchanged_host():
         second = asyncio.create_task(client.post("/v1/chat/completions", json=payload))
         await asyncio.sleep(0.03)
         await client.post("/v1/nodes/register", json=_node_payload("other"))
+        await asyncio.wait_for(other.probed.wait(), timeout=1.0)
+        assert other.calls == 1
+        await asyncio.sleep(0.05)
+        assert other.calls == 1
         assert (await second).status_code == 503
         assert other.calls == 1
         busy.release_event.set()
