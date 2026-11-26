@@ -109,6 +109,9 @@ Keep scenarios in a sibling Gherkin file: `docs/specs/features/20260717-failover
   filters the `candidates` sequence that spec's `RoutingEngine.select_backend` consumes; this
   spec also resolves that spec's deferred Open Question on sticky/health interaction (see
   Behavior above).
+- ADR: [0016-llamaserver-router-mode-awareness](../adr/0016-llamaserver-router-mode-awareness.md) —
+  owns the per-`(node, model)` health extension and half-open trial recovery on router-mode hosts;
+  this spec remains the owner of node-level `HealthMonitor` behavior.
 - Module: [`backends/base.py`](../../src/llm_home_lab/backends/base.py) — `BackendHealth` /
   `ChatBackend.check_health()`, the raw per-probe signal this policy adds hysteresis on top of.
 - Plan: [failover-and-health-policy](../plans/20260717-failover-and-health-policy.md)

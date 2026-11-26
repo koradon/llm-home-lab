@@ -1227,7 +1227,10 @@ def create_app(
             if failover_in_play:
                 metrics_registry.record_failover_outcome(True, datetime.now(UTC))
             metrics_registry.record_token_usage(
-                decision.backend_id, result.prompt_tokens, result.completion_tokens, datetime.now(UTC)
+                decision.backend_id,
+                result.prompt_tokens,
+                result.completion_tokens,
+                datetime.now(UTC),
             )
             is_healthy_completion = not _is_degenerate_completion(
                 result.content, result.finish_reason
@@ -1343,8 +1346,9 @@ async def _stream_chunks(
                     if chunk.finish_reason is not None:
                         last_finish_reason = chunk.finish_reason
                     if not chunk.content and chunk.finish_reason is None:
-                        # A usage-only accounting chunk (no content, no finish_reason) — consumed for
-                        # metrics below, not forwarded as a delta to the external client.
+                        # A usage-only accounting chunk (no content, no finish_reason) —
+                        # consumed for metrics below, not forwarded as a delta to the
+                        # external client.
                         continue
 
                     payload = {
@@ -1372,9 +1376,7 @@ async def _stream_chunks(
                         )
                     else:
                         health_monitor.release_model_trial(backend_id, request.model)
-                        health_monitor.record_probe(
-                            backend_id, healthy=False, at=datetime.now(UTC)
-                        )
+                        health_monitor.record_probe(backend_id, healthy=False, at=datetime.now(UTC))
                 else:
                     health_monitor.record_model_probe(
                         backend_id, request.model, healthy=False, at=datetime.now(UTC)

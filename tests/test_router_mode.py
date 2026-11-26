@@ -623,9 +623,7 @@ def test_half_open_model_failed_trial_reopens_cooldown_and_keeps_capacity_zero()
         assert health_monitor.has_model_trial("mini-1", "broken-missing") is False
         assert health_monitor.may_admit_model("mini-1", "broken-missing", now) is False
         assert (
-            health_monitor.may_admit_model(
-                "mini-1", "broken-missing", now + timedelta(seconds=29)
-            )
+            health_monitor.may_admit_model("mini-1", "broken-missing", now + timedelta(seconds=29))
             is False
         )
 
@@ -968,11 +966,9 @@ def test_half_open_trial_connection_error_reopens_model_cooldown():
 
     opened_at = datetime.now(UTC)
     for _ in range(3):
-        health_monitor.record_model_probe(
-            "mini-1", "broken", healthy=False, at=opened_at
-        )
-    health_monitor._model_states[("mini-1", "broken")].unhealthy_since = (
-        opened_at - timedelta(seconds=30)
+        health_monitor.record_model_probe("mini-1", "broken", healthy=False, at=opened_at)
+    health_monitor._model_states[("mini-1", "broken")].unhealthy_since = opened_at - timedelta(
+        seconds=30
     )
 
     non_stream = client.post(
@@ -984,15 +980,12 @@ def test_half_open_trial_connection_error_reopens_model_cooldown():
     assert health_monitor.has_model_trial("mini-1", "broken") is False
     assert health_monitor.is_model_healthy("mini-1", "broken", now) is False
     assert health_monitor.may_admit_model("mini-1", "broken", now) is False
-    assert (
-        health_monitor.may_admit_model("mini-1", "broken", now + timedelta(seconds=29))
-        is False
-    )
+    assert health_monitor.may_admit_model("mini-1", "broken", now + timedelta(seconds=29)) is False
     assert client.get("/v1/nodes").json()["nodes"][0]["status"] == "online"
 
-    health_monitor._model_states[("mini-1", "broken")].unhealthy_since = (
-        datetime.now(UTC) - timedelta(seconds=30)
-    )
+    health_monitor._model_states[("mini-1", "broken")].unhealthy_since = datetime.now(
+        UTC
+    ) - timedelta(seconds=30)
     streamed = client.post(
         "/v1/chat/completions",
         json={

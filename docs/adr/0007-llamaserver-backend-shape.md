@@ -45,7 +45,9 @@ Chosen option: **B**, applied to three sub-decisions:
 1. **Health check** — `LlamaCPPServerBackend.check_health()` calls llama-server's native
    `GET /health` directly, rather than proxying through a chat/model endpoint.
 2. **Load/queue visibility** — a new `LlamaCPPServerLoadProbe` reads `GET {base_url}/slots` over
-   plain HTTP (no subprocess), rather than mirroring `ExternalLoadProbe`'s CLI-shelling approach.
+   plain HTTP (no subprocess) for single-model nodes; router-mode `GET /slots?model=<name>` probing
+   is owned by [ADR-0016](0016-llamaserver-router-mode-awareness.md). This does not mirror
+   `ExternalLoadProbe`'s CLI-shelling approach.
    Wiring two backend-type-specific probers into one app required a new
    `MultiBackendLoadProbe` dispatcher (`registry/multi_backend_load_probe.py`), which looks up
    each host's `backend_type` via `HostRegistry` and routes to the right prober — defaulting to
