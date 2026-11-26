@@ -90,7 +90,7 @@ class MetricsRegistry:
             failover_success_rate = successes / len(self._failover_outcomes)
 
         host_saturation = {
-            host.host_id: host.in_flight / host.capacity.max_concurrent_requests
+            host.host_id: host.in_flight / host.effective_max_concurrent_requests()
             for host in registry.hosts()
         }
 

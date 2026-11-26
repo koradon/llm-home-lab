@@ -85,9 +85,9 @@ multiple remote model hosts — this spec does not introduce a distributed contr
   `candidates` argument is now built from `HostRegistry.hosts()` (converted to
   `RoutingCandidate`), filtered by `HealthMonitor.is_healthy` exactly as today, so registry
   integration does not change `RoutingEngine` or `HealthMonitor` themselves.
-- A host with a full capacity (`in_flight(host_id) == capacity.max_concurrent_requests`) is
+- A host with a full effective capacity for the requested model is
   excluded from the candidates offered to `RoutingEngine` for a given dispatch attempt, the same
-  way an unhealthy host is excluded today.
+  way an unhealthy host is excluded today. See [per-model limits](../adr/0015-per-model-node-limits.md).
 
 ## Capacity ownership
 
@@ -119,8 +119,7 @@ for.
 - If **no registered host** is model-capable for the requested model, the gateway rejects the
   request with `400` (a `ModelNotAvailableError`) — a distinct, client-error case from the existing
   `NoAvailableBackendError`/`503` ("hosts exist but are unhealthy or full right now"). Model
-  capability is computed once per request, before health/capacity filtering, not re-checked on
-  every poll iteration of the capacity-wait loop.
+  capability is checked before health/capacity filtering and can be refreshed while queued.
 - `POST /v1/nodes/register` accepts an optional `allowed_models` field in its payload, threaded
   straight into `HostCapabilities`.
 

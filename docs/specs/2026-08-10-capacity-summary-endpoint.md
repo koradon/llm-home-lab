@@ -25,9 +25,9 @@ once.
 
 - New route `GET /v1/capacity` in `src/llm_home_lab/api/app.py`, alongside the existing
   `/v1/nodes` routes.
-- No request body or query parameters.
+- No request body. For the optional model filter, see [per-model limits](../adr/0015-per-model-node-limits.md).
 - Response body: `{"total_max_concurrent_requests": <int>}`.
-- The total is computed as the sum of `host.capacity.max_concurrent_requests` over every host in
+- Without a model filter, the total is computed as the sum of `host.capacity.max_concurrent_requests` over every host in
   `registry.hosts()` for which `_node_status(host.host_id, at) == "online"`, evaluated at a single
   `at = datetime.now(UTC)` timestamp for the whole request (the same pattern `GET /v1/nodes`
   already uses).
@@ -53,12 +53,12 @@ differently.
 online or not — there is nothing special-cased about a zero-capacity host; it is included in the
 "online" filter like any other host and simply adds nothing.
 
-**This is read-only and has no side effects.** `GET /v1/capacity` does not probe hosts itself; it
+**The unfiltered request is read-only and has no side effects.** `GET /v1/capacity` without a model filter does not probe hosts itself; it
 reads whatever health state the background poller ([ADR-0006](../adr/0006-background-health-poller.md))
 has already recorded, exactly as `GET /v1/nodes` does. It performs no I/O beyond reading
 in-memory/registry state.
 
-**Consistency with `/v1/nodes`.** For the same instant, summing `max_concurrent_requests` over
+**Consistency with `/v1/nodes`.** For an unfiltered request at the same instant, summing `max_concurrent_requests` over
 the hosts `GET /v1/nodes` reports with `"status": "online"` must equal
 `total_max_concurrent_requests` from `GET /v1/capacity` — both derive from the same
 `_node_status` calls.

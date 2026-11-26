@@ -16,3 +16,4 @@
 | `0012-forward-generation-parameters-to-backends.md` | Forward generation parameters to backends | accepted |
 | `0013-node-test-lease.md` | Lease a node with a heartbeat and a hard ceiling | accepted |
 | [0014-request-lifetimes-and-finite-progress.md](0014-request-lifetimes-and-finite-progress.md) | Own request lifetimes and bound backend silence | accepted |
+| [0015-per-model-node-limits.md](0015-per-model-node-limits.md) | Per-model concurrency and context limits on registered nodes | accepted |

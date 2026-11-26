@@ -29,6 +29,7 @@ class HostRegistry:
             capacity=capacity,
             in_flight=existing.in_flight if existing is not None else 0,
             last_seen=at,
+            registration_id=existing.registration_id if existing is not None else object(),
         )
         self._store.upsert(host_id, capabilities, capacity, at)
 
@@ -48,6 +49,11 @@ class HostRegistry:
 
     def release_slot(self, host_id: str) -> None:
         self._hosts[host_id].in_flight -= 1
+
+    def release_owned_slot(self, host_id: str, registration_id: object) -> None:
+        host = self._hosts.get(host_id)
+        if host is not None and host.registration_id is registration_id:
+            self.release_slot(host_id)
 
     def heartbeat(self, host_id: str, at: datetime) -> None:
         if host_id not in self._hosts:

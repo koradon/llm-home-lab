@@ -2,7 +2,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-GENERATION_FIELDS = ("temperature", "max_tokens", "chat_template_kwargs", "response_format")
+GENERATION_FIELDS = (
+    "temperature",
+    "max_tokens",
+    "chat_template_kwargs",
+    "response_format",
+    "reasoning_effort",
+)
 
 
 class Message(BaseModel):
@@ -20,6 +26,7 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: int | None = Field(default=None, gt=0)
     chat_template_kwargs: dict[str, Any] | None = None
     response_format: dict[str, Any] | None = None
+    reasoning_effort: str | None = Field(default=None, min_length=1)
 
     def unset_generation_fields(self) -> set[str]:
         """Names of the optional generation parameters the client did not set.

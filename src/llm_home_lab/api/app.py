@@ -4,14 +4,14 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.types import Receive
 
 from llm_home_lab.api.lifetime import RequestLifetimeMiddleware, SlotStream, SlotStreamingResponse
@@ -41,6 +41,7 @@ from llm_home_lab.registry.models import (
     HostCapacity,
     HostInfo,
     HostNotRegisteredError,
+    ModelLimits,
 )
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
@@ -63,6 +64,11 @@ class ModelCapacityExceededError(Exception):
     """A host could serve the model but loading it now would exceed its memory budget."""
 
 
+class ModelLimitsPayload(BaseModel):
+    max_concurrent_requests: int | None = Field(default=None, gt=0)
+    context_window: int | None = Field(default=None, gt=0)
+
+
 class NodeRegistrationRequest(BaseModel):
     host_id: str
     backend_type: str
@@ -74,6 +80,7 @@ class NodeRegistrationRequest(BaseModel):
     model_sizes_gb: dict[str, float] | None = None
     model_aliases: dict[str, list[str]] | None = None
     position: int | None = None
+    model_limits: dict[str, ModelLimitsPayload] | None = None
 
 
 class NodeLeaseCreateRequest(BaseModel):
@@ -97,6 +104,7 @@ class NodeUpdateRequest(BaseModel):
     model_sizes_gb: dict[str, float] | None = None
     model_aliases: dict[str, list[str]] | None = None
     position: int | None = None
+    model_limits: dict[str, ModelLimitsPayload] | None = None
 
 
 _NODE_CAPABILITY_FIELDS = {
@@ -108,8 +116,31 @@ _NODE_CAPABILITY_FIELDS = {
     "model_sizes_gb",
     "model_aliases",
     "position",
+    "model_limits",
 }
 _NODE_CAPACITY_FIELDS = {"max_concurrent_requests"}
+
+
+def _to_model_limits(
+    raw: dict[str, ModelLimitsPayload] | None,
+) -> dict[str, ModelLimits] | None:
+    if raw is None:
+        return None
+    return {
+        model: ModelLimits(
+            max_concurrent_requests=entry.max_concurrent_requests,
+            context_window=entry.context_window,
+        )
+        for model, entry in raw.items()
+    }
+
+
+def _serialize_model_limits(
+    limits: dict[str, ModelLimits] | None,
+) -> dict[str, dict[str, int]] | None:
+    if limits is None:
+        return None
+    return {model: entry.to_dict() for model, entry in limits.items()}
 
 
 def _error_response(status_code: int, message: str, error_type: str, code: str) -> JSONResponse:
@@ -191,30 +222,65 @@ def create_app(
 
         return current_usage + requested_size <= budget
 
-    async def _model_capable_hosts(model: str) -> tuple[list[HostInfo], bool]:
-        capable = []
-        any_budget_blocked = False
-        for host in registry.hosts():
-            allowed_models = host.capabilities.allowed_models
-            if allowed_models is not None:
-                if model in allowed_models:
-                    capable.append(host)
-                continue
+    async def _model_capable_hosts(
+        model: str,
+        hosts: Sequence[HostInfo] | None = None,
+        *,
+        require_known: bool = False,
+    ) -> tuple[list[HostInfo], bool]:
+        async def discover(host: HostInfo) -> tuple[HostInfo | None, bool]:
+            loaded = None
+            if host.capabilities.allowed_models is None:
+                backend = _backend_for(host.host_id, host.capabilities)
+                list_models = getattr(backend, "list_models", None)
+                if list_models is not None:
+                    try:
+                        if require_known:
+                            loaded = await asyncio.wait_for(
+                                list_models(), timeout=getattr(backend, "health_timeout", 10.0)
+                            )
+                        else:
+                            loaded = await list_models()
+                    except (TimeoutError, BackendTimeoutError):
+                        if require_known:
+                            health_logger.warning(
+                                "Model inventory timed out for host %s", host.host_id
+                            )
+                            return None, False
+            current = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
+            if current is None:
+                return None, False
+            allowed = current.capabilities.allowed_models
+            if allowed is not None:
+                return (current if model in allowed else None), False
+            if (current.capabilities.backend_type, current.capabilities.base_url) != (
+                host.capabilities.backend_type,
+                host.capabilities.base_url,
+            ) or host.capabilities.allowed_models is not None:
+                return await discover(current)
+            if loaded is None:
+                return (None if require_known else current), False
+            if model in loaded or _fits_in_budget(current, model, loaded):
+                return current, False
+            return None, current.capabilities.memory_budget_gb is not None
 
-            backend = _backend_for(host.host_id, host.capabilities)
-            list_models = getattr(backend, "list_models", None)
-            if list_models is None:
-                capable.append(host)
-                continue
-
-            loaded = await list_models()
-            if loaded is None or model in loaded:
-                capable.append(host)
-            elif _fits_in_budget(host, model, loaded):
-                capable.append(host)
-            elif host.capabilities.memory_budget_gb is not None:
-                any_budget_blocked = True
-        return capable, any_budget_blocked
+        tasks = [
+            asyncio.create_task(discover(host))
+            for host in (registry.hosts() if hosts is None else hosts)
+        ]
+        if not tasks:
+            return [], False
+        try:
+            done, _ = await asyncio.wait(tasks)
+            results = [task.result() for task in done]
+            return [host for host, _ in results if host is not None], any(
+                blocked for _, blocked in results
+            )
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _node_status(host_id: str, at: datetime) -> str:
         if not health_monitor.has_probe_history(host_id):
@@ -224,23 +290,26 @@ def create_app(
     def _node_health(host_id: str) -> dict[str, int]:
         return {"recent_failures": health_monitor.failure_count(host_id)}
 
-    def _eligible_candidates(hosts: list[HostInfo], at: datetime) -> list[RoutingCandidate]:
+    def _eligible_candidates(
+        hosts: list[HostInfo], at: datetime, model: str | None = None
+    ) -> list[RoutingCandidate]:
         candidates = []
         for host in hosts:
             if not health_monitor.is_healthy(host.host_id, at):
                 continue
-            if host.in_flight >= host.capacity.max_concurrent_requests:
+            effective_max = host.effective_max_concurrent_requests(model)
+            if host.in_flight >= effective_max:
                 continue
             # No real latency measurement yet (see routing spec's Open Questions), so use
             # each host's current load relative to its own capacity as a least-connections
             # proxy — otherwise every request ties and falls back to alphabetical backend_id,
             # filling one host before ever trying the others.
-            load_ratio = host.in_flight / host.capacity.max_concurrent_requests
+            load_ratio = host.in_flight / effective_max
             candidates.append(
                 RoutingCandidate(
                     backend=_backend_for(host.host_id, host.capabilities),
                     latency_ms=load_ratio,
-                    context_window=host.capabilities.context_window,
+                    context_window=host.effective_context_window(model),
                 )
             )
         return candidates
@@ -474,6 +543,7 @@ def create_app(
                 model_sizes_gb=payload.model_sizes_gb,
                 model_aliases=payload.model_aliases,
                 position=payload.position,
+                model_limits=_to_model_limits(payload.model_limits),
             ),
             HostCapacity(max_concurrent_requests=payload.max_concurrent_requests),
             at=datetime.now(UTC),
@@ -560,13 +630,16 @@ def create_app(
                     "host_id": host.host_id,
                     "backend_type": host.capabilities.backend_type,
                     "context_window": host.capabilities.context_window,
+                    "effective_context_window": host.effective_context_window(),
                     "base_url": host.capabilities.base_url,
                     "allowed_models": host.capabilities.allowed_models,
                     "memory_budget_gb": host.capabilities.memory_budget_gb,
                     "model_sizes_gb": host.capabilities.model_sizes_gb,
                     "model_aliases": host.capabilities.model_aliases,
+                    "model_limits": _serialize_model_limits(host.capabilities.model_limits),
                     "position": host.capabilities.position,
                     "max_concurrent_requests": host.capacity.max_concurrent_requests,
+                    "effective_max_concurrent_requests": host.effective_max_concurrent_requests(),
                     "in_flight": host.in_flight,
                     "last_seen": host.last_seen.isoformat(),
                     "status": _node_status(host.host_id, at),
@@ -593,12 +666,35 @@ def create_app(
         }
 
     @app.get("/v1/capacity")
-    async def get_capacity() -> dict[str, int]:
+    async def get_capacity(model: str | None = None) -> dict[str, int]:
         at = datetime.now(UTC)
-        total = sum(
-            host.capacity.max_concurrent_requests
+        if model is None:
+            total = sum(
+                host.capacity.max_concurrent_requests
+                for host in registry.hosts()
+                if _node_status(host.host_id, at) == "online"
+            )
+            return {"total_max_concurrent_requests": total}
+
+        lease_at = _lease_now()
+        online_unleased = [
+            host
             for host in registry.hosts()
             if _node_status(host.host_id, at) == "online"
+            and not lease_book.is_held(host.host_id, lease_at)
+        ]
+        capable, _budget_blocked = await _model_capable_hosts(
+            model, hosts=online_unleased, require_known=True
+        )
+        at = datetime.now(UTC)
+        lease_at = _lease_now()
+        current_hosts = registry.hosts()
+        total = sum(
+            host.effective_max_concurrent_requests(model)
+            for host in capable
+            if any(host is current for current in current_hosts)
+            and _node_status(host.host_id, at) == "online"
+            and not lease_book.is_held(host.host_id, lease_at)
         )
         return {"total_max_concurrent_requests": total}
 
@@ -650,10 +746,11 @@ def create_app(
         lease_now = _lease_now()
         token = http_request.headers.get(LEASE_HEADER)
         pinned = lease_book.require(token, lease_now) if token else None
+        probed_hosts = {host.host_id: host for host in registry.hosts()}
         model_hosts, budget_blocked = await _model_capable_hosts(request.model)
         lease_now = _lease_now()
         pinned = lease_book.require(token, lease_now) if token else None
-        all_model_hosts = model_hosts
+        known_model_hosts = {host.host_id: host for host in model_hosts}
         if pinned is not None:
             # A leased request stays on that one node. Model matching is unchanged,
             # and a miss does not fall through to any other host.
@@ -691,14 +788,21 @@ def create_app(
             live = lease_book.require(token, at) if token else None
             hosts = [
                 host
-                for host in all_model_hosts
+                for host in registry.hosts()
                 if (
-                    host.host_id == live.host_id
-                    if live
-                    else not lease_book.is_held(host.host_id, at)
+                    (
+                        request.model in host.capabilities.allowed_models
+                        if host.capabilities.allowed_models is not None
+                        else known_model_hosts.get(host.host_id) is host
+                    )
+                    and (
+                        host.host_id == live.host_id
+                        if live
+                        else not lease_book.is_held(host.host_id, at)
+                    )
                 )
             ]
-            return _eligible_candidates(hosts, datetime.now(UTC))
+            return _eligible_candidates(hosts, datetime.now(UTC), model=request.model)
 
         def queued_host_ids() -> set[str]:
             try:
@@ -710,26 +814,53 @@ def create_app(
         if not candidates:
             request_id = uuid.uuid4().hex
             queue_session_id = request.session_id or request_id
-            waited = 0.0
+            deadline = time.monotonic() + dispatch_wait_timeout
             scheduling_queue.enqueue(
                 request_id,
                 session_id=queue_session_id,
                 priority=0,
                 at=now,
                 eligible_host_ids=queued_host_ids,
+                model=request.model,
             )
+            discovery_tasks: dict[
+                str, tuple[HostInfo, asyncio.Task[tuple[list[HostInfo], bool]]]
+            ] = {}
+            decision = None
+            reserved_host = None
             try:
-                while waited < dispatch_wait_timeout:
-                    await asyncio.sleep(dispatch_poll_interval)
-                    waited += dispatch_poll_interval
+                while (remaining := deadline - time.monotonic()) > 0:
+                    await asyncio.sleep(min(dispatch_poll_interval, remaining))
+                    for host_id, (probed_host, task) in list(discovery_tasks.items()):
+                        if task.done():
+                            refreshed_hosts, _ = task.result()
+                            probed_hosts[host_id] = probed_host
+                            known_model_hosts.update(
+                                {host.host_id: host for host in refreshed_hosts}
+                            )
+                            del discovery_tasks[host_id]
+                    for host in registry.hosts():
+                        if (
+                            host.capabilities.allowed_models is None
+                            and probed_hosts.get(host.host_id) is not host
+                            and host.host_id not in discovery_tasks
+                        ):
+                            discovery_tasks[host.host_id] = (
+                                host,
+                                asyncio.create_task(
+                                    _model_capable_hosts(request.model, hosts=[host])
+                                ),
+                            )
                     candidates = current_candidates()
                     if (
-                        candidates
+                        time.monotonic() <= deadline
+                        and candidates
                         and scheduling_queue.dispatch(
                             registry,
                             datetime.now(UTC),
                             available_host_ids={c.backend.backend_id for c in candidates},
                             request_id=request_id,
+                            model=request.model,
                         )
                         == request_id
                     ):
@@ -740,12 +871,48 @@ def create_app(
                     raise NoAvailableBackendError(
                         "no host became available before the dispatch timeout"
                     )
+                decision = router.select_backend(request, candidates, session_id=request.session_id)
+                registry.acquire_slot(decision.backend_id)
+                reserved_host = registry.get(decision.backend_id)
+                reserved_backend = backends_by_id[decision.backend_id]
             finally:
+                for _, task in discovery_tasks.values():
+                    task.cancel()
                 scheduling_queue.cancel(request_id, session_id=queue_session_id, priority=0)
+                try:
+                    await asyncio.gather(
+                        *(task for _, task in discovery_tasks.values()), return_exceptions=True
+                    )
+                except BaseException:
+                    if decision is not None and reserved_host is not None:
+                        registry.release_owned_slot(
+                            decision.backend_id, reserved_host.registration_id
+                        )
+                    raise
+            assert reserved_host is not None
+            try:
+                current = next(
+                    (h for h in registry.hosts() if h.host_id == decision.backend_id), None
+                )
+                at = _lease_now()
+                live = lease_book.require(token, at) if token else None
+                if (
+                    current is not reserved_host
+                    or backends_by_id.get(decision.backend_id) is not reserved_backend
+                    or not health_monitor.is_healthy(decision.backend_id, datetime.now(UTC))
+                    or (live is not None and live.host_id != decision.backend_id)
+                    or (live is None and lease_book.is_held(decision.backend_id, at))
+                ):
+                    raise NoAvailableBackendError("reserved host changed before dispatch")
+            except BaseException:
+                registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
+                raise
+        else:
+            decision = router.select_backend(request, candidates, session_id=request.session_id)
+            registry.acquire_slot(decision.backend_id)
+            reserved_host = registry.get(decision.backend_id)
 
-        decision = router.select_backend(request, candidates, session_id=request.session_id)
         backend = backends_by_id[decision.backend_id]
-        registry.acquire_slot(decision.backend_id)
 
         if request.stream:
             chunks = SlotStream(
@@ -757,7 +924,9 @@ def create_app(
                     health_monitor,
                     decision.backend_id,
                 ),
-                lambda: registry.release_slot(decision.backend_id),
+                lambda: registry.release_owned_slot(
+                    decision.backend_id, reserved_host.registration_id
+                ),
             )
             try:
                 if failover_in_play:
@@ -780,7 +949,7 @@ def create_app(
             health_monitor.record_probe(decision.backend_id, healthy=False, at=datetime.now(UTC))
             raise
         finally:
-            registry.release_slot(decision.backend_id)
+            registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
         backend_call_latency_ms = (time.perf_counter() - backend_call_start) * 1000
 
         if failover_in_play:

@@ -252,6 +252,7 @@ FACTS_SERVICE_GENERATION_PARAMS = {
         "type": "json_schema",
         "json_schema": {"name": "facts", "schema": {"type": "object"}},
     },
+    "reasoning_effort": "off",
 }
 
 
@@ -273,6 +274,7 @@ def test_generation_parameters_reach_the_backend_request(stream):
     assert request.max_tokens == 20000
     assert request.chat_template_kwargs == {"enable_thinking": False}
     assert request.response_format == FACTS_SERVICE_GENERATION_PARAMS["response_format"]
+    assert request.reasoning_effort == "off"
 
 
 def test_generation_parameters_default_to_unset():
@@ -289,6 +291,7 @@ def test_generation_parameters_default_to_unset():
         "max_tokens",
         "chat_template_kwargs",
         "response_format",
+        "reasoning_effort",
     }
 
 
@@ -305,6 +308,8 @@ def test_generation_parameters_default_to_unset():
         {"chat_template_kwargs": "enable_thinking"},
         {"chat_template_kwargs": ["enable_thinking"]},
         {"response_format": "json"},
+        {"reasoning_effort": ""},
+        {"reasoning_effort": 123},
     ],
 )
 def test_invalid_generation_parameters_are_rejected_before_dispatch(invalid):

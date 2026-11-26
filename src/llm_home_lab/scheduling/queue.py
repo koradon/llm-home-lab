@@ -7,10 +7,12 @@ from llm_home_lab.scheduling.models import QueueEntry
 
 
 def _has_free_capacity(
-    registry: HostRegistry, available_host_ids: Collection[str] | None = None
+    registry: HostRegistry,
+    available_host_ids: Collection[str] | None = None,
+    model: str | None = None,
 ) -> bool:
     return any(
-        host.in_flight < host.capacity.max_concurrent_requests
+        host.in_flight < host.effective_max_concurrent_requests(model)
         and (available_host_ids is None or host.host_id in available_host_ids)
         for host in registry.hosts()
     )
@@ -19,6 +21,7 @@ def _has_free_capacity(
 class SchedulingQueue:
     def __init__(self) -> None:
         self._eligibility: dict[str, Callable[[], Collection[str]]] = {}
+        self._entry_models: dict[str, str] = {}
         self._tiers: dict[int, dict[str, deque[QueueEntry]]] = {}
         self._rotations: dict[int, deque[str]] = {}
 
@@ -29,9 +32,12 @@ class SchedulingQueue:
         priority: int,
         at: datetime,
         eligible_host_ids: Callable[[], Collection[str]] | None = None,
+        model: str | None = None,
     ) -> None:
         if eligible_host_ids is not None:
             self._eligibility[request_id] = eligible_host_ids
+        if model is not None:
+            self._entry_models[request_id] = model
         tier = self._tiers.setdefault(priority, {})
         if session_id not in tier:
             tier[session_id] = deque()
@@ -47,6 +53,7 @@ class SchedulingQueue:
 
     def cancel(self, request_id: str, session_id: str, priority: int) -> None:
         self._eligibility.pop(request_id, None)
+        self._entry_models.pop(request_id, None)
         tier = self._tiers.get(priority)
         if tier is None or session_id not in tier:
             return
@@ -71,8 +78,9 @@ class SchedulingQueue:
         at: datetime,
         available_host_ids: Collection[str] | None = None,
         request_id: str | None = None,
+        model: str | None = None,
     ) -> str | None:
-        if not _has_free_capacity(registry, available_host_ids):
+        if not _has_free_capacity(registry, available_host_ids, model=model):
             return None
 
         for priority in sorted(self._tiers):
@@ -86,12 +94,14 @@ class SchedulingQueue:
                 entry = session_queue[0]
                 eligibility = self._eligibility.get(entry.request_id)
                 allowed = eligibility() if eligibility is not None else available_host_ids
-                if not _has_free_capacity(registry, allowed):
+                entry_model = self._entry_models.get(entry.request_id, model)
+                if not _has_free_capacity(registry, allowed, model=entry_model):
                     continue
                 if request_id is not None and entry.request_id != request_id:
                     return None
                 session_queue.popleft()
                 self._eligibility.pop(entry.request_id, None)
+                self._entry_models.pop(entry.request_id, None)
                 rotation.remove(session_id)
                 if session_queue:
                     rotation.append(session_id)

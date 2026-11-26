@@ -62,6 +62,8 @@ class LlamaCPPServerBackend:
         # that one model as loaded.
         try:
             response = await self._client.get("/v1/models")
+        except httpx.TimeoutException as exc:
+            raise BackendTimeoutError("model inventory timed out") from exc
         except httpx.TransportError:
             return None
 

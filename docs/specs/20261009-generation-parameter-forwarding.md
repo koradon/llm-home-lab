@@ -6,9 +6,9 @@ accepted
 
 ## Summary
 
-`POST /v1/chat/completions` accepts four optional generation parameters — `temperature`,
+`POST /v1/chat/completions` accepts five optional generation parameters — `reasoning_effort`, `temperature`,
 `max_tokens`, `chat_template_kwargs`, `response_format` — and passes them through to the selected
-backend so clients control generation per request. See
+backend where supported so clients control generation per request. See
 [ADR-0012](../adr/0012-forward-generation-parameters-to-backends.md).
 
 ## User stories
@@ -23,12 +23,13 @@ backend so clients control generation per request. See
 ## Requirements
 
 - Optional request fields: `temperature` (number, 0–2 inclusive), `max_tokens` (integer > 0, no
-  upper bound), `chat_template_kwargs` (object), `response_format` (object).
+  upper bound), `chat_template_kwargs` (object), `response_format` (object), and
+  `reasoning_effort` (non-empty string).
 - Invalid values are rejected before dispatch with `400` and the OpenAI-style error envelope
   (`invalid_request_error`).
 - The llama-server backend forwards each field unchanged when the client set it.
 - The LM Studio backend forwards only `temperature`, `max_tokens` and `response_format`;
-  `chat_template_kwargs` is never forwarded to it.
+  `chat_template_kwargs` and `reasoning_effort` are never forwarded to it.
 - A field the client did not set (or set to `null`) is omitted from the backend payload, not sent
   as `null`. With none set the payload is identical to the pre-change payload.
 - Streaming and non-streaming requests behave identically with respect to these fields.

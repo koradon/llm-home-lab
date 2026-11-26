@@ -77,6 +77,8 @@ class LMStudioBackend:
         # only reliable signal for "won't trigger a new load."
         try:
             response = await self._client.get("/api/v0/models")
+        except httpx.TimeoutException as exc:
+            raise BackendTimeoutError("model inventory timed out") from exc
         except httpx.TransportError:
             return None
 
@@ -184,8 +186,10 @@ class LMStudioBackend:
 
 
 def _to_lmstudio_payload(request: ChatCompletionRequest, model: str) -> dict[str, object]:
-    # chat_template_kwargs is a llama.cpp extension, never forwarded to LM Studio (ADR-0012).
-    excluded = {"stream", "chat_template_kwargs"} | request.unset_generation_fields()
+    # chat_template_kwargs and reasoning_effort are not forwarded to LM Studio (ADR-0012).
+    excluded = {"stream", "chat_template_kwargs", "reasoning_effort"} | (
+        request.unset_generation_fields()
+    )
     return request.model_dump(exclude=excluded) | {
         "model": model,
         "stream": True,

@@ -442,6 +442,7 @@ async def test_generation_parameters_are_forwarded_unchanged_when_set():
         max_tokens=20000,
         chat_template_kwargs={"enable_thinking": False},
         response_format={"type": "json_object"},
+        reasoning_effort="no_think",
     )
     run, captured = _captured_payload(request)
 
@@ -452,6 +453,7 @@ async def test_generation_parameters_are_forwarded_unchanged_when_set():
     assert payload["max_tokens"] == 20000
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["response_format"] == {"type": "json_object"}
+    assert payload["reasoning_effort"] == "no_think"
     assert payload["stream"] is True
 
 
@@ -468,3 +470,20 @@ async def test_only_the_generation_parameters_that_are_set_are_forwarded():
     assert "temperature" not in payload
     assert "chat_template_kwargs" not in payload
     assert "response_format" not in payload
+    assert "reasoning_effort" not in payload
+
+
+async def test_reasoning_effort_is_forwarded_to_llamaserver_when_set():
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[Message(role="user", content="Hi")],
+        reasoning_effort="off",
+    )
+    run, captured = _captured_payload(request)
+
+    await run()
+
+    (payload,) = captured
+    assert payload["reasoning_effort"] == "off"
+    assert "temperature" not in payload
+    assert "max_tokens" not in payload
