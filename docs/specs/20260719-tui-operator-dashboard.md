@@ -44,11 +44,17 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   - **Nodes** — `host_id`, `status`, `errors`, `tasks/h`, `tasks/h/slot`, `backend_type`, `last_seen`,
     completion metrics, and `models`, one row per host from `list_nodes()`. The `models` column
     displays color-coded router model states (`loaded`, `loading`, `sleeping`, `failed`, `unloaded`)
-    for router-mode nodes and `—` for non-router nodes. A toolbar above the table (`+ New Node` / `✕ Remove Node`
-    buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
-    row currently selected via cursor, or deregister it after a confirm dialog. The form includes
-    `model_sizes_gb` and `model_aliases`, each edited as repeating name/value input rows, not
-    free text. Display order is managed separately (see **Node order** below).
+    for router-mode nodes, plus a distinctly coloured slot-limit badge (`[N slots]` / `[1 slot]`)
+    whenever `model_limits` sets a per-model `max_concurrent_requests` override (and the same
+    per-model slot badges for non-router nodes that define per-model slot limits); non-router nodes
+    without limits display `—`, and router models without overrides remain unchanged. A toolbar
+    above the table (`+ New Node` / `✕ Remove Node` buttons, plus `n`/`x`/`e` keybindings) opens
+    `NodeFormScreen` to register a new node, edit the row currently selected via cursor, or
+    deregister it after a confirm dialog. The form includes `model_limits` (prefilled with one row
+    per model in `allowed_models` plus any model already in `model_limits`, with optional positive
+    whole-number `max_concurrent_requests` and `context_window` overrides where blank means no
+    override), `model_sizes_gb`, and `model_aliases`, each edited as repeating input rows rather
+    than free text. Display order is managed separately (see **Node order** below).
   - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
     `in_flight / effective_max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
     (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours. Full utilization is the desired lab state.

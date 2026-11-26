@@ -72,3 +72,18 @@ Feature: TUI operator dashboard
     Then the Nodes table and the Node Load charts are sorted by the chosen column and direction
     And no node's "position" is changed
     And pressing "o" returns both to the manual order
+
+  Scenario: Per-model slot limits appear in the Nodes models column
+    Given a router node has models "eurollm" (loaded) with a 4-slot limit and "gemma" (unloaded) with no override
+    And a non-router node has no model limits
+    When the dashboard refreshes
+    Then the router node's models cell shows "eurollm (loaded) [4 slots], gemma (unloaded)" with the slot badge distinctly coloured
+    And the non-router node's models cell still shows "—"
+
+  Scenario: The operator views and edits per-model limits in the node form
+    Given a node has allowed_models "gemma, eurollm" and a per-model limit of 4 slots on "eurollm"
+    When the operator presses "e" to edit the node
+    Then the form shows one model_limits row for "gemma" with blank inputs and one row for "eurollm" with "4"
+    When the operator sets "gemma" max slots to "8" and saves
+    Then the TUI PATCHes the node with model_limits containing both overrides
+    And invalid or non-positive values keep the modal open with a clear error message

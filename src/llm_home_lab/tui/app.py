@@ -178,14 +178,47 @@ _MODEL_STATE_ORDER = {
     "unknown": 4,
     "unloaded": 5,
 }
+_MODEL_LIMIT_STYLE = "bold #5fd7ff"
 
 
-def _styled_models(models: object) -> Text:
-    if not isinstance(models, list) or not models:
-        return Text("—", style="dim")
+def _format_slot_limit(slots: int) -> str:
+    return "1 slot" if slots == 1 else f"{slots} slots"
 
-    entries = [entry for entry in models if isinstance(entry, dict) and entry.get("id")]
+
+def _model_slot_limit(model_limits: object, model_id: str) -> int | None:
+    if not isinstance(model_limits, dict):
+        return None
+    entry = model_limits.get(model_id)
+    if not isinstance(entry, dict):
+        return None
+    slots = entry.get("max_concurrent_requests")
+    if isinstance(slots, int) and not isinstance(slots, bool):
+        return slots
+    return None
+
+
+def _styled_models(models: object, model_limits: object = None) -> Text:
+    entries = (
+        [entry for entry in models if isinstance(entry, dict) and entry.get("id")]
+        if isinstance(models, list)
+        else []
+    )
     if not entries:
+        if isinstance(model_limits, dict):
+            limit_parts: list[Text | str] = []
+            for model_id in model_limits:
+                if not isinstance(model_id, str) or not model_id:
+                    continue
+                slots = _model_slot_limit(model_limits, model_id)
+                if slots is None:
+                    continue
+                if limit_parts:
+                    limit_parts.append(", ")
+                limit_parts.append(model_id)
+                limit_parts.append(" ")
+                limit_parts.append(Text(f"[{_format_slot_limit(slots)}]", style=_MODEL_LIMIT_STYLE))
+            if limit_parts:
+                return Text.assemble(*limit_parts)
         return Text("—", style="dim")
 
     def _sort_key(entry: dict[str, object]) -> tuple[int, str]:
@@ -216,6 +249,10 @@ def _styled_models(models: object) -> Text:
             parts.append(Text(f"{model_id} (sleeping)", style="cyan"))
         else:
             parts.append(Text(f"{model_id} ({state})", style="dim"))
+        slots = _model_slot_limit(model_limits, model_id)
+        if slots is not None:
+            parts.append(" ")
+            parts.append(Text(f"[{_format_slot_limit(slots)}]", style=_MODEL_LIMIT_STYLE))
     return Text.assemble(*parts)
 
 
@@ -249,7 +286,8 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         align: center middle;
     }
     #edit-dialog {
-        width: 70;
+        width: 76;
+        max-width: 95%;
         height: auto;
         max-height: 90%;
         border: round $accent;
@@ -277,6 +315,13 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
     .mapping-row Input {
         width: 1fr;
     }
+    .limit-row .limit-model {
+        width: 2fr;
+    }
+    .limit-row .limit-max-concurrent,
+    .limit-row .limit-context-window {
+        width: 1fr;
+    }
     .mapping-remove {
         min-width: 3;
         width: 3;
@@ -290,6 +335,7 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         self._mode = mode
         self._host_id = host_id
         self._node = node
+        self._limit_row_seq = 0
         self._size_row_seq = 0
         self._alias_row_seq = 0
         # Tracks the last value this screen auto-filled for base_url, so a backend_type change
@@ -335,6 +381,9 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                 yield Input(value=base_url, id="base_url")
                 yield Label("allowed_models (comma-separated, blank = unrestricted)")
                 yield Input(value=", ".join(allowed_models), id="allowed_models")
+                yield Label("model_limits (model | max slots | context window; blank = default)")
+                yield Vertical(id="model-limits-rows")
+                yield Button("+ Add limit", id="add-limit")
                 yield Label("memory_budget_gb (blank = unset)")
                 yield Input(
                     value="" if memory_budget_gb is None else str(memory_budget_gb),
@@ -354,6 +403,24 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                 yield Button("Cancel", id="cancel")
 
     async def on_mount(self) -> None:
+        allowed_models = cast("list[str] | None", self._node.get("allowed_models")) or []
+        model_limits = (
+            cast("dict[str, dict[str, object]] | None", self._node.get("model_limits")) or {}
+        )
+        limit_models: list[str] = []
+        for name in (*allowed_models, *model_limits.keys()):
+            if name and name not in limit_models:
+                limit_models.append(name)
+        for name in limit_models:
+            entry = model_limits.get(name)
+            slots = entry.get("max_concurrent_requests") if isinstance(entry, dict) else None
+            ctx = entry.get("context_window") if isinstance(entry, dict) else None
+            await self._add_limit_row(
+                name,
+                "" if slots is None else str(slots),
+                "" if ctx is None else str(ctx),
+            )
+
         model_sizes_gb = cast("dict[str, float] | None", self._node.get("model_sizes_gb")) or {}
         for name, size in model_sizes_gb.items():
             await self._add_size_row(name, str(size))
@@ -361,6 +428,29 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         model_aliases = cast("dict[str, list[str]] | None", self._node.get("model_aliases")) or {}
         for name, aliases in model_aliases.items():
             await self._add_alias_row(name, ", ".join(aliases))
+
+    async def _add_limit_row(
+        self, name: str = "", max_concurrent: str = "", context_window: str = ""
+    ) -> None:
+        self._limit_row_seq += 1
+        await self.query_one("#model-limits-rows", Vertical).mount(
+            Horizontal(
+                Input(value=name, placeholder="model name", classes="limit-model"),
+                Input(
+                    value=max_concurrent,
+                    placeholder="max slots",
+                    classes="limit-max-concurrent",
+                ),
+                Input(
+                    value=context_window,
+                    placeholder="context window",
+                    classes="limit-context-window",
+                ),
+                Button("✕", classes="mapping-remove"),
+                id=f"limit-row-{self._limit_row_seq}",
+                classes="mapping-row limit-row",
+            )
+        )
 
     async def _add_size_row(self, name: str = "", value: str = "") -> None:
         self._size_row_seq += 1
@@ -403,6 +493,9 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
             self.dismiss(None)
+            return
+        if event.button.id == "add-limit":
+            await self._add_limit_row()
             return
         if event.button.id == "add-size":
             await self._add_size_row()
@@ -483,7 +576,61 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
             return {}, aliases_error
         fields["model_aliases"] = model_aliases or None
 
+        model_limits, limits_error = self._collect_model_limits()
+        if limits_error is not None:
+            return {}, limits_error
+        fields["model_limits"] = model_limits or None
+
         return fields, None
+
+    def _collect_model_limits(self) -> tuple[dict[str, dict[str, int]], str | None]:
+        result: dict[str, dict[str, int]] = {}
+        seen: set[str] = set()
+        for row in self.query_one("#model-limits-rows", Vertical).query(".limit-row"):
+            name = row.query_one(".limit-model", Input).value.strip()
+            raw_slots = row.query_one(".limit-max-concurrent", Input).value.strip()
+            raw_ctx = row.query_one(".limit-context-window", Input).value.strip()
+            if not name:
+                if raw_slots or raw_ctx:
+                    return {}, "model_limits row is missing a model name"
+                continue
+            if name in seen:
+                return {}, f'duplicate model name "{name}"'
+            seen.add(name)
+            if not raw_slots and not raw_ctx:
+                continue
+
+            entry: dict[str, int] = {}
+            if raw_slots:
+                try:
+                    slots = int(raw_slots)
+                except ValueError:
+                    return (
+                        {},
+                        f'"{name}" max_concurrent_requests must be a positive whole number',
+                    )
+                if slots <= 0:
+                    return (
+                        {},
+                        f'"{name}" max_concurrent_requests must be a positive whole number',
+                    )
+                entry["max_concurrent_requests"] = slots
+            if raw_ctx:
+                try:
+                    ctx = int(raw_ctx)
+                except ValueError:
+                    return (
+                        {},
+                        f'"{name}" context_window must be a positive whole number',
+                    )
+                if ctx <= 0:
+                    return (
+                        {},
+                        f'"{name}" context_window must be a positive whole number',
+                    )
+                entry["context_window"] = ctx
+            result[name] = entry
+        return result, None
 
     def _collect_mapping_rows(
         self, container_id: str, parse_value: Callable[[str], object], value_error: str
@@ -734,7 +881,7 @@ class DashboardApp(App[None]):
                     parsed.host_completion_tokens_min.get(host_id),
                     parsed.host_completion_tokens_max.get(host_id),
                 ),
-                _styled_models(host.get("models")),
+                _styled_models(host.get("models"), host.get("model_limits")),
             )
             self._node_row_order.append(host_id)
             self._nodes_by_id[host_id] = host

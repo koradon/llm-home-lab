@@ -645,6 +645,7 @@ async def test_saving_the_edit_modal_sends_the_updated_fields_and_refreshes():
                     "memory_budget_gb": None,
                     "model_sizes_gb": None,
                     "model_aliases": None,
+                    "model_limits": None,
                 },
             )
         ]
@@ -677,6 +678,7 @@ async def test_editing_a_node_with_an_unrecognized_backend_type_preserves_it_on_
                     "memory_budget_gb": None,
                     "model_sizes_gb": None,
                     "model_aliases": None,
+                    "model_limits": None,
                 },
             )
         ]
@@ -987,6 +989,7 @@ async def test_registering_a_new_node_sends_the_collected_fields():
                 "memory_budget_gb": None,
                 "model_sizes_gb": None,
                 "model_aliases": None,
+                "model_limits": None,
             }
         ]
         assert not isinstance(app.screen, NodeFormScreen)
@@ -1527,3 +1530,268 @@ async def test_dashboard_models_column_shows_router_model_states_and_dash_for_no
     assert styles["broken (failed)"] == "bold red"
     assert styles["tgemma (unloaded)"] == "dim"
     assert static_models_cell.plain == "—"
+
+
+async def test_dashboard_models_column_shows_per_model_slot_limits_with_colour(monkeypatch):
+    _enable_screenshot_colour(monkeypatch)
+    router_with_limits = {
+        **_node("mini-1", in_flight=2, max_concurrent_requests=8),
+        "backend_type": "llamaserver",
+        "swap_mode": "router",
+        "models": [
+            {"id": "eurollm-22b", "state": "loaded", "healthy": True, "recent_failures": 0},
+            {"id": "hy-mt2", "state": "loading", "healthy": True, "recent_failures": 0},
+            {"id": "gemma-e4b", "state": "unloaded", "healthy": True, "recent_failures": 0},
+            {"id": "ctx-only", "state": "unloaded", "healthy": True, "recent_failures": 0},
+        ],
+        "model_limits": {
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384},
+            "hy-mt2": {"max_concurrent_requests": 1},
+            "ctx-only": {"context_window": 32768},
+        },
+    }
+    router_no_limits = {
+        **_node("mini-2", in_flight=0, max_concurrent_requests=8),
+        "backend_type": "llamaserver",
+        "swap_mode": "router",
+        "models": [
+            {"id": "gemma-e4b", "state": "loaded", "healthy": True, "recent_failures": 0},
+        ],
+        "model_limits": None,
+    }
+    static_with_limits = {
+        **_node("mac-1", in_flight=0, max_concurrent_requests=8),
+        "model_limits": {"eurollm-22b": {"max_concurrent_requests": 4}},
+    }
+    static_no_limits = _node("cachy-1", in_flight=0, max_concurrent_requests=8)
+    client = _FakeClient(
+        nodes={
+            "nodes": [router_with_limits, router_no_limits, static_with_limits, static_no_limits]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(180, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        table = app.query_one("#nodes-table", DataTable)
+        cell_router_limits = table.get_row_at(0)[12]
+        cell_router_plain = table.get_row_at(1)[12]
+        cell_static_limits = table.get_row_at(2)[12]
+        cell_static_plain = table.get_row_at(3)[12]
+        svg = app.export_screenshot()
+
+    assert cell_router_limits.plain == (
+        "eurollm-22b (loaded) [4 slots], hy-mt2 (loading) [1 slot], "
+        "ctx-only (unloaded), gemma-e4b (unloaded)"
+    )
+    styles = _span_styles(cell_router_limits)
+    assert styles["eurollm-22b (loaded)"] == "bold green"
+    assert styles["[4 slots]"] == "bold #5fd7ff"
+    assert styles["hy-mt2 (loading)"] == "bold yellow"
+    assert styles["[1 slot]"] == "bold #5fd7ff"
+    assert styles["gemma-e4b (unloaded)"] == "dim"
+
+    assert cell_router_plain.plain == "gemma-e4b (loaded)"
+    assert cell_static_limits.plain == "eurollm-22b [4 slots]"
+    assert _span_styles(cell_static_limits)["[4 slots]"] == "bold #5fd7ff"
+    assert cell_static_plain.plain == "—"
+    assert "#5fd7ff" in svg.lower()
+
+
+async def test_editing_prefills_model_limits_for_allowed_models_and_existing_limits():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "mini-1",
+                    max_concurrent_requests=8,
+                    allowed_models=["gemma-e4b", "eurollm-22b"],
+                    model_limits={
+                        "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384},
+                        "hy-mt2": {"max_concurrent_requests": 6},
+                    },
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        assert [w.value for w in limits.query(".limit-model")] == [
+            "gemma-e4b",
+            "eurollm-22b",
+            "hy-mt2",
+        ]
+        assert [w.value for w in limits.query(".limit-max-concurrent")] == ["", "4", "6"]
+        assert [w.value for w in limits.query(".limit-context-window")] == ["", "16384", ""]
+
+
+async def test_editing_with_null_model_limits_saves_only_non_blank_overrides():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "mini-1",
+                    max_concurrent_requests=8,
+                    allowed_models=["gemma-e4b", "eurollm-22b"],
+                    model_limits=None,
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        slots_inputs = list(limits.query(".limit-max-concurrent"))
+        ctx_inputs = list(limits.query(".limit-context-window"))
+        assert [w.value for w in limits.query(".limit-model")] == ["gemma-e4b", "eurollm-22b"]
+        slots_inputs[1].value = "4"
+        ctx_inputs[1].value = "16384"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        _, fields = client.update_node_calls[0]
+        assert fields["model_limits"] == {
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384}
+        }
+
+
+async def test_clearing_all_model_limits_saves_null():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "mini-1",
+                    allowed_models=["eurollm-22b"],
+                    model_limits={"eurollm-22b": {"max_concurrent_requests": 4}},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        list(limits.query(".limit-max-concurrent"))[0].value = ""
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls[0][1]["model_limits"] is None
+
+
+async def test_adding_and_removing_model_limit_rows_updates_saved_payload():
+    client = _FakeClient(nodes={"nodes": [_full_node("mini-1", model_limits=None)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        app.screen.query_one("#add-limit", Button).press()
+        app.screen.query_one("#add-limit", Button).press()
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        models = list(limits.query(".limit-model"))
+        slots = list(limits.query(".limit-max-concurrent"))
+        ctxs = list(limits.query(".limit-context-window"))
+        models[0].value = "drop-me"
+        slots[0].value = "2"
+        models[1].value = "eurollm-22b"
+        slots[1].value = "4"
+        ctxs[1].value = "16384"
+
+        list(limits.query(".mapping-remove"))[0].press()
+        await pilot.pause()
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls[0][1]["model_limits"] == {
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384}
+        }
+
+
+async def test_invalid_model_limits_keep_modal_open_with_clear_error(monkeypatch):
+    _enable_screenshot_colour(monkeypatch)
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "mini-1",
+                    allowed_models=["eurollm-22b"],
+                    model_limits={"eurollm-22b": {"max_concurrent_requests": 4}},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        slots_input = list(limits.query(".limit-max-concurrent"))[0]
+        ctx_input = list(limits.query(".limit-context-window"))[0]
+        save_button = app.screen.query_one("#save", Button)
+
+        for bad_slots in ("0", "-3", "four"):
+            slots_input.value = bad_slots
+            save_button.press()
+            await pilot.pause()
+            assert isinstance(app.screen, NodeFormScreen)
+            assert client.update_node_calls == []
+            assert "positive whole number" in str(
+                app.screen.query_one("#edit-error", Static).render()
+            )
+
+        slots_input.value = "4"
+        for bad_ctx in ("0", "-1024", "16k"):
+            ctx_input.value = bad_ctx
+            save_button.press()
+            await pilot.pause()
+            assert isinstance(app.screen, NodeFormScreen)
+            assert client.update_node_calls == []
+            assert "context_window" in str(app.screen.query_one("#edit-error", Static).render())
+
+        ctx_input.value = ""
+        app.screen.query_one("#add-limit", Button).press()
+        await pilot.pause()
+        list(limits.query(".limit-model"))[1].value = "eurollm-22b"
+        list(limits.query(".limit-max-concurrent"))[1].value = "2"
+        save_button.press()
+        await pilot.pause()
+        assert isinstance(app.screen, NodeFormScreen)
+        assert "duplicate" in str(app.screen.query_one("#edit-error", Static).render())
+
+        list(limits.query(".limit-model"))[1].value = ""
+        save_button.press()
+        await pilot.pause()
+        assert isinstance(app.screen, NodeFormScreen)
+        assert "missing a model name" in str(app.screen.query_one("#edit-error", Static).render())
+
+        svg = app.export_screenshot()
+        svg_text = svg.replace("&#160;", " ")
+        assert "eurollm-22b" in svg_text
+        assert "missing a model name" in svg_text
