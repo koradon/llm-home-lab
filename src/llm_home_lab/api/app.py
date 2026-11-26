@@ -496,7 +496,7 @@ def create_app(
             current = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
             if (
                 current is None
-                or current.registration_id is not host.registration_id
+                or current is not host
                 or current.capabilities.swap_mode != "router"
                 or backends_by_id.get(host.host_id) is not backend
             ):
@@ -514,6 +514,7 @@ def create_app(
 
             trial_owned = False
             acquired_registration_id: object | None = None
+            reserved_host: HostInfo | None = None
             try:
                 if not health_monitor.claim_unhealthy_model_trial(
                     host.host_id, entry.id, probe_now
@@ -524,9 +525,10 @@ def create_app(
                 live = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
                 if (
                     live is None
-                    or live.registration_id is not current.registration_id
+                    or live is not current
                     or live.capabilities.swap_mode != "router"
                     or backends_by_id.get(host.host_id) is not backend
+                    or lease_book.is_held(host.host_id, _lease_now())
                 ):
                     continue
                 try:
@@ -535,55 +537,50 @@ def create_app(
                     continue
                 reserved = registry.get(host.host_id)
                 acquired_registration_id = reserved.registration_id
-                if reserved.registration_id is not current.registration_id:
-                    continue
+                if reserved is not current:
+                    return
+                reserved_host = reserved
 
                 probe_request = ChatCompletionRequest(
                     model=entry.id,
                     messages=[Message(role="user", content="hi")],
                     max_tokens=1,
                 )
+                probe_outcome: str | None = None
                 try:
                     result = await asyncio.wait_for(
                         backend.complete(probe_request), timeout=probe_timeout
                     )
                 except BackendError as exc:
-                    if _is_loading_response_error(exc):
-                        health_monitor.release_model_trial(host.host_id, entry.id)
-                    else:
-                        health_monitor.record_model_probe(
-                            host.host_id, entry.id, healthy=False, at=_health_now()
-                        )
-                    trial_owned = False
-                    continue
+                    probe_outcome = "loading" if _is_loading_response_error(exc) else "failure"
                 except TimeoutError:
-                    health_monitor.record_model_probe(
-                        host.host_id, entry.id, healthy=False, at=_health_now()
-                    )
-                    trial_owned = False
-                    continue
+                    probe_outcome = "failure"
                 except Exception:
-                    health_monitor.record_model_probe(
-                        host.host_id, entry.id, healthy=False, at=_health_now()
-                    )
-                    trial_owned = False
-                    continue
+                    probe_outcome = "failure"
+                else:
+                    probe_outcome = "success" if _is_healthy_probe_completion(result) else "failure"
 
                 after = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
                 if (
                     after is None
-                    or after.registration_id is not current.registration_id
+                    or after is not reserved_host
                     or after.capabilities.swap_mode != "router"
                     or backends_by_id.get(host.host_id) is not backend
+                    or lease_book.is_held(host.host_id, _lease_now())
                 ):
                     health_monitor.release_model_trial(host.host_id, entry.id)
                     trial_owned = False
                     return
 
-                is_healthy = _is_healthy_probe_completion(result)
-                health_monitor.record_model_probe(
-                    host.host_id, entry.id, healthy=is_healthy, at=_health_now()
-                )
+                if probe_outcome == "loading":
+                    health_monitor.release_model_trial(host.host_id, entry.id)
+                else:
+                    health_monitor.record_model_probe(
+                        host.host_id,
+                        entry.id,
+                        healthy=probe_outcome == "success",
+                        at=_health_now(),
+                    )
                 trial_owned = False
             finally:
                 if acquired_registration_id is not None:
