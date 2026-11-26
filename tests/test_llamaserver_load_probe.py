@@ -161,3 +161,54 @@ async def test_two_hosts_are_probed_independently():
 
     assert result_a.available is False
     assert result_b.available is True
+
+
+async def test_probe_with_model_passes_model_query_param():
+    seen_urls: list[str] = []
+
+    def handler(request):
+        seen_urls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json=[
+                {"id": 0, "is_processing": True},
+                {"id": 1, "is_processing": False},
+            ],
+        )
+
+    probe = LlamaCPPServerLoadProbe(transport=httpx.MockTransport(handler))
+
+    result = await probe.probe(
+        "mini-1", "http://192.168.1.10:8081", at=T0, model="google/gemma-4-26B-A4B"
+    )
+
+    assert result.available is True
+    assert result.busy_slots == 1
+    assert result.total_slots == 2
+    assert seen_urls == ["http://192.168.1.10:8081/slots?model=google%2Fgemma-4-26B-A4B"]
+
+
+async def test_probe_models_aggregates_multiple_loaded_models_and_skips_empty_list():
+    calls: list[str] = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if request.url.params.get("model") == "model-a":
+            return httpx.Response(200, json=[{"id": 0, "is_processing": True}])
+        return httpx.Response(
+            200, json=[{"id": 0, "is_processing": False}, {"id": 1, "is_processing": True}]
+        )
+
+    probe = LlamaCPPServerLoadProbe(transport=httpx.MockTransport(handler))
+
+    empty = await probe.probe_models("mini-1", "http://192.168.1.10:8081", [], at=T0)
+    combined = await probe.probe_models(
+        "mini-1", "http://192.168.1.10:8081", ["model-a", "model-b"], at=T0
+    )
+
+    assert empty.available is False
+    assert combined.available is True
+    assert combined.status == "busy"
+    assert combined.total_slots == 3
+    assert combined.busy_slots == 2
+    assert len(calls) == 2

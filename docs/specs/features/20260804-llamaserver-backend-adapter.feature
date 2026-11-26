@@ -56,3 +56,30 @@ Feature: llama-server backend adapter
     Given a configured llama-server host with /slots disabled
     When the load probe reads GET /slots
     Then it reports the load as unavailable rather than raising an error
+
+  Scenario: Router node probes /models and /slots?model= for the loaded model
+    Given a registered llama-server node with swap_mode "router"
+    And the router reports one loaded model and one unloaded model on GET /models
+    When the orchestrator probes the node
+    Then it calls GET /slots?model=<loaded> instead of parameterless GET /slots
+    And GET /v1/nodes reports external_load available with total_slots and tasks/h/slot
+    And GET /v1/nodes exposes each router model and its state
+
+  Scenario: Router list_models reports only servable models
+    Given a llama-server backend in router mode with loaded, unloaded, loading, and failed models
+    When list_models is called
+    Then it queries GET /models and returns only loaded or sleeping models
+
+  Scenario: Broken model on a router node does not take the node offline
+    Given a registered llama-server router node serving a healthy model and a broken model
+    When requests to the broken model fail repeatedly
+    Then the node status remains online
+    And GET /v1/capacity?model=<broken> returns 0
+    And GET /v1/capacity?model=<healthy> still reports the node's capacity
+    And requests to the healthy model continue to succeed
+
+  Scenario: Request for a loading model returns 503 model_loading with Retry-After
+    Given a registered llama-server router node whose model is currently loading
+    When a chat completion arrives for that model
+    Then the gateway returns HTTP 503 with error code "model_loading" and a Retry-After header
+    And no failure is recorded against the node or model

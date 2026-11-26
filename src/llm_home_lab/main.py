@@ -86,6 +86,7 @@ BACKEND_FACTORIES: Mapping[str, Callable[[HostCapabilities], ChatBackend]] = {
         pool_timeout=float(os.environ.get("LLAMASERVER_POOL_TIMEOUT", "10")),
         write_timeout=float(os.environ.get("LLAMASERVER_WRITE_TIMEOUT", "60")),
         health_timeout=float(os.environ.get("LLAMASERVER_HEALTH_TIMEOUT", "10")),
+        swap_mode=caps.swap_mode,
     ),
 }
 

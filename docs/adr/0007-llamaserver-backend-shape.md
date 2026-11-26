@@ -53,10 +53,11 @@ Chosen option: **B**, applied to three sub-decisions:
    `create_app`'s existing `external_load_probe` parameter and its ~15 existing test call sites
    unchanged; only the type hint was relaxed from the concrete `ExternalLoadProbe` class to a new
    `LoadProbe` Protocol (`registry/external_load.py`).
-3. **Multi-instance handling** — no `model_aliases` equivalent. llama-server is
-   one-model-per-process/port, so "multiple instances of one model" is just multiple llama-server
-   processes, each registered as its own node; `RoutingEngine` already load-balances across
-   separate `backend_id`s with no new code required.
+3. **Multi-instance handling** — no `model_aliases` equivalent. In single-model mode (`swap_mode: "none"`),
+   llama-server is one-model-per-process/port, so "multiple instances of one model" is just multiple
+   llama-server processes, each registered as its own node; `RoutingEngine` already load-balances across
+   separate `backend_id`s with no new code required. For multi-model router-mode `llama-server` nodes
+   (`swap_mode: "router"`), see [ADR-0016](0016-llamaserver-router-mode-awareness.md).
 
 The general precedent: **when adding a new backend, prefer its own native, well-supported
 capabilities over replicating a workaround that exists specifically to compensate for a
@@ -98,3 +99,4 @@ error).
 - Spec: [lmstudio-backend-adapter](../specs/20260711-lmstudio-backend-adapter.md)
 - ADR: [0003-lmstudio-backend-always-streams-internally](0003-lmstudio-backend-always-streams-internally.md) — the part of `LMStudioBackend` that *did* port over verbatim, because it reflects a shared wire-protocol/httpx-timeout property, not an LM Studio-specific workaround
 - ADR: [0005-lms-cli-for-external-node-load-visibility](0005-lms-cli-for-external-node-load-visibility.md) — the workaround this ADR explicitly declines to replicate for llama-server
+- ADR: [0016-llamaserver-router-mode-awareness](0016-llamaserver-router-mode-awareness.md) — extends this adapter for `llama-server` router mode (`swap_mode: "router"`)

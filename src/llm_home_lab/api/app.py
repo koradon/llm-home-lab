@@ -16,7 +16,14 @@ from starlette.types import Receive
 
 from llm_home_lab.api.lifetime import RequestLifetimeMiddleware, SlotStream, SlotStreamingResponse
 from llm_home_lab.api.models import ChatCompletionRequest
-from llm_home_lab.backends.base import BackendError, BackendTimeoutError, ChatBackend
+from llm_home_lab.backends.base import (
+    BackendConnectionError,
+    BackendError,
+    BackendResponseError,
+    BackendTimeoutError,
+    ChatBackend,
+    RouterModelState,
+)
 from llm_home_lab.backends.http_stream import closing_chunks
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.leases.book import NodeLeaseBook
@@ -42,6 +49,7 @@ from llm_home_lab.registry.models import (
     HostInfo,
     HostNotRegisteredError,
     ModelLimits,
+    SwapMode,
 )
 from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.routing.engine import RoutingEngine
@@ -56,12 +64,25 @@ health_logger = logging.getLogger("llm_home_lab.health")
 AUTH_EXEMPT_PATHS = {"/health/live", "/health/ready", "/metrics"}
 
 
+DEFAULT_MODEL_LOADING_RETRY_AFTER_S = 5
+
+
 class ModelNotAvailableError(Exception):
     """No registered host serves the requested model."""
 
 
 class ModelCapacityExceededError(Exception):
     """A host could serve the model but loading it now would exceed its memory budget."""
+
+
+class ModelLoadingError(Exception):
+    """The requested model is currently loading on the target router node(s)."""
+
+    def __init__(
+        self, message: str, retry_after_s: int = DEFAULT_MODEL_LOADING_RETRY_AFTER_S
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
 
 
 class ModelLimitsPayload(BaseModel):
@@ -81,6 +102,7 @@ class NodeRegistrationRequest(BaseModel):
     model_aliases: dict[str, list[str]] | None = None
     position: int | None = None
     model_limits: dict[str, ModelLimitsPayload] | None = None
+    swap_mode: SwapMode = "none"
 
 
 class NodeLeaseCreateRequest(BaseModel):
@@ -105,6 +127,7 @@ class NodeUpdateRequest(BaseModel):
     model_aliases: dict[str, list[str]] | None = None
     position: int | None = None
     model_limits: dict[str, ModelLimitsPayload] | None = None
+    swap_mode: SwapMode | None = None
 
 
 _NODE_CAPABILITY_FIELDS = {
@@ -117,6 +140,7 @@ _NODE_CAPABILITY_FIELDS = {
     "model_aliases",
     "position",
     "model_limits",
+    "swap_mode",
 }
 _NODE_CAPACITY_FIELDS = {"max_concurrent_requests"}
 
@@ -202,6 +226,89 @@ def create_app(
             del backend_capabilities_by_id[stale_id]
         for stale_id in set(external_loads) - live_ids:
             del external_loads[stale_id]
+        for stale_id in set(router_models) - live_ids:
+            del router_models[stale_id]
+
+    router_models: dict[str, list[RouterModelState]] = {}
+
+    def _router_model_map(host_id: str) -> dict[str, RouterModelState]:
+        return {entry.id: entry for entry in router_models.get(host_id, ())}
+
+    def _is_router_model_failed(host: HostInfo, model: str) -> bool:
+        if host.capabilities.swap_mode != "router":
+            return False
+        entry = _router_model_map(host.host_id).get(model)
+        return entry is not None and (entry.failed or entry.state == "failed")
+
+    def _is_router_model_loading(host: HostInfo, model: str) -> bool:
+        if host.capabilities.swap_mode != "router":
+            return False
+        entry = _router_model_map(host.host_id).get(model)
+        return entry is not None and entry.state == "loading"
+
+    def _is_host_model_healthy(host: HostInfo, model: str | None, at: datetime) -> bool:
+        if model is None or host.capabilities.swap_mode != "router":
+            return True
+        return health_monitor.is_model_healthy(host.host_id, model, at) and not (
+            _is_router_model_failed(host, model)
+        )
+
+    def _sync_router_models(
+        host: HostInfo, states: list[RouterModelState] | None, at: datetime
+    ) -> None:
+        if states is None:
+            return
+        router_models[host.host_id] = states
+        for entry in states:
+            if entry.failed or entry.state == "failed":
+                health_monitor.record_model_probe(host.host_id, entry.id, healthy=False, at=at)
+            elif entry.state in ("loaded", "sleeping", "unloaded") and (
+                health_monitor.has_model_probe_history(host.host_id, entry.id)
+            ):
+                health_monitor.record_model_probe(host.host_id, entry.id, healthy=True, at=at)
+
+    def _serialize_node_models(host: HostInfo, at: datetime) -> list[dict[str, object]] | None:
+        if host.capabilities.swap_mode != "router":
+            return None
+        seen: set[str] = set()
+        items: list[dict[str, object]] = []
+        for entry in router_models.get(host.host_id, ()):
+            seen.add(entry.id)
+            items.append(
+                {
+                    "id": entry.id,
+                    "state": entry.state,
+                    "healthy": _is_host_model_healthy(host, entry.id, at),
+                    "recent_failures": health_monitor.model_failure_count(host.host_id, entry.id),
+                }
+            )
+        for tracked_model in health_monitor.tracked_models(host.host_id):
+            if tracked_model in seen:
+                continue
+            items.append(
+                {
+                    "id": tracked_model,
+                    "state": "unknown",
+                    "healthy": _is_host_model_healthy(host, tracked_model, at),
+                    "recent_failures": health_monitor.model_failure_count(
+                        host.host_id, tracked_model
+                    ),
+                }
+            )
+        return items
+
+    def _any_loading_router_host(hosts: Sequence[HostInfo], model: str, at: datetime) -> bool:
+        return any(
+            host.capabilities.swap_mode == "router"
+            and health_monitor.is_healthy(host.host_id, at)
+            and _is_host_model_healthy(host, model, at)
+            and (
+                host.capabilities.allowed_models is None
+                or model in host.capabilities.allowed_models
+            )
+            and _is_router_model_loading(host, model)
+            for host in hosts
+        )
 
     def _fits_in_budget(host: HostInfo, model: str, loaded: list[str]) -> bool:
         budget = host.capabilities.memory_budget_gb
@@ -232,21 +339,50 @@ def create_app(
             loaded = None
             if host.capabilities.allowed_models is None:
                 backend = _backend_for(host.host_id, host.capabilities)
-                list_models = getattr(backend, "list_models", None)
-                if list_models is not None:
+                list_states = (
+                    getattr(backend, "list_model_states", None)
+                    if host.capabilities.swap_mode == "router"
+                    else None
+                )
+                if list_states is not None:
                     try:
                         if require_known:
-                            loaded = await asyncio.wait_for(
-                                list_models(), timeout=getattr(backend, "health_timeout", 10.0)
+                            states = await asyncio.wait_for(
+                                list_states(raise_on_timeout=True),
+                                timeout=getattr(backend, "health_timeout", 10.0),
                             )
                         else:
-                            loaded = await list_models()
+                            states = await list_states(raise_on_timeout=True)
                     except (TimeoutError, BackendTimeoutError):
                         if require_known:
                             health_logger.warning(
                                 "Model inventory timed out for host %s", host.host_id
                             )
                             return None, False
+                    else:
+                        if states is not None:
+                            _sync_router_models(host, states, datetime.now(UTC))
+                            loaded = [
+                                entry.id
+                                for entry in states
+                                if not entry.failed and entry.state in ("loaded", "sleeping")
+                            ]
+                else:
+                    list_models = getattr(backend, "list_models", None)
+                    if list_models is not None:
+                        try:
+                            if require_known:
+                                loaded = await asyncio.wait_for(
+                                    list_models(), timeout=getattr(backend, "health_timeout", 10.0)
+                                )
+                            else:
+                                loaded = await list_models()
+                        except (TimeoutError, BackendTimeoutError):
+                            if require_known:
+                                health_logger.warning(
+                                    "Model inventory timed out for host %s", host.host_id
+                                )
+                                return None, False
             current = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
             if current is None:
                 return None, False
@@ -297,6 +433,10 @@ def create_app(
         for host in hosts:
             if not health_monitor.is_healthy(host.host_id, at):
                 continue
+            if not _is_host_model_healthy(host, model, at):
+                continue
+            if model is not None and _is_router_model_loading(host, model):
+                continue
             effective_max = host.effective_max_concurrent_requests(model)
             if host.in_flight >= effective_max:
                 continue
@@ -340,10 +480,31 @@ def create_app(
     async def _probe_one_host(host: HostInfo) -> dict[str, object]:
         backend = _backend_for(host.host_id, host.capabilities)
         health = await backend.check_health()
-        health_monitor.record_probe(host.host_id, health.healthy, datetime.now(UTC))
-        external_loads[host.host_id] = await external_load_probe.probe(
-            host.host_id, host.capabilities.base_url, datetime.now(UTC)
-        )
+        now = datetime.now(UTC)
+        health_monitor.record_probe(host.host_id, health.healthy, now)
+        if host.capabilities.swap_mode == "router":
+            list_states = getattr(backend, "list_model_states", None)
+            states = await list_states() if list_states is not None else None
+            _sync_router_models(host, states, now)
+            slot_models: list[str] = []
+            if states is not None:
+                slot_models = [entry.id for entry in states if entry.state == "loaded"]
+                if not slot_models:
+                    slot_models = [entry.id for entry in states if entry.state == "sleeping"]
+            probe_models_fn = getattr(external_load_probe, "probe_models", None)
+            if probe_models_fn is not None:
+                external_loads[host.host_id] = await probe_models_fn(
+                    host.host_id, host.capabilities.base_url, slot_models, now
+                )
+            else:
+                external_loads[host.host_id] = ExternalLoadStatus(
+                    available=False, status=None, queued=None, checked_at=now
+                )
+        else:
+            router_models.pop(host.host_id, None)
+            external_loads[host.host_id] = await external_load_probe.probe(
+                host.host_id, host.capabilities.base_url, now
+            )
         return {"id": host.host_id, "healthy": health.healthy, "detail": health.detail}
 
     async def _probe_all_hosts() -> list[dict[str, object]]:
@@ -510,6 +671,20 @@ def create_app(
     ) -> JSONResponse:
         return _error_response(503, str(exc), "backend_error", "model_capacity_exceeded")
 
+    @app.exception_handler(ModelLoadingError)
+    async def on_model_loading(request: Request, exc: ModelLoadingError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": str(exc.retry_after_s)},
+            content={
+                "error": {
+                    "message": str(exc),
+                    "type": "backend_error",
+                    "code": "model_loading",
+                }
+            },
+        )
+
     @app.exception_handler(LeaseRefusedError)
     async def on_lease_refused(request: Request, exc: LeaseRefusedError) -> JSONResponse:
         return _error_response(409, str(exc), "invalid_request_error", "lease_refused")
@@ -544,10 +719,13 @@ def create_app(
                 model_aliases=payload.model_aliases,
                 position=payload.position,
                 model_limits=_to_model_limits(payload.model_limits),
+                swap_mode=payload.swap_mode,
             ),
             HostCapacity(max_concurrent_requests=payload.max_concurrent_requests),
             at=datetime.now(UTC),
         )
+        if payload.swap_mode != "router":
+            router_models.pop(payload.host_id, None)
         return {"status": "registered"}
 
     @app.patch("/v1/nodes/{host_id:path}")
@@ -563,6 +741,8 @@ def create_app(
             **{k: v for k, v in fields.items() if k in _NODE_CAPACITY_FIELDS},
         )
         registry.register(host_id, capabilities, capacity, at=datetime.now(UTC))
+        if capabilities.swap_mode != "router":
+            router_models.pop(host_id, None)
         return {"status": "updated"}
 
     @app.post("/v1/nodes/{host_id:path}/heartbeat")
@@ -637,6 +817,8 @@ def create_app(
                     "model_sizes_gb": host.capabilities.model_sizes_gb,
                     "model_aliases": host.capabilities.model_aliases,
                     "model_limits": _serialize_model_limits(host.capabilities.model_limits),
+                    "swap_mode": host.capabilities.swap_mode,
+                    "models": _serialize_node_models(host, at),
                     "position": host.capabilities.position,
                     "max_concurrent_requests": host.capacity.max_concurrent_requests,
                     "effective_max_concurrent_requests": host.effective_max_concurrent_requests(),
@@ -682,6 +864,7 @@ def create_app(
             for host in registry.hosts()
             if _node_status(host.host_id, at) == "online"
             and not lease_book.is_held(host.host_id, lease_at)
+            and _is_host_model_healthy(host, model, at)
         ]
         capable, _budget_blocked = await _model_capable_hosts(
             model, hosts=online_unleased, require_known=True
@@ -695,6 +878,7 @@ def create_app(
             if any(host is current for current in current_hosts)
             and _node_status(host.host_id, at) == "online"
             and not lease_book.is_held(host.host_id, lease_at)
+            and _is_host_model_healthy(host, model, at)
         )
         return {"total_max_concurrent_requests": total}
 
@@ -756,6 +940,11 @@ def create_app(
             # and a miss does not fall through to any other host.
             model_hosts = [host for host in model_hosts if host.host_id == pinned.host_id]
             if not model_hosts:
+                pinned_hosts = [h for h in registry.hosts() if h.host_id == pinned.host_id]
+                if _any_loading_router_host(pinned_hosts, request.model, now):
+                    raise ModelLoadingError(
+                        f"model {request.model!r} is currently loading; retry shortly"
+                    )
                 raise ModelNotAvailableError(
                     f"leased node {pinned.host_id!r} does not serve model {request.model!r}"
                 )
@@ -772,6 +961,13 @@ def create_app(
                     raise NoAvailableBackendError(
                         "every host that serves this model is reserved for a test"
                     )
+                unleased_hosts = [
+                    h for h in registry.hosts() if not lease_book.is_held(h.host_id, lease_now)
+                ]
+                if _any_loading_router_host(unleased_hosts, request.model, now):
+                    raise ModelLoadingError(
+                        f"model {request.model!r} is currently loading; retry shortly"
+                    )
                 if budget_blocked:
                     raise ModelCapacityExceededError(
                         f"model {request.model!r} would exceed a host's memory budget right now"
@@ -780,13 +976,15 @@ def create_app(
             model_hosts = open_hosts
 
         failover_in_play = any(
-            not health_monitor.is_healthy(host.host_id, now) for host in model_hosts
+            not health_monitor.is_healthy(host.host_id, now)
+            or not _is_host_model_healthy(host, request.model, now)
+            for host in model_hosts
         )
 
-        def current_candidates() -> list[RoutingCandidate]:
+        def current_matching_hosts() -> list[HostInfo]:
             at = _lease_now()
             live = lease_book.require(token, at) if token else None
-            hosts = [
+            return [
                 host
                 for host in registry.hosts()
                 if (
@@ -802,7 +1000,11 @@ def create_app(
                     )
                 )
             ]
-            return _eligible_candidates(hosts, datetime.now(UTC), model=request.model)
+
+        def current_candidates() -> list[RoutingCandidate]:
+            return _eligible_candidates(
+                current_matching_hosts(), datetime.now(UTC), model=request.model
+            )
 
         def queued_host_ids() -> set[str]:
             try:
@@ -812,6 +1014,20 @@ def create_app(
 
         candidates = current_candidates()
         if not candidates:
+            check_now = datetime.now(UTC)
+            matching_now = current_matching_hosts()
+            healthy_matching = [
+                host
+                for host in matching_now
+                if health_monitor.is_healthy(host.host_id, check_now)
+                and _is_host_model_healthy(host, request.model, check_now)
+            ]
+            if healthy_matching and all(
+                _is_router_model_loading(host, request.model) for host in healthy_matching
+            ):
+                raise ModelLoadingError(
+                    f"model {request.model!r} is currently loading; retry shortly"
+                )
             request_id = uuid.uuid4().hex
             queue_session_id = request.session_id or request_id
             deadline = time.monotonic() + dispatch_wait_timeout
@@ -866,8 +1082,15 @@ def create_app(
                     ):
                         break
                 else:
+                    timeout_now = datetime.now(UTC)
+                    if _any_loading_router_host(
+                        current_matching_hosts(), request.model, timeout_now
+                    ):
+                        raise ModelLoadingError(
+                            f"model {request.model!r} is currently loading; retry shortly"
+                        )
                     if failover_in_play:
-                        metrics_registry.record_failover_outcome(False, datetime.now(UTC))
+                        metrics_registry.record_failover_outcome(False, timeout_now)
                     raise NoAvailableBackendError(
                         "no host became available before the dispatch timeout"
                     )
@@ -896,10 +1119,13 @@ def create_app(
                 )
                 at = _lease_now()
                 live = lease_book.require(token, at) if token else None
+                revalidate_now = datetime.now(UTC)
                 if (
                     current is not reserved_host
                     or backends_by_id.get(decision.backend_id) is not reserved_backend
-                    or not health_monitor.is_healthy(decision.backend_id, datetime.now(UTC))
+                    or not health_monitor.is_healthy(decision.backend_id, revalidate_now)
+                    or not _is_host_model_healthy(current, request.model, revalidate_now)
+                    or _is_router_model_loading(current, request.model)
                     or (live is not None and live.host_id != decision.backend_id)
                     or (live is None and lease_book.is_held(decision.backend_id, at))
                 ):
@@ -913,6 +1139,7 @@ def create_app(
             reserved_host = registry.get(decision.backend_id)
 
         backend = backends_by_id[decision.backend_id]
+        is_router_host = reserved_host.capabilities.swap_mode == "router"
 
         if request.stream:
             chunks = SlotStream(
@@ -923,6 +1150,7 @@ def create_app(
                     completion_log,
                     health_monitor,
                     decision.backend_id,
+                    router_mode=is_router_host,
                 ),
                 lambda: registry.release_owned_slot(
                     decision.backend_id, reserved_host.registration_id
@@ -943,10 +1171,21 @@ def create_app(
         backend_call_start = time.perf_counter()
         try:
             result = await backend.complete(request)
-        except BackendError:
+        except BackendError as exc:
+            if is_router_host and _is_loading_response_error(exc):
+                raise ModelLoadingError(
+                    f"model {request.model!r} is currently loading; retry shortly"
+                ) from exc
             if failover_in_play:
                 metrics_registry.record_failover_outcome(False, datetime.now(UTC))
-            health_monitor.record_probe(decision.backend_id, healthy=False, at=datetime.now(UTC))
+            if is_router_host and not isinstance(exc, BackendConnectionError):
+                health_monitor.record_model_probe(
+                    decision.backend_id, request.model, healthy=False, at=datetime.now(UTC)
+                )
+            else:
+                health_monitor.record_probe(
+                    decision.backend_id, healthy=False, at=datetime.now(UTC)
+                )
             raise
         finally:
             registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
@@ -967,9 +1206,17 @@ def create_app(
                 datetime.now(UTC),
             )
             completion_log.record(decision.backend_id, datetime.now(UTC))
-        health_monitor.record_probe(
-            decision.backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
-        )
+        if is_router_host:
+            health_monitor.record_model_probe(
+                decision.backend_id,
+                request.model,
+                healthy=is_healthy_completion,
+                at=datetime.now(UTC),
+            )
+        else:
+            health_monitor.record_probe(
+                decision.backend_id, healthy=is_healthy_completion, at=datetime.now(UTC)
+            )
 
         response.headers["X-Backend-Id"] = decision.backend_id
         return {
@@ -1020,6 +1267,14 @@ def _is_degenerate_completion(content: str, finish_reason: str | None) -> bool:
     return not content.strip() or finish_reason != "stop"
 
 
+def _is_loading_response_error(exc: BackendError) -> bool:
+    return (
+        isinstance(exc, BackendResponseError)
+        and exc.status_code == 503
+        and "loading" in exc.body.lower()
+    )
+
+
 async def _stream_chunks(
     backend: ChatBackend,
     request: ChatCompletionRequest,
@@ -1027,6 +1282,8 @@ async def _stream_chunks(
     completion_log: CompletionLog,
     health_monitor: HealthMonitor,
     backend_id: str,
+    *,
+    router_mode: bool = False,
 ) -> AsyncGenerator[str, None]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -1035,33 +1292,43 @@ async def _stream_chunks(
     last_finish_reason: str | None = None
 
     stream_start = time.perf_counter()
-    async with closing_chunks(backend.stream(request)) as chunks:
-        async for chunk in chunks:
-            if chunk.usage is not None:
-                usage = chunk.usage
-            if chunk.content.strip():
-                saw_content = True
-            if chunk.finish_reason is not None:
-                last_finish_reason = chunk.finish_reason
-            if not chunk.content and chunk.finish_reason is None:
-                # A usage-only accounting chunk (no content, no finish_reason) — consumed for
-                # metrics below, not forwarded as a delta to the external client.
-                continue
+    try:
+        async with closing_chunks(backend.stream(request)) as chunks:
+            async for chunk in chunks:
+                if chunk.usage is not None:
+                    usage = chunk.usage
+                if chunk.content.strip():
+                    saw_content = True
+                if chunk.finish_reason is not None:
+                    last_finish_reason = chunk.finish_reason
+                if not chunk.content and chunk.finish_reason is None:
+                    # A usage-only accounting chunk (no content, no finish_reason) — consumed for
+                    # metrics below, not forwarded as a delta to the external client.
+                    continue
 
-            payload = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": request.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"role": "assistant", "content": chunk.content},
-                        "finish_reason": chunk.finish_reason,
-                    }
-                ],
-            }
-            yield f"data: {json.dumps(payload)}\n\n"
+                payload = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": request.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": chunk.content},
+                            "finish_reason": chunk.finish_reason,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+    except BackendError as exc:
+        if router_mode and not _is_loading_response_error(exc):
+            if isinstance(exc, BackendConnectionError):
+                health_monitor.record_probe(backend_id, healthy=False, at=datetime.now(UTC))
+            else:
+                health_monitor.record_model_probe(
+                    backend_id, request.model, healthy=False, at=datetime.now(UTC)
+                )
+        raise
 
     stream_latency_ms = (time.perf_counter() - stream_start) * 1000
     is_healthy_completion = saw_content and last_finish_reason == "stop"
@@ -1079,6 +1346,11 @@ async def _stream_chunks(
             )
     if is_healthy_completion:
         completion_log.record(backend_id, datetime.now(UTC))
-    health_monitor.record_probe(backend_id, healthy=is_healthy_completion, at=datetime.now(UTC))
+    if router_mode:
+        health_monitor.record_model_probe(
+            backend_id, request.model, healthy=is_healthy_completion, at=datetime.now(UTC)
+        )
+    else:
+        health_monitor.record_probe(backend_id, healthy=is_healthy_completion, at=datetime.now(UTC))
 
     yield "data: [DONE]\n\n"

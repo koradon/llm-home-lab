@@ -15,6 +15,7 @@ class FailoverEvent:
     from_healthy: bool
     to_healthy: bool
     at: datetime
+    model: str | None = None
 
 
 @dataclass
