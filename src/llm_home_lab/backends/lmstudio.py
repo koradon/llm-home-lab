@@ -77,6 +77,8 @@ class LMStudioBackend:
         # only reliable signal for "won't trigger a new load."
         try:
             response = await self._client.get("/api/v0/models")
+        except httpx.TimeoutException as exc:
+            raise BackendTimeoutError("model inventory timed out") from exc
         except httpx.TransportError:
             return None
 

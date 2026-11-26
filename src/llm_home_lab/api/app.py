@@ -234,18 +234,19 @@ def create_app(
                 backend = _backend_for(host.host_id, host.capabilities)
                 list_models = getattr(backend, "list_models", None)
                 if list_models is not None:
-                    if require_known:
-                        try:
+                    try:
+                        if require_known:
                             loaded = await asyncio.wait_for(
                                 list_models(), timeout=getattr(backend, "health_timeout", 10.0)
                             )
-                        except TimeoutError:
+                        else:
+                            loaded = await list_models()
+                    except (TimeoutError, BackendTimeoutError):
+                        if require_known:
                             health_logger.warning(
                                 "Model inventory timed out for host %s", host.host_id
                             )
                             return None, False
-                    else:
-                        loaded = await list_models()
             current = next((h for h in registry.hosts() if h.host_id == host.host_id), None)
             if current is None:
                 return None, False

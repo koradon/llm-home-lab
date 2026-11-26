@@ -10,6 +10,8 @@ from registry_test_helpers import inert_external_load_probe, new_registry_db_pat
 
 from llm_home_lab.api.app import create_app
 from llm_home_lab.backends.base import BackendHealth, BackendResponse
+from llm_home_lab.backends.llamaserver import LlamaCPPServerBackend
+from llm_home_lab.backends.lmstudio import LMStudioBackend
 from llm_home_lab.health.monitor import HealthMonitor
 from llm_home_lab.leases.models import LeaseSettings
 from llm_home_lab.observability.alerts import AlertEvaluator
@@ -565,6 +567,31 @@ async def test_capacity_uses_backend_health_timeout_and_logs_timeout(caplog):
         assert response.json() == {"total_max_concurrent_requests": 4}
         assert any(
             "slow" in record.message and "timed out" in record.message for record in caplog.records
+        )
+
+
+@pytest.mark.parametrize("backend_class", [LlamaCPPServerBackend, LMStudioBackend])
+async def test_capacity_logs_backend_transport_timeout(backend_class, caplog):
+    def handler(request):
+        if request.url.path in ("/health", "/v1/models", "/api/v0/models"):
+            raise httpx.ConnectTimeout("connection timed out", request=request)
+        return httpx.Response(200, json={})
+
+    backend = backend_class(
+        base_url="http://mini-3.local:8081", timeout=5, transport=httpx.MockTransport(handler)
+    )
+    health = HealthMonitor()
+    app = _app(backend_factory=lambda caps: backend, health_monitor=health)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
+    ) as client:
+        await client.post("/v1/nodes/register", json=_node_payload())
+        health.record_probe("mini-3", healthy=True, at=datetime.now(UTC))
+        response = await client.get("/v1/capacity", params={"model": "model"})
+        assert response.json() == {"total_max_concurrent_requests": 0}
+        assert any(
+            "mini-3" in record.message and "timed out" in record.message
+            for record in caplog.records
         )
 
 
