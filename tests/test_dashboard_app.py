@@ -1490,3 +1490,40 @@ async def test_dashboard_displays_effective_max_concurrent_requests_when_present
     assert "2/8" in status_cell
     assert label_text == "mini-3 · 2/8 · 25%"
     assert sparkline_data == [0.25]
+
+
+async def test_dashboard_models_column_shows_router_model_states_and_dash_for_non_router():
+    router_node = {
+        **_node("mini-1", in_flight=1, max_concurrent_requests=4),
+        "backend_type": "llamaserver",
+        "swap_mode": "router",
+        "models": [
+            {"id": "tgemma", "state": "unloaded", "healthy": True, "recent_failures": 0},
+            {"id": "broken", "state": "failed", "healthy": False, "recent_failures": 3},
+            {"id": "hy-mt2", "state": "loaded", "healthy": True, "recent_failures": 0},
+            {"id": "eurollm", "state": "loading", "healthy": True, "recent_failures": 0},
+        ],
+    }
+    static_node = _node("cachy-1", in_flight=0, max_concurrent_requests=8)
+    client = _FakeClient(nodes={"nodes": [router_node, static_node]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(160, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        table = app.query_one("#nodes-table", DataTable)
+        labels = [str(column.label) for column in table.ordered_columns]
+        router_models_cell = table.get_row_at(0)[12]
+        static_models_cell = table.get_row_at(1)[12]
+
+    assert labels[-1] == "models"
+    assert router_models_cell.plain == (
+        "hy-mt2 (loaded), eurollm (loading), broken (failed), tgemma (unloaded)"
+    )
+    styles = _span_styles(router_models_cell)
+    assert styles["hy-mt2 (loaded)"] == "bold green"
+    assert styles["eurollm (loading)"] == "bold yellow"
+    assert styles["broken (failed)"] == "bold red"
+    assert styles["tgemma (unloaded)"] == "dim"
+    assert static_models_cell.plain == "—"

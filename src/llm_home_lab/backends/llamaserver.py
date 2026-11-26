@@ -12,10 +12,14 @@ from llm_home_lab.backends.base import (
     BackendResponse,
     BackendResponseError,
     BackendTimeoutError,
+    RouterModelState,
 )
 from llm_home_lab.backends.http_stream import closing_chunks, inference_response
+from llm_home_lab.registry.models import SwapMode
 
 logger = logging.getLogger(__name__)
+
+_SERVABLE_ROUTER_STATES = frozenset({"loaded", "sleeping"})
 
 
 class LlamaCPPServerBackend:
@@ -29,12 +33,14 @@ class LlamaCPPServerBackend:
         transport: httpx.AsyncBaseTransport | None = None,
         pool_timeout: float = 10.0,
         write_timeout: float = 60.0,
+        swap_mode: SwapMode = "none",
     ) -> None:
         self.backend_id = base_url
         self.timeout = timeout
         self._max_retries = max_retries
         self.connect_timeout = connect_timeout
         self.health_timeout = health_timeout
+        self.swap_mode: SwapMode = swap_mode
         self._client = httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(
@@ -56,10 +62,54 @@ class LlamaCPPServerBackend:
             )
         return BackendHealth(healthy=True, detail="ok")
 
+    async def list_model_states(
+        self, *, raise_on_timeout: bool = False
+    ) -> list[RouterModelState] | None:
+        # llama-server router mode exposes live catalog and load states on GET /models.
+        try:
+            response = await self._client.get("/models", timeout=self.health_timeout)
+        except httpx.TimeoutException as exc:
+            if raise_on_timeout:
+                raise BackendTimeoutError("model inventory timed out") from exc
+            return None
+        except httpx.TransportError:
+            return None
+
+        if response.status_code // 100 != 2:
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return None
+
+        states: list[RouterModelState] = []
+        for entry in data:
+            parsed = _parse_router_model_state(entry)
+            if parsed is not None:
+                states.append(parsed)
+        return states
+
     async def list_models(self) -> list[str] | None:
-        # A llama-server process serves exactly one model for its whole lifetime, so unlike
-        # LM Studio there's no JIT-loading guard to enforce here — /v1/models always reports
-        # that one model as loaded.
+        if self.swap_mode == "router":
+            states = await self.list_model_states(raise_on_timeout=True)
+            if states is None:
+                return None
+            return [
+                entry.id
+                for entry in states
+                if not entry.failed and entry.state in _SERVABLE_ROUTER_STATES
+            ]
+
+        # A single-model llama-server process serves one model for its whole lifetime, so
+        # unlike LM Studio there's no JIT-loading guard to enforce here — /v1/models always
+        # reports that one model as loaded.
         try:
             response = await self._client.get("/v1/models")
         except httpx.TimeoutException as exc:
@@ -167,6 +217,33 @@ class LlamaCPPServerBackend:
             "backend %s unreachable after %d attempts: %s", self.backend_id, attempts, last_error
         )
         raise BackendConnectionError(str(last_error)) from last_error
+
+
+def _parse_router_model_state(entry: object) -> RouterModelState | None:
+    if not isinstance(entry, dict):
+        return None
+    model_id = entry.get("id")
+    if not isinstance(model_id, str) or not model_id:
+        return None
+
+    raw_status = entry.get("status")
+    exit_code: int | None = None
+    if isinstance(raw_status, dict):
+        raw_value = raw_status.get("value")
+        value = raw_value.lower() if isinstance(raw_value, str) and raw_value else "unloaded"
+        failed = bool(raw_status.get("failed", False)) or value == "failed"
+        raw_exit = raw_status.get("exit_code")
+        if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
+            exit_code = raw_exit
+    elif isinstance(raw_status, str):
+        value = raw_status.lower() or "unloaded"
+        failed = value == "failed"
+    else:
+        value = "unloaded"
+        failed = False
+
+    state = "failed" if (failed and value not in _SERVABLE_ROUTER_STATES) else value
+    return RouterModelState(id=model_id, state=state, failed=failed, exit_code=exit_code)
 
 
 def _to_llamaserver_payload(request: ChatCompletionRequest) -> dict[str, object]:

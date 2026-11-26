@@ -189,6 +189,41 @@ second PATCH. `GET /v1/nodes` exposes `model_limits`, `effective_max_concurrent_
 `effective_context_window`, and the TUI displays the effective concurrency limit. See
 [ADR-0015](docs/adr/0015-per-model-node-limits.md).
 
+**`llama-server` router mode (`swap_mode: "router"`)**: when a `llamaserver` host runs in
+`llama-server` router mode (for example `--models-preset ... --models-max 1`), register or patch
+it with `"swap_mode": "router"` (default `"none"`):
+
+```json
+{
+  "host_id": "mini-3",
+  "backend_type": "llamaserver",
+  "swap_mode": "router",
+  "base_url": "http://mini-3.local:8081",
+  "context_window": 8192,
+  "max_concurrent_requests": 4,
+  "allowed_models": ["gemma-4-26B-A4B"],
+  "model_limits": {
+    "gemma-4-26B-A4B": {"max_concurrent_requests": 8, "context_window": 16384},
+    "Hy-MT2-30B-A3B": {"max_concurrent_requests": 6, "context_window": 16384}
+  }
+}
+```
+
+For router-mode nodes:
+- Probes read `GET /models` for the router catalog and states (`loaded`, `loading`, `sleeping`,
+  `unloaded`, `failed`) and query `GET /slots?model=<name>` for the loaded model (else a sleeping
+  one) instead of parameterless `GET /slots` (which returns `400` in router mode), restoring
+  `external_load` slot counts and `tasks/h/slot`.
+- Model failures are isolated per `(node, model)`: a broken preset takes only that model out of
+  routing and reports `0` in `GET /v1/capacity?model=<broken>` until it recovers, while the node
+  stays `online` and its other models keep serving.
+- `GET /v1/nodes` exposes `swap_mode` and `models` (per-model `id`, `state`, `healthy`,
+  `recent_failures`), and the TUI displays router model states in a `models` column.
+- Requests arriving for a model that is currently `loading` return `503 model_loading` with a
+  `Retry-After` header rather than a generic error or failure count.
+- Non-router nodes (`swap_mode: "none"`, the default) behave identically to before. See
+  [ADR-0016](docs/adr/0016-llamaserver-router-mode-awareness.md).
+
 If you actually *want* on-demand loading (rather than requiring everything pre-loaded), declare a
 memory budget instead — LM Studio has no API to report model size or host memory usage, so you
 provide rough estimates yourself. A not-loaded model is only let through if it (plus whatever's
@@ -228,9 +263,10 @@ This is entirely optional — everything else works without it, and a missing or
 [docs/adr/0005-lms-cli-for-external-node-load-visibility.md](docs/adr/0005-lms-cli-for-external-node-load-visibility.md)
 for why `lms` is required (LM Studio's REST API doesn't expose load/queue data itself).
 
-`llamaserver` nodes get the same `external_load` API visibility with no extra install: llama-server
-exposes its own `GET /slots` endpoint over plain HTTP, so the orchestrator reads it directly. The
-API reports `busy_slots` and `total_slots`; `queued` is a busy-slot count, not a queue depth.
+`llamaserver` nodes get the same `external_load` API visibility with no extra install: single-model
+nodes are probed via parameterless `GET /slots` over plain HTTP; router-mode nodes use
+`GET /slots?model=<name>` (see router mode above). The API reports `busy_slots` and `total_slots`;
+`queued` is a busy-slot count, not a queue depth.
 
 The Nodes table also shows `tasks/h` (completed tasks per hour over a rolling window, 1 hour by
 default) and `tasks/h/slot` (that rate divided by the host's slot count, `n/a` when the slot

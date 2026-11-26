@@ -170,6 +170,55 @@ def _format_tasks_per_hour(throughput: object, key: str) -> str:
     return f"{value:.1f}"
 
 
+_MODEL_STATE_ORDER = {
+    "loaded": 0,
+    "loading": 1,
+    "sleeping": 2,
+    "failed": 3,
+    "unknown": 4,
+    "unloaded": 5,
+}
+
+
+def _styled_models(models: object) -> Text:
+    if not isinstance(models, list) or not models:
+        return Text("—", style="dim")
+
+    entries = [entry for entry in models if isinstance(entry, dict) and entry.get("id")]
+    if not entries:
+        return Text("—", style="dim")
+
+    def _sort_key(entry: dict[str, object]) -> tuple[int, str]:
+        state = str(entry.get("state") or "unknown")
+        healthy = entry.get("healthy", True)
+        rank = (
+            3
+            if healthy is False and state not in ("loaded", "loading", "sleeping")
+            else _MODEL_STATE_ORDER.get(state, 4)
+        )
+        return (rank, str(entry["id"]))
+
+    parts: list[Text | str] = []
+    for index, entry in enumerate(sorted(entries, key=_sort_key)):
+        if index:
+            parts.append(", ")
+        model_id = str(entry["id"])
+        state = str(entry.get("state") or "unknown")
+        healthy = entry.get("healthy", True)
+        if state == "failed" or healthy is False:
+            label = "failed" if state == "failed" else f"{state}/unhealthy"
+            parts.append(Text(f"{model_id} ({label})", style="bold red"))
+        elif state == "loaded":
+            parts.append(Text(f"{model_id} (loaded)", style="bold green"))
+        elif state == "loading":
+            parts.append(Text(f"{model_id} (loading)", style="bold yellow"))
+        elif state == "sleeping":
+            parts.append(Text(f"{model_id} (sleeping)", style="cyan"))
+        else:
+            parts.append(Text(f"{model_id} ({state})", style="dim"))
+    return Text.assemble(*parts)
+
+
 # Session-only sort columns, cycled with "s"; None in the cycle is the persisted manual order.
 _SORT_COLUMNS = ("node", "status", "reqs/min", "avg latency", "tokens")
 
@@ -584,6 +633,7 @@ class DashboardApp(App[None]):
             "avg_lat_ms",
             "prompt_tok",
             "compl_tok",
+            "models",
         )
         nodes_table.border_title = "Nodes"
 
@@ -684,6 +734,7 @@ class DashboardApp(App[None]):
                     parsed.host_completion_tokens_min.get(host_id),
                     parsed.host_completion_tokens_max.get(host_id),
                 ),
+                _styled_models(host.get("models")),
             )
             self._node_row_order.append(host_id)
             self._nodes_by_id[host_id] = host

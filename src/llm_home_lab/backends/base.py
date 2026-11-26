@@ -48,6 +48,14 @@ class BackendHealth:
     detail: str
 
 
+@dataclass
+class RouterModelState:
+    id: str
+    state: str
+    failed: bool = False
+    exit_code: int | None = None
+
+
 class ChatBackend(Protocol):
     backend_id: str
 

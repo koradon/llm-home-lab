@@ -1,5 +1,8 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal
+
+SwapMode = Literal["none", "router"]
 
 
 @dataclass
@@ -28,8 +31,13 @@ class HostCapabilities:
     # Operator-chosen display order; None sorts after positioned nodes, in registration order.
     position: int | None = None
     model_limits: dict[str, ModelLimits] | None = None
+    swap_mode: SwapMode = "none"
 
     def __post_init__(self) -> None:
+        if self.swap_mode is None:
+            self.swap_mode = "none"
+        if self.swap_mode not in ("none", "router"):
+            raise ValueError(f"unsupported swap_mode: {self.swap_mode!r}")
         if self.model_limits is not None:
             self.model_limits = {
                 model: limits if isinstance(limits, ModelLimits) else ModelLimits(**limits)
@@ -87,4 +95,5 @@ __all__ = [
     "HostInfo",
     "HostNotRegisteredError",
     "ModelLimits",
+    "SwapMode",
 ]

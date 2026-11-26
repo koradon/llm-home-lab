@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 import httpx
@@ -22,38 +23,52 @@ class LlamaCPPServerLoadProbe:
         self._timeout_s = timeout_s
         self._cache_ttl = cache_ttl
         self._client = httpx.AsyncClient(timeout=timeout_s, transport=transport)
-        self._cache: dict[str, tuple[datetime, ExternalLoadStatus]] = {}
+        self._cache: dict[tuple[str, tuple[str, ...]], tuple[datetime, ExternalLoadStatus]] = {}
 
     @property
     def cache_ttl(self) -> timedelta:
         return self._cache_ttl
 
-    async def probe(self, host_id: str, base_url: str, at: datetime) -> ExternalLoadStatus:
-        cached = self._cache.get(host_id)
+    async def probe(
+        self, host_id: str, base_url: str, at: datetime, *, model: str | None = None
+    ) -> ExternalLoadStatus:
+        key = (host_id, (model,) if model is not None else ())
+        cached = self._cache.get(key)
         if cached is not None and at - cached[0] < self._cache_ttl:
             return cached[1]
 
-        status = await self._probe_uncached(base_url, at)
-        self._cache[host_id] = (at, status)
+        status = await self._probe_uncached(base_url, at, model=model)
+        self._cache[key] = (at, status)
         return status
 
-    async def _probe_uncached(self, base_url: str, at: datetime) -> ExternalLoadStatus:
+    async def probe_models(
+        self, host_id: str, base_url: str, models: Sequence[str], at: datetime
+    ) -> ExternalLoadStatus:
+        if not models:
+            return _unavailable(at)
+        return await self.probe(host_id, base_url, at, model=models[0])
+
+    async def _probe_uncached(
+        self, base_url: str, at: datetime, *, model: str | None = None
+    ) -> ExternalLoadStatus:
+        url = f"{base_url.rstrip('/')}/slots"
+        params = {"model": model} if model is not None else None
         try:
-            response = await self._client.get(f"{base_url}/slots")
+            response = await self._client.get(url, params=params)
         except httpx.TransportError as exc:
-            logger.info("GET %s/slots failed (%s); external load unavailable", base_url, exc)
+            logger.info("GET %s failed (%s); external load unavailable", url, exc)
             return _unavailable(at)
 
         if response.status_code == 404:
             # /slots is on by default but an operator can disable it with a flag — that's a
             # missing signal, not an unhealthy node, so this degrades the same as "unavailable".
-            logger.info("GET %s/slots returned 404 (disabled); external load unavailable", base_url)
+            logger.info("GET %s returned 404 (disabled); external load unavailable", url)
             return _unavailable(at)
 
         if response.status_code // 100 != 2:
             logger.info(
-                "GET %s/slots returned %s; external load unavailable",
-                base_url,
+                "GET %s returned %s; external load unavailable",
+                url,
                 response.status_code,
             )
             return _unavailable(at)
@@ -61,9 +76,11 @@ class LlamaCPPServerLoadProbe:
         try:
             slots = response.json()
         except ValueError:
-            logger.info(
-                "GET %s/slots returned unparseable output; external load unavailable", base_url
-            )
+            logger.info("GET %s returned unparseable output; external load unavailable", url)
+            return _unavailable(at)
+
+        if not isinstance(slots, list):
+            logger.info("GET %s returned non-list payload; external load unavailable", url)
             return _unavailable(at)
 
         return _summarize(slots, at)

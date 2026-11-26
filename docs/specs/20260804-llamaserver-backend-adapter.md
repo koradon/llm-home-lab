@@ -44,16 +44,19 @@ limits, and auth, with zero changes upstream of backend selection
 - **Health check uses llama-server's native `GET /health`**, not a proxy through a chat/model
   endpoint — unlike LM Studio, which has no dedicated liveness endpoint and so is checked via
   `GET /v1/models` instead.
-- **Model listing has no on-demand-loading guard to build.** `GET /v1/models` always reports
-  llama-server's one loaded model, because a llama-server process serves exactly one model for
-  its entire lifetime — there is no LM-Studio-style JIT loading of additional models to guard
-  against.
+- **Model listing**:
+  - In single-model mode (`swap_mode: "none"`, default), `GET /v1/models` reports llama-server's one
+    loaded model — there is no on-demand-loading guard to build.
+  - In router mode (`swap_mode: "router"`), `GET /v1/models` lists every preset and cache entry
+    (including unloaded and broken models). Instead, the adapter probes `GET /models` to read the
+    router's catalog and per-model states (`loaded`, `loading`, `sleeping`, `unloaded`, `failed`).
+    `list_models()` returns only models currently servable (`loaded` or `sleeping`, excluding
+    `unloaded`, `loading`, and `failed`).
 - **No `model_aliases` / in-backend round-robin.** LM Studio can hold several loaded instances of
   one model in a single process, so `LMStudioBackend` round-robins across them internally.
-  llama-server is one-model-per-process/port, so the equivalent of "multiple instances of one
-  model" is multiple separate llama-server processes, each registered as its own node —
-  `RoutingEngine` already load-balances across separate `backend_id`s. `LlamaCPPServerBackend`
-  simply forwards `request.model` unchanged.
+  `LlamaCPPServerBackend` simply forwards `request.model` unchanged — single-model instances are
+  load-balanced across separate registered nodes, and router-mode nodes route by the requested
+  model name.
 - Classify failures into the existing `BackendError` hierarchy, identically to `LMStudioBackend`:
   - request timeout → `BackendTimeoutError`
   - connection failure (host unreachable, connection refused) → `BackendConnectionError`
@@ -75,9 +78,39 @@ implement the same `ChatBackend` port against an OpenAI-compatible chat endpoint
 **Health check**: `GET /health` returning a 2xx status is healthy; anything else (including a
 `503` while the model is still loading, or a transport error) is unhealthy.
 
-**Model listing**: `GET /v1/models` returns the single loaded model's id; a non-2xx response or
-transport error returns `None` (same "can't verify, don't block routing on it" contract as
-`LMStudioBackend.list_models()`).
+**Model listing**:
+- Single-model mode (`swap_mode: "none"`): `GET /v1/models` returns the single loaded model's id;
+  a non-2xx response or transport error returns `None` (same "can't verify, don't block routing on
+  it" contract as `LMStudioBackend.list_models()`).
+- Router mode (`swap_mode: "router"`): `GET /models` is queried instead and filtered to models in
+  `"loaded"` or `"sleeping"` state (excluding `"unloaded"`, `"loading"`, and `"failed"` entries).
+  A non-2xx response or transport error returns `None`.
+
+**Router mode (`swap_mode: "router"`)**:
+
+- Registered via `swap_mode: "router"` on `POST /v1/nodes/register` or `PATCH /v1/nodes/{host_id}`
+  (defaults to `"none"`).
+- **Per-model state and slot probing**: host probes call `GET /health` for router process liveness,
+  `GET /models` for the model catalog and states, and `GET /slots?model=<name>` for the currently
+  loaded model (falling back to one sleeping model if none are loaded; reporting `available: false`
+  without calling parameterless `GET /slots` when no model is loaded). This restores
+  `external_load.total_slots`, `external_load.busy_slots`, and `tasks/h/slot` telemetry on router
+  nodes.
+- **Per-`(node, model)` health isolation**: completion failures (`BackendResponseError`,
+  `BackendTimeoutError`, degenerate completions) and router-reported `failed: true` model entries
+  disable only the failing `(node, model)` pair, keeping the router node `online` and its other
+  models serving. `GET /v1/capacity?model=<name>` reports `0` for an unhealthy/failed
+  `(node, model)` pair until it recovers. After cooldown, exactly one half-open trial
+  completion may be admitted for an unhealthy pair; success closes it, failure (including a
+  trial `BackendConnectionError`) restarts cooldown, and capacity stays `0` until closed.
+  Router transport failures (`BackendConnectionError`) outside a claimed half-open trial and
+  `GET /health` failures remain node-level.
+- **`503 model_loading`**: when a chat completion targets a model currently in `"loading"` state on
+  every eligible router host (or on a leased router host, or if a router responds with a loading
+  `503`), the gateway returns HTTP `503` with `error.code = "model_loading"`,
+  `error.type = "backend_error"`, and a `Retry-After` header without counting a failure.
+- **Visibility**: `GET /v1/nodes` exposes `"swap_mode"` and `"models"` (list of
+  `{"id", "state", "healthy", "recent_failures"}` for router nodes, `null` for non-router nodes).
 
 **Edge cases**:
 
@@ -92,7 +125,9 @@ external-load signal LM Studio nodes get from
 [`ExternalLoadProbe`](20260720-external-node-load-visibility.md) — but over HTTP instead of a
 CLI subprocess, since llama-server exposes this natively:
 
-- Reads `GET {base_url}/slots`, a per-slot status list llama-server ships enabled by default.
+- Reads `GET {base_url}/slots` for single-model nodes (`swap_mode: "none"`), or
+  `GET {base_url}/slots?model=<name>` for the loaded model (else one sleeping model) on
+  router-mode nodes (`swap_mode: "router"`), where parameterless `GET /slots` returns HTTP `400`.
 - Each slot reports `is_processing: bool`. Status is `"busy"` if any slot is processing, else
   `"idle"`.
 - llama-server exposes no true queue-depth metric (unlike LM Studio's `queued` count from
@@ -147,6 +182,8 @@ Keep scenarios in a sibling Gherkin file:
 - ADR: [0007-llamaserver-backend-shape](../adr/0007-llamaserver-backend-shape.md) — the
   native-capabilities-over-workarounds precedent behind the health/load-visibility/aliasing
   decisions above
+- ADR: [0016-llamaserver-router-mode-awareness](../adr/0016-llamaserver-router-mode-awareness.md) —
+  router-mode awareness (`swap_mode: "router"`), per-`(node, model)` health, and `503 model_loading`
 - Acceptance: `docs/specs/features/20260804-llamaserver-backend-adapter.feature`
 
 ## Open Questions

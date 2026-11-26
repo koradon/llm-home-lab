@@ -60,6 +60,13 @@ class SlotStream(AsyncIterator[str]):
         self._chunks = chunks
         self._release = release
         self._closed = False
+        self._prefetched: str | None = None
+
+    async def prefetch(self) -> None:
+        try:
+            self._prefetched = await self.__anext__()
+        except StopAsyncIteration:
+            pass
 
     def __aiter__(self) -> "SlotStream":
         return self
@@ -67,6 +74,9 @@ class SlotStream(AsyncIterator[str]):
     async def __anext__(self) -> str:
         if self._closed:
             raise StopAsyncIteration
+        if self._prefetched is not None:
+            chunk, self._prefetched = self._prefetched, None
+            return chunk
         try:
             return await anext(self._chunks)
         except BaseException:

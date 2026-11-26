@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from llm_home_lab.registry.external_load import ExternalLoadStatus, LoadProbe
@@ -35,3 +35,22 @@ class MultiBackendLoadProbe:
             return _unavailable(at)
 
         return await probe.probe(host_id, base_url, at)
+
+    async def probe_models(
+        self, host_id: str, base_url: str, models: Sequence[str], at: datetime
+    ) -> ExternalLoadStatus:
+        try:
+            host = self._registry.get(host_id)
+        except HostNotRegisteredError:
+            return _unavailable(at)
+
+        probe = self._probes_by_backend_type.get(host.capabilities.backend_type)
+        if probe is None:
+            return _unavailable(at)
+
+        probe_models_fn = getattr(probe, "probe_models", None)
+        if probe_models_fn is None:
+            return _unavailable(at)
+
+        result: ExternalLoadStatus = await probe_models_fn(host_id, base_url, models, at)
+        return result

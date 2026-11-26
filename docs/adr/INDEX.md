@@ -17,3 +17,4 @@
 | `0013-node-test-lease.md` | Lease a node with a heartbeat and a hard ceiling | accepted |
 | [0014-request-lifetimes-and-finite-progress.md](0014-request-lifetimes-and-finite-progress.md) | Own request lifetimes and bound backend silence | accepted |
 | [0015-per-model-node-limits.md](0015-per-model-node-limits.md) | Per-model concurrency and context limits on registered nodes | accepted |
+| [0016-llamaserver-router-mode-awareness.md](0016-llamaserver-router-mode-awareness.md) | Router-mode awareness and per-(node, model) health for llama-server nodes | accepted |

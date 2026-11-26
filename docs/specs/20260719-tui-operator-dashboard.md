@@ -41,7 +41,10 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   hand-rolled already (see the monitoring spec).
 - `app.py` — a Textual `App` with a fixed-interval polling loop (default 2s, `--interval`) driving
   two panels:
-  - **Nodes** — `host_id`, `backend_type`, `status`, `last_seen`, one row per host from `list_nodes()`. A toolbar above the table (`+ New Node` / `✕ Remove Node`
+  - **Nodes** — `host_id`, `status`, `errors`, `tasks/h`, `tasks/h/slot`, `backend_type`, `last_seen`,
+    completion metrics, and `models`, one row per host from `list_nodes()`. The `models` column
+    displays color-coded router model states (`loaded`, `loading`, `sleeping`, `failed`, `unloaded`)
+    for router-mode nodes and `—` for non-router nodes. A toolbar above the table (`+ New Node` / `✕ Remove Node`
     buttons, plus `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the
     row currently selected via cursor, or deregister it after a confirm dialog. The form includes
     `model_sizes_gb` and `model_aliases`, each edited as repeating name/value input rows, not

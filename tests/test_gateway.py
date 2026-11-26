@@ -230,6 +230,42 @@ def test_streaming_request_returns_sse_chunks_ending_in_done():
     assert last_data_chunk["choices"][0]["finish_reason"] == "stop"
 
 
+def test_non_router_streaming_commits_headers_before_upstream_error():
+    class FailingStreamBackend:
+        backend_id = "failing-stream"
+
+        async def complete(self, request):
+            return BackendResponse(
+                model=request.model,
+                content="unused",
+                finish_reason="stop",
+                prompt_tokens=1,
+                completion_tokens=1,
+            )
+
+        async def stream(self, request):
+            raise BackendResponseError(503, "loading")
+            yield  # pragma: no cover — async generator shape
+
+    client = TestClient(
+        _app_for(FailingStreamBackend()),
+        headers=AUTH_HEADERS,
+        raise_server_exceptions=False,
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-backend-id"] == "failing-stream"
+
+
 class CapturingBackend(FakeBackend):
     def __init__(self):
         self.requests = []
