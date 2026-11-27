@@ -58,10 +58,10 @@ class HealthMonitor:
         state = self._model_states.get((backend_id, model))
         return state is not None and state.trial_in_flight
 
-    def claim_model_trial(self, backend_id: str, model: str, at: datetime) -> bool:
+    def claim_unhealthy_model_trial(self, backend_id: str, model: str, at: datetime) -> bool:
         state = self._model_states.get((backend_id, model))
         if state is None or state.is_healthy:
-            return True
+            return False
         if state.trial_in_flight:
             return False
         unhealthy_since = state.unhealthy_since
@@ -69,6 +69,12 @@ class HealthMonitor:
             return False
         state.trial_in_flight = True
         return True
+
+    def claim_model_trial(self, backend_id: str, model: str, at: datetime) -> bool:
+        state = self._model_states.get((backend_id, model))
+        if state is None or state.is_healthy:
+            return True
+        return self.claim_unhealthy_model_trial(backend_id, model, at)
 
     def release_model_trial(self, backend_id: str, model: str) -> None:
         state = self._model_states.get((backend_id, model))

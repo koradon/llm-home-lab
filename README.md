@@ -216,7 +216,11 @@ For router-mode nodes:
   `external_load` slot counts and `tasks/h/slot`.
 - Model failures are isolated per `(node, model)`: a broken preset takes only that model out of
   routing and reports `0` in `GET /v1/capacity?model=<broken>` until it recovers, while the node
-  stays `online` and its other models keep serving.
+  stays `online` and its other models keep serving. After the cooldown window, periodic host
+  probing automatically runs a single minimal one-token recovery trial for an unhealthy model that
+  is `loaded` and allowed on an unleased router node (never loading/evicting unloaded models), so
+  idle pairs recover without waiting for client traffic. See
+  [ADR-0017](docs/adr/0017-proactive-half-open-model-health-recovery.md).
 - `GET /v1/nodes` exposes `swap_mode` and `models` (per-model `id`, `state`, `healthy`,
   `recent_failures`), and the TUI displays router model states in a `models` column.
 - Requests arriving for a model that is currently `loading` return `503 model_loading` with a
