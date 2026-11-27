@@ -524,7 +524,7 @@ async def test_throughput_columns_show_tasks_per_hour_and_per_slot():
         nodes={
             "nodes": [
                 {
-                    **_node("host-a", in_flight=0),
+                    **_node("host-a", in_flight=0, max_concurrent_requests=8),
                     "throughput": {
                         "window_s": 3600.0,
                         "tasks_per_hour": 24.0,
@@ -551,7 +551,7 @@ async def test_throughput_per_slot_shows_na_when_the_slot_count_is_unknown():
         nodes={
             "nodes": [
                 {
-                    **_node("host-a", in_flight=0),
+                    **_node("host-a", in_flight=0, max_concurrent_requests=0),
                     "throughput": {
                         "window_s": 3600.0,
                         "tasks_per_hour": 0.0,
@@ -645,6 +645,7 @@ async def test_saving_the_edit_modal_sends_the_updated_fields_and_refreshes():
                     "memory_budget_gb": None,
                     "model_sizes_gb": None,
                     "model_aliases": None,
+                    "model_limits": None,
                 },
             )
         ]
@@ -677,6 +678,7 @@ async def test_editing_a_node_with_an_unrecognized_backend_type_preserves_it_on_
                     "memory_budget_gb": None,
                     "model_sizes_gb": None,
                     "model_aliases": None,
+                    "model_limits": None,
                 },
             )
         ]
@@ -987,6 +989,7 @@ async def test_registering_a_new_node_sends_the_collected_fields():
                 "memory_budget_gb": None,
                 "model_sizes_gb": None,
                 "model_aliases": None,
+                "model_limits": None,
             }
         ]
         assert not isinstance(app.screen, NodeFormScreen)
@@ -1492,20 +1495,195 @@ async def test_dashboard_displays_effective_max_concurrent_requests_when_present
     assert sparkline_data == [0.25]
 
 
-async def test_dashboard_models_column_shows_router_model_states_and_dash_for_non_router():
-    router_node = {
-        **_node("mini-1", in_flight=1, max_concurrent_requests=4),
+async def test_nodes_table_replaces_models_column_with_child_rows_and_sums_additive_metrics(
+    monkeypatch,
+):
+    _enable_screenshot_colour(monkeypatch)
+    clock_values = iter([T0, T0 + timedelta(seconds=60)])
+    router_two_loaded = {
+        **_node("mini-1", in_flight=4, max_concurrent_requests=8),
+        "backend_type": "llamaserver",
+        "swap_mode": "router",
+        "throughput": {
+            "window_s": 3600.0,
+            "tasks_per_hour": 180.0,
+            "tasks_per_hour_per_slot": 18.0,
+        },
+        "models": [
+            {
+                "id": "gemma-e4b",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 3,
+                "max_concurrent_requests": 8,
+                "throughput": {"tasks_per_hour": 150.0, "tasks_per_hour_per_slot": 18.75},
+            },
+            {
+                "id": "eurollm-22b",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 1,
+                "max_concurrent_requests": 2,
+                "throughput": {"tasks_per_hour": 30.0, "tasks_per_hour_per_slot": 15.0},
+            },
+            {
+                "id": "unused-unloaded",
+                "state": "unloaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 0,
+                "max_concurrent_requests": 4,
+            },
+        ],
+    }
+    single_loaded_router = {
+        **_node("mini-single", in_flight=2, max_concurrent_requests=8),
         "backend_type": "llamaserver",
         "swap_mode": "router",
         "models": [
-            {"id": "tgemma", "state": "unloaded", "healthy": True, "recent_failures": 0},
-            {"id": "broken", "state": "failed", "healthy": False, "recent_failures": 3},
-            {"id": "hy-mt2", "state": "loaded", "healthy": True, "recent_failures": 0},
-            {"id": "eurollm", "state": "loading", "healthy": True, "recent_failures": 0},
+            {
+                "id": "gemma-e4b",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 2,
+                "max_concurrent_requests": 8,
+            }
         ],
     }
-    static_node = _node("cachy-1", in_flight=0, max_concurrent_requests=8)
-    client = _FakeClient(nodes={"nodes": [router_node, static_node]})
+    plain_node = _node("cachy-1", in_flight=8, max_concurrent_requests=8)
+    metrics_poll1 = (
+        'llm_home_lab_host_completions_total{host_id="mini-1"} 100\n'
+        'llm_home_lab_host_model_completions_total{host_id="mini-1",model="gemma-e4b"} 85\n'
+        'llm_home_lab_host_model_completions_total{host_id="mini-1",model="eurollm-22b"} 15\n'
+    )
+    metrics_poll2 = (
+        'llm_home_lab_host_completions_total{host_id="mini-1"} 140\n'
+        'llm_home_lab_host_latency_ms_avg{host_id="mini-1"} 620.0\n'
+        'llm_home_lab_host_prompt_tokens_avg{host_id="mini-1"} 310.0\n'
+        'llm_home_lab_host_prompt_tokens_min{host_id="mini-1"} 80\n'
+        'llm_home_lab_host_prompt_tokens_max{host_id="mini-1"} 920\n'
+        'llm_home_lab_host_completion_tokens_avg{host_id="mini-1"} 64.0\n'
+        'llm_home_lab_host_completion_tokens_min{host_id="mini-1"} 12\n'
+        'llm_home_lab_host_completion_tokens_max{host_id="mini-1"} 210\n'
+        'llm_home_lab_host_model_completions_total{host_id="mini-1",model="gemma-e4b"} 120\n'
+        'llm_home_lab_host_model_latency_ms_avg{host_id="mini-1",model="gemma-e4b"} 480.0\n'
+        'llm_home_lab_host_model_prompt_tokens_avg{host_id="mini-1",model="gemma-e4b"} 260.0\n'
+        'llm_home_lab_host_model_prompt_tokens_min{host_id="mini-1",model="gemma-e4b"} 80\n'
+        'llm_home_lab_host_model_prompt_tokens_max{host_id="mini-1",model="gemma-e4b"} 600\n'
+        'llm_home_lab_host_model_completion_tokens_avg{host_id="mini-1",model="gemma-e4b"} 52.0\n'
+        'llm_home_lab_host_model_completion_tokens_min{host_id="mini-1",model="gemma-e4b"} 12\n'
+        'llm_home_lab_host_model_completion_tokens_max{host_id="mini-1",model="gemma-e4b"} 140\n'
+        'llm_home_lab_host_model_completions_total{host_id="mini-1",model="eurollm-22b"} 20\n'
+        'llm_home_lab_host_model_latency_ms_avg{host_id="mini-1",model="eurollm-22b"} 1460.0\n'
+        'llm_home_lab_host_model_prompt_tokens_avg{host_id="mini-1",model="eurollm-22b"} 610.0\n'
+        'llm_home_lab_host_model_prompt_tokens_min{host_id="mini-1",model="eurollm-22b"} 200\n'
+        'llm_home_lab_host_model_prompt_tokens_max{host_id="mini-1",model="eurollm-22b"} 920\n'
+        "llm_home_lab_host_model_completion_tokens_avg"
+        '{host_id="mini-1",model="eurollm-22b"} 136.0\n'
+        'llm_home_lab_host_model_completion_tokens_min{host_id="mini-1",model="eurollm-22b"} 40\n'
+        'llm_home_lab_host_model_completion_tokens_max{host_id="mini-1",model="eurollm-22b"} 210\n'
+    )
+    client = _FakeClient(
+        nodes={"nodes": [router_two_loaded, single_loaded_router, plain_node]},
+        metrics_text=metrics_poll1,
+    )
+    app = DashboardApp(client=client, interval_s=100.0, clock=lambda: next(clock_values))
+
+    async with app.run_test(size=(160, 40)) as pilot:
+        await app.poll()
+        client._metrics_text = metrics_poll2
+        await app.poll()
+        await pilot.pause()
+
+        table = app.query_one("#nodes-table", DataTable)
+        labels = [str(column.label) for column in table.ordered_columns]
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        svg = app.export_screenshot()
+        assert str(app.query_one("#mlabel-mini-single_gemma-e4b", Label).render()) == (
+            "  └─ gemma-e4b · 2/8 · 25%"
+        )
+
+    assert "models" not in labels
+    assert len(labels) == 12
+    assert len(rows) == 6
+
+    summary, child_euro, child_gemma, single_row, single_child, plain_row = rows
+    assert summary[0] == "mini-1"
+    assert summary[1].plain == "online 4/10"
+    assert summary[5] == "llamaserver"
+    assert summary[4] == "18.0"
+    assert child_euro[0] == ""
+    assert child_gemma[0] == ""
+    assert child_euro[5] == ""
+    assert child_euro[6] == ""
+    assert child_euro[1].plain == "├─ eurollm-22b 1/2"
+    assert child_gemma[1].plain == "└─ gemma-e4b 3/8"
+    assert _span_styles(child_euro[1])["eurollm-22b"] == "bold green"
+    assert _span_styles(child_euro[1])["1/2"] == "bold yellow"
+    assert _span_styles(child_gemma[1])["gemma-e4b"] == "bold green"
+    assert _span_styles(child_gemma[1])["3/8"] == "bold yellow"
+
+    # Additive metrics on Row 1 equal the sum of child model rows.
+    assert float(summary[3]) == float(child_euro[3]) + float(child_gemma[3])
+    assert int(summary[7]) == int(child_euro[7]) + int(child_gemma[7]) == 140
+    assert float(summary[8].removesuffix("/min")) == (
+        float(child_euro[8].removesuffix("/min")) + float(child_gemma[8].removesuffix("/min"))
+    )
+    assert summary[9] == "620"
+    assert child_euro[9] == "1460"
+    assert child_gemma[9] == "480"
+
+    assert single_row[0] == "mini-single"
+    assert single_child[1].plain == "└─ gemma-e4b 2/8"
+    assert plain_row[0] == "cachy-1"
+    assert "eurollm-22b" in svg.replace("&#160;", " ")
+    assert "gemma-e4b" in svg.replace("&#160;", " ")
+
+
+async def test_failed_model_stays_isolated_from_node_status_capacity_and_shows_node_errors():
+    router_node = {
+        **_node("mini-2", in_flight=3, max_concurrent_requests=8, recent_failures=2),
+        "backend_type": "llamaserver",
+        "swap_mode": "router",
+        "models": [
+            {
+                "id": "gemma-e4b",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 3,
+                "max_concurrent_requests": 8,
+            },
+            {
+                "id": "hy-mt2",
+                "state": "loading",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 0,
+                "max_concurrent_requests": 6,
+            },
+            {
+                "id": "qwen-14b",
+                "state": "sleeping",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 0,
+                "max_concurrent_requests": 1,
+            },
+            {
+                "id": "broken-70b",
+                "state": "failed",
+                "healthy": False,
+                "recent_failures": 3,
+                "in_flight": 0,
+                "max_concurrent_requests": 2,
+            },
+        ],
+    }
+    client = _FakeClient(nodes={"nodes": [router_node]})
     app = DashboardApp(client=client, interval_s=100.0)
 
     async with app.run_test(size=(160, 40)) as pilot:
@@ -1513,17 +1691,544 @@ async def test_dashboard_models_column_shows_router_model_states_and_dash_for_no
         await pilot.pause()
 
         table = app.query_one("#nodes-table", DataTable)
-        labels = [str(column.label) for column in table.ordered_columns]
-        router_models_cell = table.get_row_at(0)[12]
-        static_models_cell = table.get_row_at(1)[12]
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
 
-    assert labels[-1] == "models"
-    assert router_models_cell.plain == (
-        "hy-mt2 (loaded), eurollm (loading), broken (failed), tgemma (unloaded)"
+    assert len(rows) == 5
+    summary, row_loaded, row_loading, row_sleeping, row_failed = rows
+    # Node remains online; capacity excludes failed model (8, not 10); unattributed errors explicit.
+    assert summary[1].plain == "online 3/8"
+    assert _span_styles(summary[1])["online"] == "bold green"
+    assert summary[2].plain == "5 (2 node)"
+    assert _span_styles(summary[2])["5"] == "bold red"
+
+    assert row_loaded[1].plain == "├─ gemma-e4b 3/8"
+    assert _span_styles(row_loading[1])["hy-mt2 (loading)"] == "bold yellow"
+    assert _span_styles(row_sleeping[1])["qwen-14b (sleeping)"] == "cyan"
+    assert row_failed[1].plain == "└─ broken-70b (failed) 0/2"
+    assert _span_styles(row_failed[1])["broken-70b (failed)"] == "bold red"
+    assert row_failed[2].plain == "3"
+
+
+async def test_non_router_node_with_multiple_model_limits_shows_child_rows_and_single_stays_one():
+    multi_limits = {
+        **_node("mac-1", in_flight=1, max_concurrent_requests=8),
+        "in_flight_by_model": {"gemma-e4b": 1},
+        "model_limits": {
+            "gemma-e4b": {"max_concurrent_requests": 8},
+            "eurollm-22b": {"context_window": 4096},
+        },
+    }
+    single_limit = {
+        **_node("mac-2", in_flight=0, max_concurrent_requests=8),
+        "model_limits": {"eurollm-22b": {"max_concurrent_requests": 4}},
+    }
+    client = _FakeClient(nodes={"nodes": [multi_limits, single_limit]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(160, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        table = app.query_one("#nodes-table", DataTable)
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        assert str(app.query_one("#mlabel-mac-1_eurollm-22b", Label).render()) == (
+            "  └─ eurollm-22b · 0/8 · 0%"
+        )
+
+    assert len(rows) == 4
+    assert rows[0][0] == "mac-1"
+    assert rows[1][0] == ""
+    assert rows[1][1].plain == "├─ gemma-e4b 1/8"
+    assert rows[2][0] == ""
+    assert rows[2][1].plain == "└─ eurollm-22b 0/8"
+    assert rows[3][0] == "mac-2"
+
+
+async def test_selecting_a_child_model_row_targets_its_parent_node_for_edit_and_move():
+    router_node = {
+        **_full_node("mini-1", in_flight=4, max_concurrent_requests=8),
+        "backend_type": "llamaserver",
+        "swap_mode": "router",
+        "models": [
+            {
+                "id": "gemma-e4b",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 3,
+                "max_concurrent_requests": 8,
+            },
+            {
+                "id": "eurollm-22b",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 1,
+                "max_concurrent_requests": 2,
+            },
+        ],
+    }
+    plain_node = _full_node("cachy-1", in_flight=0, max_concurrent_requests=8)
+    client = _OrderingFakeClient(nodes={"nodes": [router_node, plain_node]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        table = app.query_one("#nodes-table", DataTable)
+        # Cursor onto child row 1 (eurollm-22b under mini-1) and press 'e'.
+        table.move_cursor(row=1)
+        await pilot.press("e")
+        await pilot.pause()
+        assert isinstance(app.screen, NodeFormScreen)
+        assert app.screen._host_id == "mini-1"
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Still on child row 1, press 'd' to move mini-1 down below cachy-1.
+        table.move_cursor(row=1)
+        await pilot.press("d")
+        await pilot.pause()
+
+        host_ids = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+    assert host_ids == ["cachy-1", "mini-1", "", ""]
+
+
+async def test_node_load_shows_compact_two_row_per_model_subcharts_and_m_toggles(monkeypatch):
+    _enable_screenshot_colour(monkeypatch)
+    router_node = {
+        **_node("mini-1", in_flight=5, max_concurrent_requests=8),
+        "backend_type": "llamaserver",
+        "swap_mode": "router",
+        "models": [
+            {
+                "id": "gemma-e4b",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 3,
+                "max_concurrent_requests": 8,
+            },
+            {
+                "id": "eurollm-22b",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 2,
+                "max_concurrent_requests": 2,
+            },
+        ],
+    }
+    plain_node = _node("cachy-1", in_flight=8, max_concurrent_requests=8)
+    client = _FakeClient(nodes={"nodes": [router_node, plain_node]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        await app.poll()
+        await pilot.pause()
+
+        subcharts = list(app.query(".model-load-chart"))
+        assert len(subcharts) == 2
+        assert all(chart.size.height == 2 for chart in subcharts)
+        assert str(app.query_one("#label-mini-1", Label).render()) == "mini-1 · 5/10 · 50%"
+        sub_labels = [str(lbl.render()) for lbl in app.query(".model-load-label")]
+        assert sub_labels == [
+            "  ├─ eurollm-22b · 2/2 · 100%",
+            "  └─ gemma-e4b · 3/8 · 38%",
+        ]
+        svg = app.export_screenshot()
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert len(app.query(".model-load-chart")) == 0
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert len(app.query(".model-load-chart")) == 2
+
+    assert GREEN.color.get_truecolor().hex in svg
+    assert ORANGE.color.get_truecolor().hex in svg
+
+
+async def test_editing_prefills_model_limits_for_allowed_models_and_existing_limits():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "mini-1",
+                    max_concurrent_requests=8,
+                    allowed_models=["gemma-e4b", "eurollm-22b"],
+                    model_limits={
+                        "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384},
+                        "hy-mt2": {"max_concurrent_requests": 6},
+                    },
+                )
+            ]
+        }
     )
-    styles = _span_styles(router_models_cell)
-    assert styles["hy-mt2 (loaded)"] == "bold green"
-    assert styles["eurollm (loading)"] == "bold yellow"
-    assert styles["broken (failed)"] == "bold red"
-    assert styles["tgemma (unloaded)"] == "dim"
-    assert static_models_cell.plain == "—"
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        assert [w.value for w in limits.query(".limit-model")] == [
+            "gemma-e4b",
+            "eurollm-22b",
+            "hy-mt2",
+        ]
+        assert [w.value for w in limits.query(".limit-max-concurrent")] == ["", "4", "6"]
+        assert [w.value for w in limits.query(".limit-context-window")] == ["", "16384", ""]
+
+
+async def test_editing_with_null_model_limits_saves_only_non_blank_overrides():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "mini-1",
+                    max_concurrent_requests=8,
+                    allowed_models=["gemma-e4b", "eurollm-22b"],
+                    model_limits=None,
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        slots_inputs = list(limits.query(".limit-max-concurrent"))
+        ctx_inputs = list(limits.query(".limit-context-window"))
+        assert [w.value for w in limits.query(".limit-model")] == ["gemma-e4b", "eurollm-22b"]
+        slots_inputs[1].value = "4"
+        ctx_inputs[1].value = "16384"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        _, fields = client.update_node_calls[0]
+        assert fields["model_limits"] == {
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384}
+        }
+
+
+async def test_clearing_all_model_limits_saves_null():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "mini-1",
+                    allowed_models=["eurollm-22b"],
+                    model_limits={"eurollm-22b": {"max_concurrent_requests": 4}},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        list(limits.query(".limit-max-concurrent"))[0].value = ""
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls[0][1]["model_limits"] is None
+
+
+async def test_adding_and_removing_model_limit_rows_updates_saved_payload():
+    client = _FakeClient(nodes={"nodes": [_full_node("mini-1", model_limits=None)]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        app.screen.query_one("#add-limit", Button).press()
+        app.screen.query_one("#add-limit", Button).press()
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        models = list(limits.query(".limit-model"))
+        slots = list(limits.query(".limit-max-concurrent"))
+        ctxs = list(limits.query(".limit-context-window"))
+        models[0].value = "drop-me"
+        slots[0].value = "2"
+        models[1].value = "eurollm-22b"
+        slots[1].value = "4"
+        ctxs[1].value = "16384"
+
+        list(limits.query(".mapping-remove"))[0].press()
+        await pilot.pause()
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        assert client.update_node_calls[0][1]["model_limits"] == {
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384}
+        }
+
+
+async def test_invalid_model_limits_keep_modal_open_with_clear_error(monkeypatch):
+    _enable_screenshot_colour(monkeypatch)
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "mini-1",
+                    allowed_models=["eurollm-22b"],
+                    model_limits={"eurollm-22b": {"max_concurrent_requests": 4}},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        limits = app.screen.query_one("#model-limits-rows")
+        slots_input = list(limits.query(".limit-max-concurrent"))[0]
+        ctx_input = list(limits.query(".limit-context-window"))[0]
+        save_button = app.screen.query_one("#save", Button)
+
+        for bad_slots in ("0", "-3", "four"):
+            slots_input.value = bad_slots
+            save_button.press()
+            await pilot.pause()
+            assert isinstance(app.screen, NodeFormScreen)
+            assert client.update_node_calls == []
+            assert "positive whole number" in str(
+                app.screen.query_one("#edit-error", Static).render()
+            )
+
+        slots_input.value = "4"
+        for bad_ctx in ("0", "-1024", "16k"):
+            ctx_input.value = bad_ctx
+            save_button.press()
+            await pilot.pause()
+            assert isinstance(app.screen, NodeFormScreen)
+            assert client.update_node_calls == []
+            assert "context_window" in str(app.screen.query_one("#edit-error", Static).render())
+
+        ctx_input.value = ""
+        app.screen.query_one("#add-limit", Button).press()
+        await pilot.pause()
+        list(limits.query(".limit-model"))[1].value = "eurollm-22b"
+        list(limits.query(".limit-max-concurrent"))[1].value = "2"
+        save_button.press()
+        await pilot.pause()
+        assert isinstance(app.screen, NodeFormScreen)
+        assert "duplicate" in str(app.screen.query_one("#edit-error", Static).render())
+
+        list(limits.query(".limit-model"))[1].value = ""
+        save_button.press()
+        await pilot.pause()
+        assert isinstance(app.screen, NodeFormScreen)
+        assert "missing a model name" in str(app.screen.query_one("#edit-error", Static).render())
+
+        svg = app.export_screenshot()
+        svg_text = svg.replace("&#160;", " ")
+        assert "eurollm-22b" in svg_text
+        assert "missing a model name" in svg_text
+
+
+async def test_node_edit_dialog_fits_without_scrolling_at_typical_terminal_sizes():
+    node = _full_node(
+        "mini-1",
+        backend_type="llamaserver",
+        max_concurrent_requests=8,
+        allowed_models=["gemma-e4b", "eurollm-22b", "hy-mt2"],
+        model_limits={
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384},
+            "hy-mt2": {"max_concurrent_requests": 6},
+        },
+    )
+
+    for size in ((100, 24), (120, 30), (120, 40)):
+        client = _FakeClient(nodes={"nodes": [node]})
+        app = DashboardApp(client=client, interval_s=100.0)
+        async with app.run_test(size=size) as pilot:
+            await app.poll()
+            await pilot.press("e")
+            await pilot.pause()
+
+            form_body = app.screen.query_one("#form-body")
+            save_button = app.screen.query_one("#save", Button)
+            assert form_body.max_scroll_y == 0, f"unexpected scroll at {size}"
+            assert save_button.region.bottom <= size[1], f"save button clipped at {size}"
+
+
+async def test_node_edit_dialog_falls_back_to_scrolling_when_terminal_is_too_small():
+    node = _full_node(
+        "mini-1",
+        backend_type="llamaserver",
+        max_concurrent_requests=8,
+        allowed_models=["gemma-e4b", "eurollm-22b", "hy-mt2"],
+        model_limits={
+            "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384},
+            "hy-mt2": {"max_concurrent_requests": 6},
+        },
+    )
+    client = _FakeClient(nodes={"nodes": [node]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(100, 14)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        form_body = app.screen.query_one("#form-body")
+        save_button = app.screen.query_one("#save", Button)
+        assert form_body.max_scroll_y > 0
+        assert save_button.region.bottom <= 14
+        await pilot.click("#save")
+        await pilot.pause()
+
+    assert len(client.update_node_calls) == 1
+
+
+async def test_router_capacity_counts_only_healthy_loaded_models():
+    loading = {
+        **_node("loading", in_flight=1, max_concurrent_requests=8),
+        "models": [
+            {"id": "ready", "state": "loaded", "max_concurrent_requests": 2},
+            {"id": "pending", "state": "loading", "max_concurrent_requests": 4},
+        ],
+    }
+    failed = {
+        **_node("failed", in_flight=0, max_concurrent_requests=8),
+        "models": [{"id": "broken", "state": "failed", "healthy": False}],
+    }
+    app = DashboardApp(client=_FakeClient(nodes={"nodes": [loading, failed]}), interval_s=100.0)
+
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        assert table.get_row_at(0)[1].plain == "online 1/2"
+        assert table.get_row_at(3)[1].plain == "online 0/0"
+        assert str(app.query_one("#label-loading", Label).render()) == "loading · 1/2 · 50%"
+        assert str(app.query_one("#label-failed", Label).render()) == "failed · 0/0 · n/a"
+        assert list(app.query_one("#load-loading", Sparkline).data) == [0.5]
+        assert list(app.query_one("#load-failed", Sparkline).data) == [0.0]
+
+
+async def test_router_model_charts_follow_activity_and_remove_idle_models():
+    node = {
+        **_node("router"),
+        "models": [
+            {"id": "ready", "state": "loaded"},
+            {"id": "pending", "state": "loading"},
+            {"id": "sleeping", "state": "sleeping"},
+            {"id": "broken", "state": "failed", "healthy": False, "in_flight": 1},
+            {
+                "id": "traffic",
+                "state": "failed",
+                "healthy": False,
+                "throughput": {"tasks_per_hour": 2},
+            },
+            {"id": "idle-failed", "state": "failed", "healthy": False},
+        ],
+    }
+    client = _FakeClient(nodes={"nodes": [node]})
+    app = DashboardApp(client=client, interval_s=100.0)
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        assert {
+            str(label.render()).split(" · ")[0].strip(" ├└─")
+            for label in app.query(".model-load-label")
+        } == {"ready", "broken", "traffic"}
+        node["models"][3]["in_flight"] = 0
+        node["models"][4]["throughput"]["tasks_per_hour"] = 0
+        node["models"][1]["in_flight"] = 1
+        await app.poll()
+        assert {
+            str(label.render()).split(" · ")[0].strip(" ├└─")
+            for label in app.query(".model-load-label")
+        } == {"ready", "pending"}
+
+
+async def test_empty_router_state_capacity_and_unavailable_fallback():
+    empty = {
+        **_node("empty", max_concurrent_requests=8),
+        "models": [],
+        "throughput": {"tasks_per_hour": 10},
+    }
+    unavailable = {
+        **_node("unavailable", max_concurrent_requests=8),
+        "models": None,
+        "throughput": {"tasks_per_hour": 16},
+    }
+    app = DashboardApp(client=_FakeClient(nodes={"nodes": [empty, unavailable]}), interval_s=100.0)
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        assert table.get_row_at(0)[1].plain == "online 0/0"
+        assert table.get_row_at(0)[4] == "n/a"
+        assert table.get_row_at(1)[1].plain == "online 0/8"
+        assert table.get_row_at(1)[4] == "2.0"
+        assert str(app.query_one("#label-empty", Label).render()) == "empty · 0/0 · n/a"
+
+
+async def test_selected_model_survives_refresh_and_falls_back_when_removed():
+    node = {
+        **_node("router"),
+        "models": [{"id": "a", "state": "loaded"}, {"id": "b", "state": "loaded"}],
+    }
+    app = DashboardApp(client=_FakeClient(nodes={"nodes": [node]}), interval_s=100.0)
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        table.move_cursor(row=2)
+        node["models"][1]["state"] = "loading"
+        await app.poll()
+        assert table.get_row_at(table.cursor_row)[1].plain.startswith("└─ b")
+        node["models"].pop()
+        await app.poll()
+        assert table.cursor_row == 0
+
+
+async def test_non_router_breakdown_includes_all_observed_models_and_charts():
+    node = {
+        **_node("host", in_flight=3, max_concurrent_requests=8),
+        "model_limits": {"a": {"max_concurrent_requests": 2}, "b": {"max_concurrent_requests": 3}},
+        "in_flight_by_model": {"a": 1, "b": 1, "c": 1},
+        "model_throughput": {"c": {"tasks_per_hour": 1}},
+    }
+    metrics = (
+        'llm_home_lab_host_completions_total{host_id="host"} 6\n'
+        'llm_home_lab_host_model_completions_total{host_id="host",model="a"} 1\n'
+        'llm_home_lab_host_model_completions_total{host_id="host",model="b"} 2\n'
+        'llm_home_lab_host_model_completions_total{host_id="host",model="c"} 3\n'
+    )
+    app = DashboardApp(
+        client=_FakeClient(nodes={"nodes": [node]}, metrics_text=metrics), interval_s=100.0
+    )
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        assert len(rows) == 4
+        assert rows[3][1].plain == "└─ c 1/8"
+        assert sum(int(row[7]) for row in rows[1:]) == int(rows[0][7]) == 6
+        assert str(app.query_one("#mlabel-host_c", Label).render()) == "  └─ c · 1/8 · 12%"
+        node["in_flight_by_model"].pop("c")
+        node["model_throughput"].pop("c")
+        await app.poll()
+        assert table.row_count == 4
+        assert str(app.query_one("#mlabel-host_c", Label).render()) == "  └─ c · 0/8 · 0%"

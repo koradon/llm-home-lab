@@ -186,7 +186,9 @@ set and fall back to the node-level `max_concurrent_requests` / `context_window`
 single-model node (`allowed_models` of length 1), flipping `allowed_models` via
 `PATCH /v1/nodes/{host_id}` changes the served model and its effective limits together without a
 second PATCH. `GET /v1/nodes` exposes `model_limits`, `effective_max_concurrent_requests`, and
-`effective_context_window`, and the TUI displays the effective concurrency limit. See
+`effective_context_window`. The TUI shows the effective concurrency limit, badges per-model slot
+overrides in the `models` column, and lets you view and edit `model_limits` in the Nodes form
+(see [Terminal dashboard](#terminal-dashboard-tui)). See
 [ADR-0015](docs/adr/0015-per-model-node-limits.md).
 
 **`llama-server` router mode (`swap_mode: "router"`)**: when a `llamaserver` host runs in
@@ -445,8 +447,12 @@ comparable to `docker stats`. It's a separate client that doesn't need to run on
 as the orchestrator. The Nodes panel is a full registration UI, not just a viewer: press `n` or
 click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
 place, or press `x` to deregister it (after a confirmation dialog). The form includes
-`model_aliases`/`model_sizes_gb` as repeatable model-name/value rows. For sorting and changing
-the saved node order, see the [node order controls](docs/specs/20260719-tui-operator-dashboard.md#behavior).
+`model_limits` (model / max slots / context window), `model_sizes_gb`, and `model_aliases` as
+repeatable rows. Multi-model nodes expand into a summary row plus indented per-model child rows
+starting at the `status` column (showing live per-model `in_flight/slots`, state colours, errors,
+throughput, and completion metrics, with compact per-model sub-charts under **Node Load** toggled
+via `m`). For sorting and changing the saved node order, see the
+[node order controls](docs/specs/20260719-tui-operator-dashboard.md#behavior).
 A node reserved for a real-LLM check shows `reserved` (or `expiring`) with the holder and the
 hard ceiling, in a colour that is not the online or offline colour. A reserved node that is
 also offline keeps both colours. See

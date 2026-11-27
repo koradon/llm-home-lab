@@ -418,9 +418,24 @@ def test_router_probe_restores_slot_telemetry_and_tasks_per_hour_per_slot():
         }
         assert node["throughput"]["tasks_per_hour"] == 12.0
         assert node["throughput"]["tasks_per_hour_per_slot"] == 3.0
-        assert node["models"] == [
-            {"id": "hy-mt2", "state": "loaded", "healthy": True, "recent_failures": 0},
-            {"id": "tgemma", "state": "unloaded", "healthy": True, "recent_failures": 0},
+        assert [
+            {k: entry[k] for k in ("id", "state", "healthy", "recent_failures", "in_flight")}
+            for entry in node["models"]
+        ] == [
+            {
+                "id": "hy-mt2",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 0,
+            },
+            {
+                "id": "tgemma",
+                "state": "unloaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 0,
+            },
         ]
         assert ("GET", "/slots") not in router.requests
         assert ("GET", "/slots?model=hy-mt2") in router.requests
@@ -959,7 +974,7 @@ def test_patching_swap_mode_switches_node_between_router_and_none():
 
     assert to_router.status_code == 200
     assert client.get("/v1/nodes").json()["nodes"][0]["swap_mode"] == "router"
-    assert client.get("/v1/nodes").json()["nodes"][0]["models"] == []
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] is None
 
     to_none = client.patch("/v1/nodes/mini-1", json={"swap_mode": "none"})
 
@@ -2154,6 +2169,7 @@ def test_proactive_probe_releases_slot_for_registration_acquired():
     assert client.get("/health/ready").status_code == 200
     assert registry.get("mini-1").registration_id is not original
     assert registry.in_flight("mini-1") == 0
+    assert registry.get("mini-1").in_flight_by_model == {}
     assert health_monitor.has_model_trial("mini-1", "gemma") is False
     assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is True
 
@@ -2231,6 +2247,7 @@ def test_proactive_probe_soft_reregister_on_acquire_releases_without_probing():
 def test_proactive_probe_soft_reregister_mid_complete_does_not_settle():
     clock = _FakeClock()
     registry = HostRegistry(new_registry_db_path())
+    observed_occupancy = []
 
     class _SoftReregisterOnComplete:
         backend_id = "mini-1"
@@ -2248,6 +2265,7 @@ def test_proactive_probe_soft_reregister_mid_complete_does_not_settle():
         async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
             self.calls += 1
             host = registry.get("mini-1")
+            observed_occupancy.append((host.in_flight, dict(host.in_flight_by_model)))
             registry.register(
                 "mini-1",
                 replace(host.capabilities, base_url="http://mini-1.local:9090"),
@@ -2297,11 +2315,13 @@ def test_proactive_probe_soft_reregister_mid_complete_does_not_settle():
 
     assert client.get("/health/ready").status_code == 200
     assert backend.calls == 1
+    assert observed_occupancy == [(1, {"gemma": 1})]
     live = registry.get("mini-1")
     assert live is not original_host
     assert live.registration_id is original_host.registration_id
     assert live.capabilities.base_url == "http://mini-1.local:9090"
     assert registry.in_flight("mini-1") == 0
+    assert live.in_flight_by_model == {}
     assert health_monitor.has_model_trial("mini-1", "gemma") is False
     assert health_monitor.is_model_healthy("mini-1", "gemma", clock()) is False
     assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is True
@@ -2390,3 +2410,56 @@ def test_proactive_probe_lease_during_complete_does_not_settle():
     assert health_monitor.has_model_trial("mini-1", "gemma") is False
     assert health_monitor.is_model_healthy("mini-1", "gemma", clock()) is False
     assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is True
+
+
+def test_router_node_exposes_unavailable_and_empty_model_listings():
+    class EmptyRouterBackend:
+        backend_id = "empty-router"
+        health_timeout = 5.0
+
+        async def check_health(self) -> BackendHealth:
+            return BackendHealth(healthy=True, detail="ok")
+
+        states = []
+
+        async def list_model_states(self, *, raise_on_timeout: bool = False):
+            return self.states
+
+    backend = EmptyRouterBackend()
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    app = create_app(
+        registry=HostRegistry(new_registry_db_path()),
+        router=RoutingEngine(policy),
+        health_monitor=HealthMonitor(),
+        scheduling_queue=SchedulingQueue(),
+        backend_factories={"fake": lambda caps: backend},
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
+        key_store=_permissive_key_store(),
+        external_load_probe=inert_external_load_probe(),
+    )
+    client = TestClient(app, headers=AUTH_HEADERS)
+    client.post(
+        "/v1/nodes/register",
+        json={
+            "host_id": "empty-router",
+            "backend_type": "fake",
+            "context_window": 8192,
+            "base_url": "http://empty.local:8081",
+            "max_concurrent_requests": 8,
+            "swap_mode": "router",
+        },
+    )
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] is None
+    client.get("/health/ready")
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] == []
+
+    backend.states = [RouterModelState(id="ready", state="loaded")]
+    client.get("/health/ready")
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"][0]["id"] == "ready"
+    backend.states = None
+    client.get("/health/ready")
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] is None
+    backend.states = []
+    client.get("/health/ready")
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] == []

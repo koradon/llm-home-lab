@@ -19,3 +19,4 @@
 | [0015-per-model-node-limits.md](0015-per-model-node-limits.md) | Per-model concurrency and context limits on registered nodes | accepted |
 | [0016-llamaserver-router-mode-awareness.md](0016-llamaserver-router-mode-awareness.md) | Router-mode awareness and per-(node, model) health for llama-server nodes | accepted |
 | [0017-proactive-half-open-model-health-recovery.md](0017-proactive-half-open-model-health-recovery.md) | Proactive half-open per-(node, model) health recovery without traffic | accepted |
+| [0018-per-model-observability-and-tui-breakdown.md](0018-per-model-observability-and-tui-breakdown.md) | Per-model observability and TUI breakdown under node status | accepted |
