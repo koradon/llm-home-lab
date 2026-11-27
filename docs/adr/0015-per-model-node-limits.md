@@ -41,9 +41,7 @@ Resolution rules:
    - Unscoped `GET /v1/capacity` sums configured node-level `max_concurrent_requests` over online hosts.
    - `HostRegistryStore` defaults missing `model_limits` in legacy SQLite JSON rows to `None`.
 
-#The TUI node form preserves this routing policy separately from per-model limits: its restriction
-checkbox controls whether checked model rows form an allowlist, and a restricted form requires at
-least one checked model. Limits and aliases remain editable when routing is unrestricted.
+For the node form's routing controls, see the [TUI operator dashboard spec](../specs/20260719-tui-operator-dashboard.md).
 
 ## Consequences
 
