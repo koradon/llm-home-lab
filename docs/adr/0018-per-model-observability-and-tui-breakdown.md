@@ -23,7 +23,7 @@ Chosen approach: **Purely additive per-model observability counters + parent/chi
 ### TUI layout and semantics
 
 1. **Two distinct status layers**: Row 1 (`host_id` filled) represents node reachability (`online`/`offline`/`unknown`) and aggregated counters. Model work health (`loaded`, `loading`, `sleeping`, `failed`, per-model errors) lives in child rows 2..N+1 starting at the `status` column (`host_id`, `backend_type`, and `last_seen` left empty) with tree prefixes (`├─` / `└─`). A single failed model never marks a reachable node `offline`.
-2. **Slot denominator and error reporting**: When a router node has 2+ healthy `loaded` models, Row 1 sums their slot limits (and excludes `failed`/unhealthy models from capacity). Row 1 `errors` sums per-model `recent_failures` plus unattributed node/transport `recent_failures`, explicitly labelling unattributed node errors as `N (K node)` when `K > 0`.
+2. **Slot denominator and error reporting**: See the [dashboard specification](../specs/20260719-tui-operator-dashboard.md#behavior) for capacity and error display semantics.
 3. **Child-row visibility**: Router nodes show child rows for all non-`unloaded` models (and `unloaded` models only when they have nonzero activity/errors); single healthy `loaded` models and plain 0/1-model nodes stay on one row. Non-router nodes with 2+ `model_limits` entries render summary + per-model child rows.
 4. **Compact per-model `Node Load` sub-charts**: Multi-row nodes also display indented 2-row `LoadChart` bars for active models underneath their 4-row node bar, toggled with `m`, reusing the same per-model `in_flight` and slot limits.
 

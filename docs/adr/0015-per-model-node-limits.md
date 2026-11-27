@@ -37,7 +37,7 @@ Resolution rules:
 2. **Node-level effective resolution (`model` is not specified)**: when `allowed_models` contains exactly one model, resolve against that single model's `model_limits` entry (falling back to the node-level value for any omitted field). When `allowed_models` is `None`, empty, or lists multiple models, fall back to the node-level value.
 3. **Observability and backward compatibility**:
    - `GET /v1/nodes` retains `max_concurrent_requests` and `context_window` as the node's configured base/fallback values (so existing edit forms and clients never clobber fallbacks) and adds `model_limits`, `effective_max_concurrent_requests`, and `effective_context_window`.
-   - The TUI displays `effective_max_concurrent_requests` (falling back to `max_concurrent_requests` when absent) in both the Nodes table load counter and the Node Load sparklines.
+   - For TUI capacity display, see the [dashboard specification](../specs/20260719-tui-operator-dashboard.md#behavior).
    - Unscoped `GET /v1/capacity` sums configured node-level `max_concurrent_requests` over online hosts.
    - `HostRegistryStore` defaults missing `model_limits` in legacy SQLite JSON rows to `None`.
 

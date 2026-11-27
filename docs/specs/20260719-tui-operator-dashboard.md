@@ -47,8 +47,10 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     non-`unloaded` models, plus `unloaded` models with nonzero activity/errors) or a non-router
     node with 2+ `model_limits` entries renders a summary Row 1 followed by indented child rows
     (starting at `status` with `├─`/`└─`, empty `host_id`, `backend_type`, and `last_seen`). Row 1
-    `status` reports node reachability (`online`/`offline`/`unknown`) and total `in_flight`/healthy
-    loaded slots (excluding `failed` models from capacity); child rows report per-model state
+    `status` reports node reachability (`online`/`offline`/`unknown`) and total `in_flight`/capacity.
+    When a router model listing is available, capacity is the sum of healthy loaded model slots,
+    including zero for an empty listing; otherwise it falls back to the node's effective limit.
+    Child rows report per-model state
     colour, live `in_flight/slots`, errors, throughput, and completion metrics. Unattributed
     node/transport errors are labelled explicitly on Row 1 (`N (K node)`). Selecting any child row
     targets its parent node for edit/remove/move actions, and sorting keeps child rows attached to
