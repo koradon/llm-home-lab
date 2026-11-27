@@ -70,6 +70,7 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     specified per-model slot and context values as fallbacks, or 1 and 4096 respectively when no
     values are specified. Display order is
     managed separately (see **Node order** below).
+    [Colour screenshot of the node form](assets/node-model-form.png).
   - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
     `in_flight / effective_max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
     (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours.
