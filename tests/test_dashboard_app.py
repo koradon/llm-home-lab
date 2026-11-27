@@ -746,11 +746,18 @@ async def test_model_table_preserves_disallowed_models_and_aliases():
 
 
 async def test_unrestricted_model_rows_preserve_routing_policy():
-    client = _FakeClient(nodes={"nodes": [_full_node(
-        "host-a", allowed_models=None,
-        model_limits={"model-a": {"max_concurrent_requests": 4}},
-        model_aliases={"model-a": ["alias-a"]},
-    )]})
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "host-a",
+                    allowed_models=None,
+                    model_limits={"model-a": {"max_concurrent_requests": 4}},
+                    model_aliases={"model-a": ["alias-a"]},
+                )
+            ]
+        }
+    )
     app = DashboardApp(client=client, interval_s=100.0)
     async with app.run_test(size=(120, 40)) as pilot:
         await app.poll()
@@ -777,7 +784,9 @@ async def test_empty_allowlist_requires_explicit_policy_change():
         await pilot.click("#save")
         await pilot.pause()
         assert not client.update_node_calls
-        assert "Check at least one model" in str(app.screen.query_one("#edit-error", Static).render())
+        assert "Check at least one model" in str(
+            app.screen.query_one("#edit-error", Static).render()
+        )
         app.screen.query_one("#restrict-routing").value = False
         app.screen.query_one("#save", Button).press()
         await pilot.pause()
@@ -795,7 +804,9 @@ async def test_removing_last_allowed_row_requires_explicit_policy_change():
         await pilot.click("#save")
         await pilot.pause()
         assert not client.update_node_calls
-        assert "Check at least one model" in str(app.screen.query_one("#edit-error", Static).render())
+        assert "Check at least one model" in str(
+            app.screen.query_one("#edit-error", Static).render()
+        )
 
 
 async def test_model_table_screenshot_has_colour(monkeypatch):
@@ -848,7 +859,9 @@ async def test_all_disallowed_rows_cannot_silently_become_unrestricted():
         await pilot.pause()
 
         assert client.update_node_calls == []
-        assert "Check at least one model" in str(app.screen.query_one("#edit-error", Static).render())
+        assert "Check at least one model" in str(
+            app.screen.query_one("#edit-error", Static).render()
+        )
 
 
 async def test_clicking_new_node_button_opens_a_blank_register_modal():
