@@ -563,7 +563,7 @@ def create_app(
                 ):
                     continue
                 try:
-                    registry.acquire_slot(host.host_id)
+                    registry.acquire_slot_for_model(host.host_id, model=entry.id)
                 except KeyError:
                     continue
                 reserved = registry.get(host.host_id)
@@ -615,7 +615,9 @@ def create_app(
                 trial_owned = False
             finally:
                 if acquired_registration_id is not None:
-                    registry.release_owned_slot(host.host_id, acquired_registration_id)
+                    registry.release_owned_slot(
+                        host.host_id, acquired_registration_id, model=entry.id
+                    )
                 if trial_owned:
                     health_monitor.release_model_trial(host.host_id, entry.id)
 

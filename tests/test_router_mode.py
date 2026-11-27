@@ -2169,6 +2169,7 @@ def test_proactive_probe_releases_slot_for_registration_acquired():
     assert client.get("/health/ready").status_code == 200
     assert registry.get("mini-1").registration_id is not original
     assert registry.in_flight("mini-1") == 0
+    assert registry.get("mini-1").in_flight_by_model == {}
     assert health_monitor.has_model_trial("mini-1", "gemma") is False
     assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is True
 
@@ -2246,6 +2247,7 @@ def test_proactive_probe_soft_reregister_on_acquire_releases_without_probing():
 def test_proactive_probe_soft_reregister_mid_complete_does_not_settle():
     clock = _FakeClock()
     registry = HostRegistry(new_registry_db_path())
+    observed_occupancy = []
 
     class _SoftReregisterOnComplete:
         backend_id = "mini-1"
@@ -2263,6 +2265,7 @@ def test_proactive_probe_soft_reregister_mid_complete_does_not_settle():
         async def complete(self, request: ChatCompletionRequest) -> BackendResponse:
             self.calls += 1
             host = registry.get("mini-1")
+            observed_occupancy.append((host.in_flight, dict(host.in_flight_by_model)))
             registry.register(
                 "mini-1",
                 replace(host.capabilities, base_url="http://mini-1.local:9090"),
@@ -2312,11 +2315,13 @@ def test_proactive_probe_soft_reregister_mid_complete_does_not_settle():
 
     assert client.get("/health/ready").status_code == 200
     assert backend.calls == 1
+    assert observed_occupancy == [(1, {"gemma": 1})]
     live = registry.get("mini-1")
     assert live is not original_host
     assert live.registration_id is original_host.registration_id
     assert live.capabilities.base_url == "http://mini-1.local:9090"
     assert registry.in_flight("mini-1") == 0
+    assert live.in_flight_by_model == {}
     assert health_monitor.has_model_trial("mini-1", "gemma") is False
     assert health_monitor.is_model_healthy("mini-1", "gemma", clock()) is False
     assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is True
