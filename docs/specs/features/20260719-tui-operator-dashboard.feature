@@ -97,7 +97,24 @@ Feature: TUI operator dashboard
   Scenario: The operator views and edits per-model limits in the node form
     Given a node has allowed_models "gemma, eurollm" and a per-model limit of 4 slots on "eurollm"
     When the operator presses "e" to edit the node
-    Then the form shows one model_limits row for "gemma" with blank inputs and one row for "eurollm" with "4"
+    Then the form shows one models table row for "gemma" with blank inputs and one row for "eurollm" with "4"
     When the operator sets "gemma" max slots to "8" and saves
     Then the TUI PATCHes the node with model_limits containing both overrides
     And invalid or non-positive values keep the modal open with a clear error message
+
+  Scenario: Editing retains a disallowed model's overrides without widening the allowlist
+    Given a node allows "gemma" and has a limit and alias for "standby"
+    When the operator opens and saves the node form without changing the models
+    Then "standby" is shown as not allowed
+    And the saved allowlist contains only "gemma"
+    And the limit and alias for "standby" are retained
+
+  Scenario: Model rows do not implicitly change unrestricted routing
+    Given a node has no allowlist and has a model limit or alias
+    When the operator saves the node form without enabling routing restriction
+    Then the saved allowlist is unrestricted and the model settings are retained
+
+  Scenario: An empty restricted allowlist is not silently widened
+    Given routing restriction is enabled and no model rows are checked
+    When the operator saves the node form
+    Then the form remains open and asks the operator to check a model or turn restriction off

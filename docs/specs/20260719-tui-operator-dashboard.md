@@ -59,11 +59,18 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     selected via cursor, or deregister it after a confirm dialog. The form uses a compact
     multi-column layout sized to the available terminal height so typical terminal sizes display
     all fields without scrolling and only fall back to scrolling when the terminal is too small;
-    it includes `model_limits` (prefilled with one row per model in `allowed_models` plus any model
-    already in `model_limits`, with optional positive whole-number `max_concurrent_requests` and
-    `context_window` overrides where blank means no override), `model_sizes_gb`, and
-    `model_aliases`, each edited as repeating input rows rather than free text. Display order is
+    it presents one models table with a name, optional positive slot and context overrides,
+    comma-separated aliases, and an allowed toggle per row. Initial rows are the union of allowed
+    models, model limits, and alias keys. Rows absent from an existing allowlist start unchecked;
+    when no allowlist exists, all rows start checked. A node-level restriction checkbox starts
+    checked exactly when an allowlist exists. When checked, saving derives the allowlist from
+    checked rows and rejects zero checked rows; when unchecked, saving leaves routing unrestricted.
+    Limits and aliases are retained regardless of the restriction and row toggles.
+    Editing leaves node fallback limits and memory fields untouched. Registration uses the largest
+    specified per-model slot and context values as fallbacks, or 1 and 4096 respectively when no
+    values are specified. Display order is
     managed separately (see **Node order** below).
+    [Colour screenshot of the node form](assets/node-model-form.png).
   - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
     `in_flight / effective_max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
     (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours.

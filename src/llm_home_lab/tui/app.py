@@ -16,6 +16,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import (
     Button,
+    Checkbox,
     DataTable,
     Footer,
     Header,
@@ -490,6 +491,10 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         height: 1;
         margin-top: 1;
     }
+    #models-heading {
+        color: #45c8ff;
+        text-style: bold;
+    }
     .section-header Label {
         width: 1fr;
     }
@@ -510,6 +515,14 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
     .limit-row .limit-context-window {
         width: 1fr;
     }
+    .model-allowed {
+        width: 5;
+        height: 1;
+        color: $accent;
+    }
+    .model-aliases {
+        width: 2fr;
+    }
     .mapping-remove {
         min-width: 3;
         width: 3;
@@ -524,16 +537,12 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         self._host_id = host_id
         self._node = node
         self._limit_row_seq = 0
-        self._size_row_seq = 0
-        self._alias_row_seq = 0
         # Tracks the last value this screen auto-filled for base_url, so a backend_type change
         # only overwrites it if the operator hasn't typed a real value of their own yet.
         self._suggested_base_url: str | None = None
 
     def compose(self) -> ComposeResult:
         node = self._node
-        allowed_models = cast("list[str] | None", node.get("allowed_models")) or []
-        memory_budget_gb = node.get("memory_budget_gb")
         backend_type = cast(str, node.get("backend_type") or _KNOWN_BACKEND_TYPES[0])
         backend_type_options = list(_KNOWN_BACKEND_TYPES)
         if backend_type not in backend_type_options:
@@ -565,38 +574,18 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                     with Vertical(classes="field-col-wide"):
                         yield Label("base_url")
                         yield Input(value=base_url, id="base_url")
-                with Horizontal(classes="field-row"):
-                    with Vertical(classes="field-col"):
-                        yield Label("context_window")
-                        yield Input(value=str(node.get("context_window", "")), id="context_window")
-                    with Vertical(classes="field-col"):
-                        yield Label("max_concurrent_requests")
-                        yield Input(
-                            value=str(node.get("max_concurrent_requests", "")),
-                            id="max_concurrent_requests",
-                        )
-                    with Vertical(classes="field-col"):
-                        yield Label("memory_budget_gb (blank = unset)")
-                        yield Input(
-                            value="" if memory_budget_gb is None else str(memory_budget_gb),
-                            id="memory_budget_gb",
-                        )
-                yield Label("allowed_models (comma-separated, blank = unrestricted)")
-                yield Input(value=", ".join(allowed_models), id="allowed_models")
+                yield Checkbox(
+                    "Restrict routing to checked models",
+                    value=node.get("allowed_models") is not None,
+                    id="restrict-routing",
+                    compact=True,
+                )
                 with Horizontal(classes="section-header"):
                     yield Label(
-                        "model_limits (model | max slots | context window; blank = default)"
+                        "Models: name | slots | context | aliases | allowed", id="models-heading"
                     )
-                    yield Button("+ Add limit", id="add-limit", compact=True)
+                    yield Button("+ Add model", id="add-model", compact=True)
                 yield Vertical(id="model-limits-rows", classes="mapping-rows")
-                with Horizontal(classes="section-header"):
-                    yield Label("model_sizes_gb")
-                    yield Button("+ Add size", id="add-size", compact=True)
-                yield Vertical(id="model-sizes-rows", classes="mapping-rows")
-                with Horizontal(classes="section-header"):
-                    yield Label("model_aliases (aliases: comma-separated)")
-                    yield Button("+ Add mapping", id="add-mapping", compact=True)
-                yield Vertical(id="model-aliases-rows", classes="mapping-rows")
             yield Static("", id="edit-error")
             with Horizontal(id="form-actions"):
                 yield Button(
@@ -609,31 +598,22 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
 
     async def on_mount(self) -> None:
         self._sync_form_body_max_height()
-        allowed_models = cast("list[str] | None", self._node.get("allowed_models")) or []
+        allowed_models = cast("list[str] | None", self._node.get("allowed_models"))
         model_limits = (
             cast("dict[str, dict[str, object]] | None", self._node.get("model_limits")) or {}
         )
-        limit_models: list[str] = []
-        for name in (*allowed_models, *model_limits.keys()):
-            if name and name not in limit_models:
-                limit_models.append(name)
-        for name in limit_models:
-            entry = model_limits.get(name)
-            slots = entry.get("max_concurrent_requests") if isinstance(entry, dict) else None
-            ctx = entry.get("context_window") if isinstance(entry, dict) else None
+        model_aliases = cast("dict[str, list[str]] | None", self._node.get("model_aliases")) or {}
+        for name in dict.fromkeys([*(allowed_models or []), *model_limits, *model_aliases]):
+            entry = model_limits.get(name) or {}
+            slots = entry.get("max_concurrent_requests")
+            ctx = entry.get("context_window")
             await self._add_limit_row(
                 name,
                 "" if slots is None else str(slots),
                 "" if ctx is None else str(ctx),
+                ", ".join(model_aliases.get(name, [])),
+                allowed_models is None or name in allowed_models,
             )
-
-        model_sizes_gb = cast("dict[str, float] | None", self._node.get("model_sizes_gb")) or {}
-        for name, size in model_sizes_gb.items():
-            await self._add_size_row(name, str(size))
-
-        model_aliases = cast("dict[str, list[str]] | None", self._node.get("model_aliases")) or {}
-        for name, aliases in model_aliases.items():
-            await self._add_alias_row(name, ", ".join(aliases))
 
     def on_resize(self) -> None:
         self._sync_form_body_max_height()
@@ -646,7 +626,12 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         )
 
     async def _add_limit_row(
-        self, name: str = "", max_concurrent: str = "", context_window: str = ""
+        self,
+        name: str = "",
+        max_concurrent: str = "",
+        context_window: str = "",
+        aliases: str = "",
+        allowed: bool = True,
     ) -> None:
         self._limit_row_seq += 1
         await self.query_one("#model-limits-rows", Vertical).mount(
@@ -662,33 +647,11 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                     placeholder="context window",
                     classes="limit-context-window",
                 ),
+                Input(value=aliases, placeholder="aliases", classes="model-aliases"),
+                Checkbox("", value=allowed, classes="model-allowed", compact=True),
                 Button("✕", classes="mapping-remove", compact=True),
                 id=f"limit-row-{self._limit_row_seq}",
                 classes="mapping-row limit-row",
-            )
-        )
-
-    async def _add_size_row(self, name: str = "", value: str = "") -> None:
-        self._size_row_seq += 1
-        await self.query_one("#model-sizes-rows", Vertical).mount(
-            Horizontal(
-                Input(value=name, placeholder="model name", classes="mapping-name"),
-                Input(value=value, placeholder="size_gb", classes="mapping-value"),
-                Button("✕", classes="mapping-remove", compact=True),
-                id=f"size-row-{self._size_row_seq}",
-                classes="mapping-row",
-            )
-        )
-
-    async def _add_alias_row(self, name: str = "", value: str = "") -> None:
-        self._alias_row_seq += 1
-        await self.query_one("#model-aliases-rows", Vertical).mount(
-            Horizontal(
-                Input(value=name, placeholder="model name", classes="mapping-name"),
-                Input(value=value, placeholder="alias1, alias2", classes="mapping-value"),
-                Button("✕", classes="mapping-remove", compact=True),
-                id=f"alias-row-{self._alias_row_seq}",
-                classes="mapping-row",
             )
         )
 
@@ -710,14 +673,8 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         if event.button.id == "cancel":
             self.dismiss(None)
             return
-        if event.button.id == "add-limit":
+        if event.button.id == "add-model":
             await self._add_limit_row()
-            return
-        if event.button.id == "add-size":
-            await self._add_size_row()
-            return
-        if event.button.id == "add-mapping":
-            await self._add_alias_row()
             return
         if event.button.has_class("mapping-remove"):
             row = event.button.parent
@@ -735,20 +692,12 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         self.dismiss(None)
 
     def _collect_fields(self) -> tuple[dict[str, object], str | None]:
-        try:
-            context_window = int(self.query_one("#context_window", Input).value)
-            max_concurrent_requests = int(self.query_one("#max_concurrent_requests", Input).value)
-        except ValueError:
-            return {}, "context_window and max_concurrent_requests must be whole numbers"
-
         base_url = self.query_one("#base_url", Input).value.strip()
         if not base_url:
             return {}, "base_url must not be empty"
 
         fields: dict[str, object] = {
             "backend_type": self.query_one("#backend_type", Select).value,
-            "context_window": context_window,
-            "max_concurrent_requests": max_concurrent_requests,
             "base_url": base_url,
         }
 
@@ -758,44 +707,47 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                 return {}, "host_id must not be empty"
             fields["host_id"] = host_id
 
-        allowed_models_raw = self.query_one("#allowed_models", Input).value.strip()
-        fields["allowed_models"] = (
-            [m.strip() for m in allowed_models_raw.split(",") if m.strip()]
-            if allowed_models_raw
-            else None
-        )
-
-        memory_budget_raw = self.query_one("#memory_budget_gb", Input).value.strip()
-        if memory_budget_raw:
-            try:
-                fields["memory_budget_gb"] = float(memory_budget_raw)
-            except ValueError:
-                return {}, "memory_budget_gb must be a number"
-        else:
-            fields["memory_budget_gb"] = None
-
-        model_sizes_gb, sizes_error = self._collect_mapping_rows(
-            "#model-sizes-rows",
-            parse_value=float,
-            value_error="model_sizes_gb values must be numbers",
-        )
-        if sizes_error is not None:
-            return {}, sizes_error
-        fields["model_sizes_gb"] = model_sizes_gb or None
-
-        model_aliases, aliases_error = self._collect_mapping_rows(
-            "#model-aliases-rows",
-            parse_value=lambda raw: [a.strip() for a in raw.split(",") if a.strip()],
-            value_error="model_aliases values must not be empty",
-        )
-        if aliases_error is not None:
-            return {}, aliases_error
-        fields["model_aliases"] = model_aliases or None
-
         model_limits, limits_error = self._collect_model_limits()
         if limits_error is not None:
             return {}, limits_error
+        allowed: list[str] = []
+        aliases: dict[str, list[str]] = {}
+        for row in self.query_one("#model-limits-rows", Vertical).query(".limit-row"):
+            name = row.query_one(".limit-model", Input).value.strip()
+            raw_aliases = row.query_one(".model-aliases", Input).value.strip()
+            if not name:
+                if raw_aliases:
+                    return {}, "model row is missing a model name"
+                continue
+            if row.query_one(".model-allowed", Checkbox).value:
+                allowed.append(name)
+            values = [alias.strip() for alias in raw_aliases.split(",") if alias.strip()]
+            if values:
+                aliases[name] = values
+        restricted = self.query_one("#restrict-routing", Checkbox).value
+        if restricted and not allowed:
+            return {}, "Check at least one model or turn restriction off"
+        fields["allowed_models"] = allowed if restricted else None
         fields["model_limits"] = model_limits or None
+        fields["model_aliases"] = aliases or None
+        if self._mode == "register":
+            # Required node fallbacks: largest explicit override, or conservative defaults.
+            fields["max_concurrent_requests"] = max(
+                (
+                    entry["max_concurrent_requests"]
+                    for entry in model_limits.values()
+                    if "max_concurrent_requests" in entry
+                ),
+                default=1,
+            )
+            fields["context_window"] = max(
+                (
+                    entry["context_window"]
+                    for entry in model_limits.values()
+                    if "context_window" in entry
+                ),
+                default=4096,
+            )
 
         return fields, None
 
@@ -846,28 +798,6 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                     )
                 entry["context_window"] = ctx
             result[name] = entry
-        return result, None
-
-    def _collect_mapping_rows(
-        self, container_id: str, parse_value: Callable[[str], object], value_error: str
-    ) -> tuple[dict[str, object], str | None]:
-        result: dict[str, object] = {}
-        seen: set[str] = set()
-        for row in self.query_one(container_id, Vertical).query(".mapping-row"):
-            name = row.query_one(".mapping-name", Input).value.strip()
-            if not name:
-                continue
-            if name in seen:
-                return {}, f'duplicate model name "{name}"'
-            seen.add(name)
-
-            raw_value = row.query_one(".mapping-value", Input).value.strip()
-            if not raw_value:
-                continue
-            try:
-                result[name] = parse_value(raw_value)
-            except ValueError:
-                return {}, value_error
         return result, None
 
 

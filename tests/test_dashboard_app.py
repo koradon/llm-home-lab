@@ -615,8 +615,6 @@ async def test_pressing_e_opens_an_edit_modal_prefilled_with_the_selected_nodes_
         await pilot.pause()
 
         assert isinstance(app.screen, NodeFormScreen)
-        assert app.screen.query_one("#context_window", Input).value == "8192"
-        assert app.screen.query_one("#max_concurrent_requests", Input).value == "4"
         assert app.screen.query_one("#base_url", Input).value == "http://localhost:1234"
 
 
@@ -628,7 +626,6 @@ async def test_saving_the_edit_modal_sends_the_updated_fields_and_refreshes():
         await app.poll()
         await pilot.press("e")
         await pilot.pause()
-        app.screen.query_one("#max_concurrent_requests", Input).value = "8"
 
         await pilot.click("#save")
         await pilot.pause()
@@ -638,12 +635,8 @@ async def test_saving_the_edit_modal_sends_the_updated_fields_and_refreshes():
                 "host-a",
                 {
                     "backend_type": "lmstudio",
-                    "context_window": 8192,
-                    "max_concurrent_requests": 8,
                     "base_url": "http://localhost:1234",
                     "allowed_models": None,
-                    "memory_budget_gb": None,
-                    "model_sizes_gb": None,
                     "model_aliases": None,
                     "model_limits": None,
                 },
@@ -671,12 +664,8 @@ async def test_editing_a_node_with_an_unrecognized_backend_type_preserves_it_on_
                 "host-a",
                 {
                     "backend_type": "ollama",
-                    "context_window": 8192,
-                    "max_concurrent_requests": 4,
                     "base_url": "http://localhost:1234",
                     "allowed_models": None,
-                    "memory_budget_gb": None,
-                    "model_sizes_gb": None,
                     "model_aliases": None,
                     "model_limits": None,
                 },
@@ -713,7 +702,150 @@ async def test_pressing_e_with_no_nodes_registered_does_nothing():
         assert not isinstance(app.screen, NodeFormScreen)
 
 
-async def test_editing_allowed_models_sends_a_parsed_comma_separated_list():
+async def test_model_table_preserves_disallowed_models_and_aliases():
+    from textual.widgets import Checkbox
+
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "host-a",
+                    allowed_models=["model-a"],
+                    model_limits={"model-b": {"max_concurrent_requests": 4}},
+                    model_aliases={"model-a": ["alias-1"], "model-c": ["alias-3"]},
+                    model_sizes_gb={"model-a": 12.5},
+                    memory_budget_gb=32,
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        rows = app.screen.query_one("#model-limits-rows")
+        assert [w.value for w in rows.query(".limit-model")] == ["model-a", "model-b", "model-c"]
+        assert [w.value for w in rows.query(Checkbox)] == [True, False, False]
+        assert [w.value for w in rows.query(".model-aliases")] == ["alias-1", "", "alias-3"]
+        assert rows.query_one(Checkbox).styles.color is not None
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        fields = client.update_node_calls[0][1]
+        assert fields["allowed_models"] == ["model-a"]
+        assert fields["model_limits"] == {"model-b": {"max_concurrent_requests": 4}}
+        assert fields["model_aliases"] == {"model-a": ["alias-1"], "model-c": ["alias-3"]}
+        assert (
+            not {"context_window", "max_concurrent_requests", "memory_budget_gb", "model_sizes_gb"}
+            & fields.keys()
+        )
+
+
+async def test_unrestricted_model_rows_preserve_routing_policy():
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "host-a",
+                    allowed_models=None,
+                    model_limits={"model-a": {"max_concurrent_requests": 4}},
+                    model_aliases={"model-a": ["alias-a"]},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        assert not app.screen.query_one("#restrict-routing").value
+        assert app.screen.query_one(".model-allowed").value
+        await pilot.click("#save")
+        await pilot.pause()
+        fields = client.update_node_calls[0][1]
+        assert fields["allowed_models"] is None
+        assert fields["model_limits"] == {"model-a": {"max_concurrent_requests": 4}}
+        assert fields["model_aliases"] == {"model-a": ["alias-a"]}
+
+
+async def test_empty_allowlist_requires_explicit_policy_change():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a", allowed_models=[])]})
+    app = DashboardApp(client=client, interval_s=100.0)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        assert app.screen.query_one("#restrict-routing").value
+        await pilot.click("#save")
+        await pilot.pause()
+        assert not client.update_node_calls
+        assert "Check at least one model" in str(
+            app.screen.query_one("#edit-error", Static).render()
+        )
+        app.screen.query_one("#restrict-routing").value = False
+        app.screen.query_one("#save", Button).press()
+        await pilot.pause()
+        assert client.update_node_calls[0][1]["allowed_models"] is None
+
+
+async def test_removing_last_allowed_row_requires_explicit_policy_change():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a", allowed_models=["model-a"])]})
+    app = DashboardApp(client=client, interval_s=100.0)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.click(".mapping-remove")
+        await pilot.click("#save")
+        await pilot.pause()
+        assert not client.update_node_calls
+        assert "Check at least one model" in str(
+            app.screen.query_one("#edit-error", Static).render()
+        )
+
+
+async def test_model_table_screenshot_has_colour(monkeypatch):
+    import os
+    from pathlib import Path
+
+    _enable_screenshot_colour(monkeypatch)
+    client = _FakeClient(
+        nodes={
+            "nodes": [
+                _full_node(
+                    "host-a",
+                    allowed_models=["gemma", "qwen"],
+                    model_limits={
+                        "gemma": {"max_concurrent_requests": 4},
+                        "standby": {"context_window": 16384},
+                    },
+                    model_aliases={"gemma": ["gemma-fast", "gemma-safe"]},
+                )
+            ]
+        }
+    )
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+
+        svg = app.export_screenshot()
+        assert "#45c8ff" in svg.lower()
+        assert all(name in svg for name in ("gemma", "qwen", "standby", "gemma-fast"))
+        assert app.screen.query_one("#restrict-routing").value
+        assert [w.value for w in app.screen.query(".model-allowed")] == [True, True, False]
+        if path := os.environ.get("MODEL_FORM_SCREENSHOT"):
+            Path(path).write_text(svg)
+
+
+async def test_all_disallowed_rows_cannot_silently_become_unrestricted():
     client = _FakeClient(nodes={"nodes": [_full_node("host-a", allowed_models=["model-a"])]})
     app = DashboardApp(client=client, interval_s=100.0)
 
@@ -721,159 +853,15 @@ async def test_editing_allowed_models_sends_a_parsed_comma_separated_list():
         await app.poll()
         await pilot.press("e")
         await pilot.pause()
-        assert app.screen.query_one("#allowed_models", Input).value == "model-a"
-        app.screen.query_one("#allowed_models", Input).value = "model-a, model-b"
+        app.screen.query_one(".model-allowed").value = False
 
         await pilot.click("#save")
         await pilot.pause()
 
-        assert client.update_node_calls[0][1]["allowed_models"] == ["model-a", "model-b"]
-
-
-async def test_an_invalid_numeric_field_keeps_the_modal_open_with_an_error():
-    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test() as pilot:
-        await app.poll()
-        await pilot.press("e")
-        await pilot.pause()
-        app.screen.query_one("#max_concurrent_requests", Input).value = "not-a-number"
-
-        await pilot.click("#save")
-        await pilot.pause()
-
-        assert isinstance(app.screen, NodeFormScreen)
         assert client.update_node_calls == []
-        error = app.screen.query_one("#edit-error", Static)
-        assert "whole numbers" in str(error.render())
-
-
-async def test_editing_prefills_model_sizes_and_aliases_as_separate_rows():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _full_node(
-                    "host-a",
-                    model_sizes_gb={"model-a": 12.5},
-                    model_aliases={"model-a": ["alias-1", "alias-2"]},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test() as pilot:
-        await app.poll()
-        await pilot.press("e")
-        await pilot.pause()
-
-        sizes = app.screen.query_one("#model-sizes-rows")
-        aliases = app.screen.query_one("#model-aliases-rows")
-        assert [w.value for w in sizes.query(".mapping-name")] == ["model-a"]
-        assert [w.value for w in sizes.query(".mapping-value")] == ["12.5"]
-        assert [w.value for w in aliases.query(".mapping-name")] == ["model-a"]
-        assert [w.value for w in aliases.query(".mapping-value")] == ["alias-1, alias-2"]
-
-
-async def test_saving_the_edit_modal_sends_model_sizes_and_aliases_as_dicts():
-    client = _FakeClient(
-        nodes={
-            "nodes": [
-                _full_node(
-                    "host-a",
-                    model_sizes_gb={"model-a": 12.5},
-                    model_aliases={"model-a": ["alias-1", "alias-2"]},
-                )
-            ]
-        }
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test() as pilot:
-        await app.poll()
-        await pilot.press("e")
-        await pilot.pause()
-
-        await pilot.click("#save")
-        await pilot.pause()
-
-        _, fields = client.update_node_calls[0]
-        assert fields["model_sizes_gb"] == {"model-a": 12.5}
-        assert fields["model_aliases"] == {"model-a": ["alias-1", "alias-2"]}
-
-
-async def test_adding_a_new_size_row_and_saving_includes_it():
-    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test() as pilot:
-        await app.poll()
-        await pilot.press("e")
-        await pilot.pause()
-
-        app.screen.query_one("#add-size", Button).press()
-        await pilot.pause()
-        sizes = app.screen.query_one("#model-sizes-rows")
-        list(sizes.query(".mapping-name"))[0].value = "model-x"
-        list(sizes.query(".mapping-value"))[0].value = "4"
-
-        await pilot.click("#save")
-        await pilot.pause()
-
-        assert client.update_node_calls[0][1]["model_sizes_gb"] == {"model-x": 4.0}
-
-
-async def test_removing_a_mapping_row_excludes_it_from_the_saved_dict():
-    client = _FakeClient(
-        nodes={"nodes": [_full_node("host-a", model_sizes_gb={"model-a": 12.5, "model-b": 8.0})]}
-    )
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test() as pilot:
-        await app.poll()
-        await pilot.press("e")
-        await pilot.pause()
-
-        first_remove_button = list(
-            app.screen.query_one("#model-sizes-rows").query(".mapping-remove")
-        )[0]
-        first_remove_button.press()
-        await pilot.pause()
-
-        await pilot.click("#save")
-        await pilot.pause()
-
-        assert client.update_node_calls[0][1]["model_sizes_gb"] == {"model-b": 8.0}
-
-
-async def test_duplicate_model_name_in_mapping_rows_is_rejected():
-    client = _FakeClient(nodes={"nodes": [_full_node("host-a")]})
-    app = DashboardApp(client=client, interval_s=100.0)
-
-    async with app.run_test() as pilot:
-        await app.poll()
-        await pilot.press("e")
-        await pilot.pause()
-
-        app.screen.query_one("#add-size", Button).press()
-        app.screen.query_one("#add-size", Button).press()
-        await pilot.pause()
-        sizes = app.screen.query_one("#model-sizes-rows")
-        names = list(sizes.query(".mapping-name"))
-        values = list(sizes.query(".mapping-value"))
-        names[0].value = "model-a"
-        values[0].value = "1"
-        names[1].value = "model-a"
-        values[1].value = "2"
-
-        await pilot.click("#save")
-        await pilot.pause()
-
-        assert isinstance(app.screen, NodeFormScreen)
-        assert client.update_node_calls == []
-        error = app.screen.query_one("#edit-error", Static)
-        assert "duplicate" in str(error.render())
+        assert "Check at least one model" in str(
+            app.screen.query_one("#edit-error", Static).render()
+        )
 
 
 async def test_clicking_new_node_button_opens_a_blank_register_modal():
@@ -971,8 +959,6 @@ async def test_registering_a_new_node_sends_the_collected_fields():
         await pilot.pause()
 
         app.screen.query_one("#host_id", Input).value = "new-host"
-        app.screen.query_one("#context_window", Input).value = "8192"
-        app.screen.query_one("#max_concurrent_requests", Input).value = "4"
         app.screen.query_one("#base_url", Input).value = "http://new:1234"
 
         await pilot.click("#save")
@@ -981,18 +967,44 @@ async def test_registering_a_new_node_sends_the_collected_fields():
         assert client.register_node_calls == [
             {
                 "backend_type": "lmstudio",
-                "context_window": 8192,
-                "max_concurrent_requests": 4,
+                "context_window": 4096,
+                "max_concurrent_requests": 1,
                 "base_url": "http://new:1234",
                 "host_id": "new-host",
                 "allowed_models": None,
-                "memory_budget_gb": None,
-                "model_sizes_gb": None,
                 "model_aliases": None,
                 "model_limits": None,
             }
         ]
         assert not isinstance(app.screen, NodeFormScreen)
+
+
+async def test_registration_derives_fallbacks_from_largest_model_overrides():
+    client = _FakeClient(nodes={"nodes": []})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("n")
+        await pilot.pause()
+        app.screen.query_one("#host_id", Input).value = "new-host"
+        app.screen.query_one("#add-model", Button).press()
+        app.screen.query_one("#add-model", Button).press()
+        await pilot.pause()
+        rows = list(app.screen.query(".limit-row"))
+        rows[0].query_one(".limit-model", Input).value = "a"
+        rows[0].query_one(".limit-max-concurrent", Input).value = "4"
+        rows[0].query_one(".limit-context-window", Input).value = "1024"
+        rows[1].query_one(".limit-model", Input).value = "b"
+        rows[1].query_one(".limit-max-concurrent", Input).value = "8"
+
+        await pilot.click("#save")
+        await pilot.pause()
+
+        fields = client.register_node_calls[0]
+        assert fields["max_concurrent_requests"] == 8
+        assert fields["context_window"] == 1024
+        assert fields["allowed_models"] is None
 
 
 async def test_registering_without_a_host_id_shows_an_error():
@@ -1004,8 +1016,6 @@ async def test_registering_without_a_host_id_shows_an_error():
         await pilot.press("n")
         await pilot.pause()
 
-        app.screen.query_one("#context_window", Input).value = "8192"
-        app.screen.query_one("#max_concurrent_requests", Input).value = "4"
         app.screen.query_one("#base_url", Input).value = "http://new:1234"
 
         await pilot.click("#save")
@@ -1957,8 +1967,8 @@ async def test_adding_and_removing_model_limit_rows_updates_saved_payload():
         await pilot.press("e")
         await pilot.pause()
 
-        app.screen.query_one("#add-limit", Button).press()
-        app.screen.query_one("#add-limit", Button).press()
+        app.screen.query_one("#add-model", Button).press()
+        app.screen.query_one("#add-model", Button).press()
         await pilot.pause()
 
         limits = app.screen.query_one("#model-limits-rows")
@@ -2027,7 +2037,7 @@ async def test_invalid_model_limits_keep_modal_open_with_clear_error(monkeypatch
             assert "context_window" in str(app.screen.query_one("#edit-error", Static).render())
 
         ctx_input.value = ""
-        app.screen.query_one("#add-limit", Button).press()
+        app.screen.query_one("#add-model", Button).press()
         await pilot.pause()
         list(limits.query(".limit-model"))[1].value = "eurollm-22b"
         list(limits.query(".limit-max-concurrent"))[1].value = "2"

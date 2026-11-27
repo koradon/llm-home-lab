@@ -446,9 +446,13 @@ A terminal dashboard shows live node health, completion metrics, and node load �
 comparable to `docker stats`. It's a separate client that doesn't need to run on the same machine
 as the orchestrator. The Nodes panel is a full registration UI, not just a viewer: press `n` or
 click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
-place, or press `x` to deregister it (after a confirmation dialog). The form includes
-`model_limits` (model / max slots / context window), `model_sizes_gb`, and `model_aliases` as
-repeatable rows. Multi-model nodes expand into a summary row plus indented per-model child rows
+place, or press `x` to deregister it (after a confirmation dialog). The form has one models table for names, optional slot and context overrides, aliases, and
+an allowed toggle. The “Restrict routing to checked models” checkbox enables the allowlist,
+preventing requests for other models from reaching the node. Existing disallowed model rows stay
+unchecked. With restriction enabled, at least one model must be checked; turn it off for
+unrestricted routing, even when model rows are present.
+Registration uses the largest specified slot and context values as node fallbacks, or 1 slot
+and 4096 tokens respectively when none are specified; editing leaves existing fallbacks unchanged. Multi-model nodes expand into a summary row plus indented per-model child rows
 starting at the `status` column (showing live per-model `in_flight/slots`, state colours, errors,
 throughput, and completion metrics, with compact per-model sub-charts under **Node Load** toggled
 via `m`). For sorting and changing the saved node order, see the

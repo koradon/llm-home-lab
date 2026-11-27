@@ -41,7 +41,9 @@ Resolution rules:
    - Unscoped `GET /v1/capacity` sums configured node-level `max_concurrent_requests` over online hosts.
    - `HostRegistryStore` defaults missing `model_limits` in legacy SQLite JSON rows to `None`.
 
-### Consequences
+For the node form's routing controls, see the [TUI operator dashboard spec](../specs/20260719-tui-operator-dashboard.md).
+
+## Consequences
 
 - Good, because flipping a single-model router node requires only `PATCH /v1/nodes/{host_id} {"allowed_models": ["<next-model>"]}` — dispatch gating, model-filtered `/v1/capacity`, `/v1/nodes`, and the TUI immediately reflect the new model's slot limit and context window.
 - Good, because existing configs, SQLite databases, and clients that omit `model_limits` behave identically to before.
