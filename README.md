@@ -447,8 +447,10 @@ comparable to `docker stats`. It's a separate client that doesn't need to run on
 as the orchestrator. The Nodes panel is a full registration UI, not just a viewer: press `n` or
 click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
 place, or press `x` to deregister it (after a confirmation dialog). The form has one models table for names, optional slot and context overrides, aliases, and
-an allowed toggle. The allowlist prevents requests for other models from reaching the node;
-existing disallowed model rows stay unchecked. An empty table leaves routing unrestricted.
+an allowed toggle. The “Restrict routing to checked models” checkbox enables the allowlist,
+preventing requests for other models from reaching the node. Existing disallowed model rows stay
+unchecked. With restriction enabled, at least one model must be checked; turn it off for
+unrestricted routing, even when model rows are present.
 Registration uses the largest specified slot and context values as node fallbacks, or 1 slot
 and 4096 tokens respectively when none are specified; editing leaves existing fallbacks unchanged. Multi-model nodes expand into a summary row plus indented per-model child rows
 starting at the `status` column (showing live per-model `in_flight/slots`, state colours, errors,

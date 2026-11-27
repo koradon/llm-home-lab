@@ -62,9 +62,10 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     it presents one models table with a name, optional positive slot and context overrides,
     comma-separated aliases, and an allowed toggle per row. Initial rows are the union of allowed
     models, model limits, and alias keys. Rows absent from an existing allowlist start unchecked;
-    when no allowlist exists, all rows start checked. Saving derives the allowlist from checked
-    rows and retains limits and aliases for unchecked rows. An empty table means unrestricted;
-    a nonempty table with no checked models is rejected to avoid silently widening routing.
+    when no allowlist exists, all rows start checked. A node-level restriction checkbox starts
+    checked exactly when an allowlist exists. When checked, saving derives the allowlist from
+    checked rows and rejects zero checked rows; when unchecked, saving leaves routing unrestricted.
+    Limits and aliases are retained regardless of the restriction and row toggles.
     Editing leaves node fallback limits and memory fields untouched. Registration uses the largest
     specified per-model slot and context values as fallbacks, or 1 and 4096 respectively when no
     values are specified. Display order is

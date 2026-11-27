@@ -574,6 +574,12 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                     with Vertical(classes="field-col-wide"):
                         yield Label("base_url")
                         yield Input(value=base_url, id="base_url")
+                yield Checkbox(
+                    "Restrict routing to checked models",
+                    value=node.get("allowed_models") is not None,
+                    id="restrict-routing",
+                    compact=True,
+                )
                 with Horizontal(classes="section-header"):
                     yield Label(
                         "Models: name | slots | context | aliases | allowed", id="models-heading"
@@ -704,7 +710,6 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
         model_limits, limits_error = self._collect_model_limits()
         if limits_error is not None:
             return {}, limits_error
-        names: list[str] = []
         allowed: list[str] = []
         aliases: dict[str, list[str]] = {}
         for row in self.query_one("#model-limits-rows", Vertical).query(".limit-row"):
@@ -714,18 +719,15 @@ class NodeFormScreen(ModalScreen[dict[str, object] | None]):
                 if raw_aliases:
                     return {}, "model row is missing a model name"
                 continue
-            names.append(name)
             if row.query_one(".model-allowed", Checkbox).value:
                 allowed.append(name)
             values = [alias.strip() for alias in raw_aliases.split(",") if alias.strip()]
             if values:
                 aliases[name] = values
-        if names and not allowed:
-            return (
-                {},
-                "At least one model must be allowed; remove all rows for unrestricted routing",
-            )
-        fields["allowed_models"] = allowed or None
+        restricted = self.query_one("#restrict-routing", Checkbox).value
+        if restricted and not allowed:
+            return {}, "Check at least one model or turn restriction off"
+        fields["allowed_models"] = allowed if restricted else None
         fields["model_limits"] = model_limits or None
         fields["model_aliases"] = aliases or None
         if self._mode == "register":

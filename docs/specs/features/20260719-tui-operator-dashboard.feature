@@ -108,3 +108,13 @@ Feature: TUI operator dashboard
     Then "standby" is shown as not allowed
     And the saved allowlist contains only "gemma"
     And the limit and alias for "standby" are retained
+
+  Scenario: Model rows do not implicitly change unrestricted routing
+    Given a node has no allowlist and has a model limit or alias
+    When the operator saves the node form without enabling routing restriction
+    Then the saved allowlist is unrestricted and the model settings are retained
+
+  Scenario: An empty restricted allowlist is not silently widened
+    Given routing restriction is enabled and no model rows are checked
+    When the operator saves the node form
+    Then the form remains open and asks the operator to check a model or turn restriction off

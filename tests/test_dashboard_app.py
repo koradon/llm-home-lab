@@ -745,6 +745,59 @@ async def test_model_table_preserves_disallowed_models_and_aliases():
         )
 
 
+async def test_unrestricted_model_rows_preserve_routing_policy():
+    client = _FakeClient(nodes={"nodes": [_full_node(
+        "host-a", allowed_models=None,
+        model_limits={"model-a": {"max_concurrent_requests": 4}},
+        model_aliases={"model-a": ["alias-a"]},
+    )]})
+    app = DashboardApp(client=client, interval_s=100.0)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        assert not app.screen.query_one("#restrict-routing").value
+        assert app.screen.query_one(".model-allowed").value
+        await pilot.click("#save")
+        await pilot.pause()
+        fields = client.update_node_calls[0][1]
+        assert fields["allowed_models"] is None
+        assert fields["model_limits"] == {"model-a": {"max_concurrent_requests": 4}}
+        assert fields["model_aliases"] == {"model-a": ["alias-a"]}
+
+
+async def test_empty_allowlist_requires_explicit_policy_change():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a", allowed_models=[])]})
+    app = DashboardApp(client=client, interval_s=100.0)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        assert app.screen.query_one("#restrict-routing").value
+        await pilot.click("#save")
+        await pilot.pause()
+        assert not client.update_node_calls
+        assert "Check at least one model" in str(app.screen.query_one("#edit-error", Static).render())
+        app.screen.query_one("#restrict-routing").value = False
+        app.screen.query_one("#save", Button).press()
+        await pilot.pause()
+        assert client.update_node_calls[0][1]["allowed_models"] is None
+
+
+async def test_removing_last_allowed_row_requires_explicit_policy_change():
+    client = _FakeClient(nodes={"nodes": [_full_node("host-a", allowed_models=["model-a"])]})
+    app = DashboardApp(client=client, interval_s=100.0)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await app.poll()
+        await pilot.press("e")
+        await pilot.pause()
+        await pilot.click(".mapping-remove")
+        await pilot.click("#save")
+        await pilot.pause()
+        assert not client.update_node_calls
+        assert "Check at least one model" in str(app.screen.query_one("#edit-error", Static).render())
+
+
 async def test_model_table_screenshot_has_colour(monkeypatch):
     import os
     from pathlib import Path
@@ -775,6 +828,7 @@ async def test_model_table_screenshot_has_colour(monkeypatch):
         svg = app.export_screenshot()
         assert "#45c8ff" in svg.lower()
         assert all(name in svg for name in ("gemma", "qwen", "standby", "gemma-fast"))
+        assert app.screen.query_one("#restrict-routing").value
         assert [w.value for w in app.screen.query(".model-allowed")] == [True, True, False]
         if path := os.environ.get("MODEL_FORM_SCREENSHOT"):
             Path(path).write_text(svg)
@@ -794,7 +848,7 @@ async def test_all_disallowed_rows_cannot_silently_become_unrestricted():
         await pilot.pause()
 
         assert client.update_node_calls == []
-        assert "At least one model" in str(app.screen.query_one("#edit-error", Static).render())
+        assert "Check at least one model" in str(app.screen.query_one("#edit-error", Static).render())
 
 
 async def test_clicking_new_node_button_opens_a_blank_register_modal():
@@ -937,7 +991,7 @@ async def test_registration_derives_fallbacks_from_largest_model_overrides():
         fields = client.register_node_calls[0]
         assert fields["max_concurrent_requests"] == 8
         assert fields["context_window"] == 1024
-        assert fields["allowed_models"] == ["a", "b"]
+        assert fields["allowed_models"] is None
 
 
 async def test_registering_without_a_host_id_shows_an_error():
