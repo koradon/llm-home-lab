@@ -1602,13 +1602,15 @@ async def test_nodes_table_replaces_models_column_with_child_rows_and_sums_addit
         labels = [str(column.label) for column in table.ordered_columns]
         rows = [table.get_row_at(i) for i in range(table.row_count)]
         svg = app.export_screenshot()
+        assert str(app.query_one("#mlabel-mini-single_gemma-e4b", Label).render()) == (
+            "  └─ gemma-e4b · 2/8 · 25%"
+        )
 
     assert "models" not in labels
     assert len(labels) == 12
-    # mini-1 (3 rows: summary + eurollm-22b + gemma-e4b), mini-single (1 row), cachy-1 (1 row)
-    assert len(rows) == 5
+    assert len(rows) == 6
 
-    summary, child_euro, child_gemma, single_row, plain_row = rows
+    summary, child_euro, child_gemma, single_row, single_child, plain_row = rows
     assert summary[0] == "mini-1"
     assert summary[1].plain == "online 4/10"
     assert summary[5] == "llamaserver"
@@ -1634,6 +1636,7 @@ async def test_nodes_table_replaces_models_column_with_child_rows_and_sums_addit
     assert child_gemma[9] == "480"
 
     assert single_row[0] == "mini-single"
+    assert single_child[1].plain == "└─ gemma-e4b 2/8"
     assert plain_row[0] == "cachy-1"
     assert "eurollm-22b" in svg.replace("&#160;", " ")
     assert "gemma-e4b" in svg.replace("&#160;", " ")
@@ -1711,7 +1714,7 @@ async def test_non_router_node_with_multiple_model_limits_shows_child_rows_and_s
         "in_flight_by_model": {"gemma-e4b": 1},
         "model_limits": {
             "gemma-e4b": {"max_concurrent_requests": 8},
-            "eurollm-22b": {"max_concurrent_requests": 4},
+            "eurollm-22b": {"context_window": 4096},
         },
     }
     single_limit = {
@@ -1727,13 +1730,16 @@ async def test_non_router_node_with_multiple_model_limits_shows_child_rows_and_s
 
         table = app.query_one("#nodes-table", DataTable)
         rows = [table.get_row_at(i) for i in range(table.row_count)]
+        assert str(app.query_one("#mlabel-mac-1_eurollm-22b", Label).render()) == (
+            "  └─ eurollm-22b · 0/8 · 0%"
+        )
 
     assert len(rows) == 4
     assert rows[0][0] == "mac-1"
     assert rows[1][0] == ""
     assert rows[1][1].plain == "├─ gemma-e4b 1/8"
     assert rows[2][0] == ""
-    assert rows[2][1].plain == "└─ eurollm-22b 0/4"
+    assert rows[2][1].plain == "└─ eurollm-22b 0/8"
     assert rows[3][0] == "mac-2"
 
 
@@ -2094,3 +2100,28 @@ async def test_node_edit_dialog_falls_back_to_scrolling_when_terminal_is_too_sma
         await pilot.pause()
 
     assert len(client.update_node_calls) == 1
+
+
+async def test_router_capacity_counts_only_healthy_loaded_models():
+    loading = {
+        **_node("loading", in_flight=1, max_concurrent_requests=8),
+        "models": [
+            {"id": "ready", "state": "loaded", "max_concurrent_requests": 2},
+            {"id": "pending", "state": "loading", "max_concurrent_requests": 4},
+        ],
+    }
+    failed = {
+        **_node("failed", in_flight=0, max_concurrent_requests=8),
+        "models": [{"id": "broken", "state": "failed", "healthy": False}],
+    }
+    app = DashboardApp(client=_FakeClient(nodes={"nodes": [loading, failed]}), interval_s=100.0)
+
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        assert table.get_row_at(0)[1].plain == "online 1/2"
+        assert table.get_row_at(3)[1].plain == "online 0/0"
+        assert str(app.query_one("#label-loading", Label).render()) == "loading · 1/2 · 50%"
+        assert str(app.query_one("#label-failed", Label).render()) == "failed · 0/0 · n/a"
+        assert list(app.query_one("#load-loading", Sparkline).data) == [0.5]
+        assert list(app.query_one("#load-failed", Sparkline).data) == [0.0]

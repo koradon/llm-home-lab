@@ -180,11 +180,7 @@ def _node_effective_slots(host: dict[str, object]) -> object:
             if str(entry.get("state") or "unknown") == "loaded"
             and entry.get("healthy", True) is not False
         ]
-        has_failed = any(
-            str(entry.get("state") or "unknown") == "failed" or entry.get("healthy", True) is False
-            for entry in entries
-        )
-        if len(loaded_healthy) >= 2 or (len(loaded_healthy) == 1 and has_failed):
+        if entries:
             return sum(
                 _model_slots_for_host(host, str(entry["id"]), entry) for entry in loaded_healthy
             )
@@ -254,10 +250,6 @@ def _node_model_rows(
                 )
             )
 
-        if not visible:
-            return []
-        if len(visible) == 1 and visible[0].state == "loaded" and visible[0].healthy:
-            return []
         return visible
 
     model_limits = host.get("model_limits")
@@ -266,9 +258,7 @@ def _node_model_rows(
         for model_id in model_limits:
             if not isinstance(model_id, str) or not model_id:
                 continue
-            slots = _model_slot_limit(model_limits, model_id)
-            if slots is None:
-                continue
+            slots = _model_slots_for_host(host, model_id)
             fallback_tp = model_throughput.get(model_id)
             limit_rows.append(
                 _ModelRow(
