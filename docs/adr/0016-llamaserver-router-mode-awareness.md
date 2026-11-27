@@ -50,7 +50,7 @@ Key contracts:
 4. **`503 model_loading` with retry hint**:
    - When a request arrives for a model that is currently `loading` on every eligible router host (or on a leased router host, or if a router responds with a loading `503`), the gateway returns HTTP `503` with `error.code = "model_loading"`, `error.type = "backend_error"`, and a `Retry-After` header (default `5` seconds), without counting a node or model failure.
 5. **TUI visibility**:
-   - The Nodes table adds a trailing `models` column showing color-coded per-model states for router nodes (`—` for non-router nodes).
+   - The Nodes table surfaces router model states; see the [dashboard specification](../specs/20260719-tui-operator-dashboard.md#behavior) for current display behavior.
 
 ### Consequences
 

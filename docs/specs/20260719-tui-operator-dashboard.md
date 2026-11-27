@@ -47,8 +47,8 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     (`loaded`, `loading`, `sleeping`, `failed`, `unloaded`) for router-mode nodes, plus a distinctly
     coloured slot-limit badge (`[N slots]` / `[1 slot]`) whenever `model_limits` sets a per-model
     `max_concurrent_requests` override (and the same one-per-line per-model slot badges for
-    non-router nodes that define per-model slot limits); non-router nodes without limits display
-    `—`, and router models without overrides remain unchanged. A toolbar
+    nodes without model states that define per-model slot limits); when neither states nor slot
+    overrides are available, the column displays `—`. Router models without overrides remain unchanged. A toolbar
     above the table (`+ New Node` / `✕ Remove Node` buttons, plus `n`/`x`/`e` keybindings) opens
     `NodeFormScreen` to register a new node, edit the row currently selected via cursor, or
     deregister it after a confirm dialog. The form uses a compact multi-column layout sized to the
