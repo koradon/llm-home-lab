@@ -59,10 +59,15 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
     selected via cursor, or deregister it after a confirm dialog. The form uses a compact
     multi-column layout sized to the available terminal height so typical terminal sizes display
     all fields without scrolling and only fall back to scrolling when the terminal is too small;
-    it includes `model_limits` (prefilled with one row per model in `allowed_models` plus any model
-    already in `model_limits`, with optional positive whole-number `max_concurrent_requests` and
-    `context_window` overrides where blank means no override), `model_sizes_gb`, and
-    `model_aliases`, each edited as repeating input rows rather than free text. Display order is
+    it presents one models table with a name, optional positive slot and context overrides,
+    comma-separated aliases, and an allowed toggle per row. Initial rows are the union of allowed
+    models, model limits, and alias keys. Rows absent from an existing allowlist start unchecked;
+    when no allowlist exists, all rows start checked. Saving derives the allowlist from checked
+    rows and retains limits and aliases for unchecked rows. An empty table means unrestricted;
+    a nonempty table with no checked models is rejected to avoid silently widening routing.
+    Editing leaves node fallback limits and memory fields untouched. Registration uses the largest
+    specified per-model slot and context values as fallbacks, or 1 and 4096 respectively when no
+    values are specified. Display order is
     managed separately (see **Node order** below).
   - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
     `in_flight / effective_max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
