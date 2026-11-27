@@ -35,17 +35,23 @@ class CompletionLog:
         self._window = window
         self._started_at = clock()
         self._completions: dict[str, deque[datetime]] = defaultdict(deque)
+        self._model_completions: dict[tuple[str, str], deque[datetime]] = defaultdict(deque)
 
     @property
     def window(self) -> timedelta:
         return self._window
 
-    def record(self, host_id: str, at: datetime) -> None:
+    def record(self, host_id: str, at: datetime, model: str | None = None) -> None:
         cutoff = at - self._window
         completions = self._completions[host_id]
         completions.append(at)
         while completions and completions[0] <= cutoff:
             completions.popleft()
+        if model:
+            model_completions = self._model_completions[(host_id, model)]
+            model_completions.append(at)
+            while model_completions and model_completions[0] <= cutoff:
+                model_completions.popleft()
 
     def count(self, host_id: str, at: datetime) -> int:
         cutoff = at - self._window
@@ -53,8 +59,22 @@ class CompletionLog:
             1 for completed_at in self._completions.get(host_id, ()) if cutoff < completed_at <= at
         )
 
+    def count_for_model(self, host_id: str, model: str, at: datetime) -> int:
+        cutoff = at - self._window
+        return sum(
+            1
+            for completed_at in self._model_completions.get((host_id, model), ())
+            if cutoff < completed_at <= at
+        )
+
+    def tracked_models(self, host_id: str) -> list[str]:
+        return [model for hid, model in self._model_completions if hid == host_id]
+
     def tasks_per_hour(self, host_id: str, at: datetime) -> float:
         return self.count(host_id, at) * timedelta(hours=1) / self._observed(at)
+
+    def tasks_per_hour_for_model(self, host_id: str, model: str, at: datetime) -> float:
+        return self.count_for_model(host_id, model, at) * timedelta(hours=1) / self._observed(at)
 
     def _observed(self, at: datetime) -> timedelta:
         return min(self._window, max(at - self._started_at, MIN_OBSERVED))
@@ -65,3 +85,10 @@ class CompletionLog:
         if not total_slots:
             return None
         return self.tasks_per_hour(host_id, at) / total_slots
+
+    def tasks_per_hour_per_slot_for_model(
+        self, host_id: str, model: str, at: datetime, total_slots: int | None
+    ) -> float | None:
+        if not total_slots:
+            return None
+        return self.tasks_per_hour_for_model(host_id, model, at) / total_slots

@@ -418,9 +418,24 @@ def test_router_probe_restores_slot_telemetry_and_tasks_per_hour_per_slot():
         }
         assert node["throughput"]["tasks_per_hour"] == 12.0
         assert node["throughput"]["tasks_per_hour_per_slot"] == 3.0
-        assert node["models"] == [
-            {"id": "hy-mt2", "state": "loaded", "healthy": True, "recent_failures": 0},
-            {"id": "tgemma", "state": "unloaded", "healthy": True, "recent_failures": 0},
+        assert [
+            {k: entry[k] for k in ("id", "state", "healthy", "recent_failures", "in_flight")}
+            for entry in node["models"]
+        ] == [
+            {
+                "id": "hy-mt2",
+                "state": "loaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 0,
+            },
+            {
+                "id": "tgemma",
+                "state": "unloaded",
+                "healthy": True,
+                "recent_failures": 0,
+                "in_flight": 0,
+            },
         ]
         assert ("GET", "/slots") not in router.requests
         assert ("GET", "/slots?model=hy-mt2") in router.requests

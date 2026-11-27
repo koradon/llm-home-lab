@@ -42,26 +42,32 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 - `app.py` — a Textual `App` with a fixed-interval polling loop (default 2s, `--interval`) driving
   two panels:
   - **Nodes** — `host_id`, `status`, `errors`, `tasks/h`, `tasks/h/slot`, `backend_type`, `last_seen`,
-    completion metrics, and `models`, one row per host from `list_nodes()`. The `models` column
-    renders one model per line (with auto-sized row height) showing color-coded router model states
-    (`loaded`, `loading`, `sleeping`, `failed`, `unloaded`) for router-mode nodes, plus a distinctly
-    coloured slot-limit badge (`[N slots]` / `[1 slot]`) whenever `model_limits` sets a per-model
-    `max_concurrent_requests` override (and the same one-per-line per-model slot badges for
-    nodes without model states that define per-model slot limits); when neither states nor slot
-    overrides are available, the column displays `—`. Router models without overrides remain unchanged. A toolbar
-    above the table (`+ New Node` / `✕ Remove Node` buttons, plus `n`/`x`/`e` keybindings) opens
-    `NodeFormScreen` to register a new node, edit the row currently selected via cursor, or
-    deregister it after a confirm dialog. The form uses a compact multi-column layout sized to the
-    available terminal height so typical terminal sizes display all fields without scrolling and
-    only fall back to scrolling when the terminal is too small; it includes `model_limits`
-    (prefilled with one row per model in `allowed_models` plus any model already in `model_limits`,
-    with optional positive whole-number `max_concurrent_requests` and `context_window` overrides
-    where blank means no override), `model_sizes_gb`, and `model_aliases`, each edited as
-    repeating input rows rather than free text. Display order is managed separately (see **Node order** below).
+    `reqs`, `reqs/min`, `avg_lat_ms`, `prompt_tok`, and `compl_tok` (no trailing `models` column).
+    A plain 0/1-model node renders one row. A router node with multiple active models (all
+    non-`unloaded` models, plus `unloaded` models with nonzero activity/errors) or a non-router
+    node with 2+ `model_limits` entries renders a summary Row 1 followed by indented child rows
+    (starting at `status` with `├─`/`└─`, empty `host_id`, `backend_type`, and `last_seen`). Row 1
+    `status` reports node reachability (`online`/`offline`/`unknown`) and total `in_flight`/healthy
+    loaded slots (excluding `failed` models from capacity); child rows report per-model state
+    colour, live `in_flight/slots`, errors, throughput, and completion metrics. Unattributed
+    node/transport errors are labelled explicitly on Row 1 (`N (K node)`). Selecting any child row
+    targets its parent node for edit/remove/move actions, and sorting keeps child rows attached to
+    their parent node. A toolbar above the table (`+ New Node` / `✕ Remove Node` buttons, plus
+    `n`/`x`/`e` keybindings) opens `NodeFormScreen` to register a new node, edit the row currently
+    selected via cursor, or deregister it after a confirm dialog. The form uses a compact
+    multi-column layout sized to the available terminal height so typical terminal sizes display
+    all fields without scrolling and only fall back to scrolling when the terminal is too small;
+    it includes `model_limits` (prefilled with one row per model in `allowed_models` plus any model
+    already in `model_limits`, with optional positive whole-number `max_concurrent_requests` and
+    `context_window` overrides where blank means no override), `model_sizes_gb`, and
+    `model_aliases`, each edited as repeating input rows rather than free text. Display order is
+    managed separately (see **Node order** below).
   - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
     `in_flight / effective_max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
-    (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours. Full utilization is the desired lab state.
-    There is no own/external split or external-load column in Nodes.
+    (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours.
+    For multi-row nodes, compact two-row indented per-model sub-charts (`in_flight / model_slots`)
+    appear underneath the node's chart for active models (toggled with `m`). Full utilization is
+    the desired lab state. There is no own/external split or external-load column in Nodes.
   - The `status` cell carries the load counter after the styled status word, e.g. `online 8/8` or
     `offline 0/5` (`in_flight`/effective maximum). The counter is bold yellow while the node
     is busy (`in_flight` above 0), unstyled when idle, and dim when the node is offline or unknown;

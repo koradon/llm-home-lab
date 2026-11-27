@@ -73,12 +73,26 @@ Feature: TUI operator dashboard
     And no node's "position" is changed
     And pressing "o" returns both to the manual order
 
-  Scenario: Per-model slot limits appear in the Nodes models column
-    Given a router node has models "eurollm" (loaded) with a 4-slot limit and "gemma" (unloaded) with no override
-    And a non-router node has no model limits
+  Scenario: Multi-model nodes show summary and per-model child rows starting at status
+    Given a router node "mini-1" has two loaded models "gemma-e4b" (3/8 busy) and "eurollm-22b" (1/2 busy)
+    And a plain single-model node "cachy-1" has no model limits
     When the dashboard refreshes
-    Then the router node's models cell renders one model per line ("eurollm (loaded) [4 slots]" and "gemma (unloaded)") with auto-sized row height and the slot badge distinctly coloured
-    And the non-router node's models cell still shows "—"
+    Then the Nodes table has no trailing "models" column
+    And "mini-1" renders 3 rows: a summary row ("online 4/10") followed by two indented model rows starting at the status column with empty host_id and per-model statistics
+    And the additive metrics on the summary row equal the sum of its model rows
+    And "cachy-1" renders a single row
+    And the Node Load panel shows compact 2-row per-model sub-charts beneath "mini-1"
+
+  Scenario: A failed model stays isolated from node reachability and capacity
+    Given a router node "mini-2" is online with "gemma-e4b" loaded (3/8, 0 errors), "broken-70b" failed (0/2, 3 errors), and 2 node transport errors
+    When the dashboard refreshes
+    Then "mini-2" stays "online 3/8" with errors "5 (2 node)"
+    And only the "broken-70b (failed)" child row is coloured red
+
+  Scenario: Selecting a child model row targets its parent node
+    Given "mini-1" renders a summary row and two child model rows
+    When the operator moves the cursor onto a child model row and presses "e"
+    Then the edit modal opens for "mini-1"
 
   Scenario: The operator views and edits per-model limits in the node form
     Given a node has allowed_models "gemma, eurollm" and a per-model limit of 4 slots on "eurollm"

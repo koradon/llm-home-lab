@@ -272,6 +272,16 @@ def create_app(
             return
         router_models[host.host_id] = states
 
+    def _model_throughput_dict(host: HostInfo, model_id: str, at: datetime) -> dict[str, object]:
+        slots = host.effective_max_concurrent_requests(model_id)
+        return {
+            "window_s": completion_log.window.total_seconds(),
+            "tasks_per_hour": completion_log.tasks_per_hour_for_model(host.host_id, model_id, at),
+            "tasks_per_hour_per_slot": completion_log.tasks_per_hour_per_slot_for_model(
+                host.host_id, model_id, at, slots
+            ),
+        }
+
     def _serialize_node_models(host: HostInfo, at: datetime) -> list[dict[str, object]] | None:
         if host.capabilities.swap_mode != "router":
             return None
@@ -285,6 +295,9 @@ def create_app(
                     "state": entry.state,
                     "healthy": _is_host_model_healthy(host, entry.id, at),
                     "recent_failures": health_monitor.model_failure_count(host.host_id, entry.id),
+                    "in_flight": host.in_flight_by_model.get(entry.id, 0),
+                    "max_concurrent_requests": host.effective_max_concurrent_requests(entry.id),
+                    "throughput": _model_throughput_dict(host, entry.id, at),
                 }
             )
         for tracked_model in health_monitor.tracked_models(host.host_id):
@@ -298,9 +311,22 @@ def create_app(
                     "recent_failures": health_monitor.model_failure_count(
                         host.host_id, tracked_model
                     ),
+                    "in_flight": host.in_flight_by_model.get(tracked_model, 0),
+                    "max_concurrent_requests": host.effective_max_concurrent_requests(
+                        tracked_model
+                    ),
+                    "throughput": _model_throughput_dict(host, tracked_model, at),
                 }
             )
         return items
+
+    def _serialize_model_throughput(host: HostInfo, at: datetime) -> dict[str, dict[str, object]]:
+        models: set[str] = set(host.in_flight_by_model) | set(
+            completion_log.tracked_models(host.host_id)
+        )
+        if host.capabilities.model_limits:
+            models.update(host.capabilities.model_limits)
+        return {model_id: _model_throughput_dict(host, model_id, at) for model_id in sorted(models)}
 
     def _any_loading_router_host(hosts: Sequence[HostInfo], model: str, at: datetime) -> bool:
         return any(
@@ -940,6 +966,8 @@ def create_app(
                     "max_concurrent_requests": host.capacity.max_concurrent_requests,
                     "effective_max_concurrent_requests": host.effective_max_concurrent_requests(),
                     "in_flight": host.in_flight,
+                    "in_flight_by_model": dict(host.in_flight_by_model),
+                    "model_throughput": _serialize_model_throughput(host, at),
                     "last_seen": host.last_seen.isoformat(),
                     "status": _node_status(host.host_id, at),
                     "health": _node_health(host.host_id),
@@ -1212,7 +1240,7 @@ def create_app(
                         "no host became available before the dispatch timeout"
                     )
                 decision = router.select_backend(request, candidates, session_id=request.session_id)
-                registry.acquire_slot(decision.backend_id)
+                registry.acquire_slot_for_model(decision.backend_id, model=request.model)
                 reserved_host = registry.get(decision.backend_id)
                 reserved_backend = backends_by_id[decision.backend_id]
             finally:
@@ -1226,7 +1254,7 @@ def create_app(
                 except BaseException:
                     if decision is not None and reserved_host is not None:
                         registry.release_owned_slot(
-                            decision.backend_id, reserved_host.registration_id
+                            decision.backend_id, reserved_host.registration_id, model=request.model
                         )
                     raise
             assert reserved_host is not None
@@ -1248,11 +1276,13 @@ def create_app(
                 ):
                     raise NoAvailableBackendError("reserved host changed before dispatch")
             except BaseException:
-                registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
+                registry.release_owned_slot(
+                    decision.backend_id, reserved_host.registration_id, model=request.model
+                )
                 raise
         else:
             decision = router.select_backend(request, candidates, session_id=request.session_id)
-            registry.acquire_slot(decision.backend_id)
+            registry.acquire_slot_for_model(decision.backend_id, model=request.model)
             reserved_host = registry.get(decision.backend_id)
 
         backend = backends_by_id[decision.backend_id]
@@ -1260,7 +1290,9 @@ def create_app(
         if is_router_host and not health_monitor.claim_model_trial(
             decision.backend_id, request.model, _health_now()
         ):
-            registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
+            registry.release_owned_slot(
+                decision.backend_id, reserved_host.registration_id, model=request.model
+            )
             raise NoAvailableBackendError("no healthy backend available for model trial")
 
         if request.stream:
@@ -1276,7 +1308,7 @@ def create_app(
                     health_clock=health_clock,
                 ),
                 lambda: registry.release_owned_slot(
-                    decision.backend_id, reserved_host.registration_id
+                    decision.backend_id, reserved_host.registration_id, model=request.model
                 ),
             )
             if is_router_host:
@@ -1341,7 +1373,9 @@ def create_app(
                     )
                 raise
             finally:
-                registry.release_owned_slot(decision.backend_id, reserved_host.registration_id)
+                registry.release_owned_slot(
+                    decision.backend_id, reserved_host.registration_id, model=request.model
+                )
             backend_call_latency_ms = (time.perf_counter() - backend_call_start) * 1000
 
             if failover_in_play:
@@ -1362,8 +1396,9 @@ def create_app(
                     result.prompt_tokens,
                     result.completion_tokens,
                     datetime.now(UTC),
+                    model=request.model,
                 )
-                completion_log.record(decision.backend_id, datetime.now(UTC))
+                completion_log.record(decision.backend_id, datetime.now(UTC), model=request.model)
             if is_router_host:
                 health_monitor.record_model_probe(
                     decision.backend_id,
@@ -1530,9 +1565,10 @@ async def _stream_chunks(
                     usage["prompt_tokens"],
                     usage["completion_tokens"],
                     datetime.now(UTC),
+                    model=request.model,
                 )
         if is_healthy_completion:
-            completion_log.record(backend_id, datetime.now(UTC))
+            completion_log.record(backend_id, datetime.now(UTC), model=request.model)
         if router_mode:
             health_monitor.record_model_probe(
                 backend_id, request.model, healthy=is_healthy_completion, at=_health_now()

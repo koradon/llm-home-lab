@@ -5,6 +5,7 @@ import os
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol, cast
 
@@ -139,9 +140,155 @@ def _effective_max_concurrent(host: dict[str, object]) -> object:
     return host["max_concurrent_requests"]
 
 
+def _int_value(value: object, default: int = 0) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return default
+
+
+def _model_slots_for_host(
+    host: dict[str, object], model_id: str, entry: dict[str, object] | None = None
+) -> int:
+    if entry is not None:
+        entry_slots = entry.get("max_concurrent_requests")
+        if isinstance(entry_slots, int) and not isinstance(entry_slots, bool):
+            return entry_slots
+    limit_slots = _model_slot_limit(host.get("model_limits"), model_id)
+    if limit_slots is not None:
+        return limit_slots
+    return _int_value(host.get("max_concurrent_requests"), 0)
+
+
+@dataclass(frozen=True)
+class _ModelRow:
+    model_id: str
+    state: str | None
+    healthy: bool
+    in_flight: int
+    max_concurrent: int
+    recent_failures: int
+    throughput: dict[str, object] | None
+
+
+def _node_effective_slots(host: dict[str, object]) -> object:
+    models = host.get("models")
+    if isinstance(models, list) and models:
+        entries = [entry for entry in models if isinstance(entry, dict) and entry.get("id")]
+        loaded_healthy = [
+            entry
+            for entry in entries
+            if str(entry.get("state") or "unknown") == "loaded"
+            and entry.get("healthy", True) is not False
+        ]
+        has_failed = any(
+            str(entry.get("state") or "unknown") == "failed" or entry.get("healthy", True) is False
+            for entry in entries
+        )
+        if len(loaded_healthy) >= 2 or (len(loaded_healthy) == 1 and has_failed):
+            return sum(
+                _model_slots_for_host(host, str(entry["id"]), entry) for entry in loaded_healthy
+            )
+    return _effective_max_concurrent(host)
+
+
+def _node_model_rows(
+    host: dict[str, object], parsed: ParsedMetrics | None = None
+) -> list[_ModelRow]:
+    host_id = cast(str, host["host_id"])
+    raw_in_flight = host.get("in_flight_by_model")
+    in_flight_by_model = raw_in_flight if isinstance(raw_in_flight, dict) else {}
+    raw_throughput = host.get("model_throughput")
+    model_throughput = raw_throughput if isinstance(raw_throughput, dict) else {}
+
+    models = host.get("models")
+    entries = (
+        [entry for entry in models if isinstance(entry, dict) and entry.get("id")]
+        if isinstance(models, list)
+        else []
+    )
+    if entries:
+
+        def _sort_key(entry: dict[str, object]) -> tuple[int, str]:
+            state = str(entry.get("state") or "unknown")
+            healthy = entry.get("healthy", True)
+            rank = (
+                3
+                if healthy is False and state not in ("loaded", "loading", "sleeping")
+                else _MODEL_STATE_ORDER.get(state, 4)
+            )
+            return (rank, str(entry["id"]))
+
+        visible: list[_ModelRow] = []
+        for entry in sorted(entries, key=_sort_key):
+            model_id = str(entry["id"])
+            state = str(entry.get("state") or "unknown")
+            healthy = entry.get("healthy", True) is not False
+            in_flight = (
+                _int_value(entry.get("in_flight"))
+                if "in_flight" in entry
+                else _int_value(in_flight_by_model.get(model_id))
+            )
+            recent_failures = _int_value(entry.get("recent_failures"))
+            throughput_raw = entry.get("throughput")
+            if not isinstance(throughput_raw, dict):
+                fallback_tp = model_throughput.get(model_id)
+                throughput_raw = fallback_tp if isinstance(fallback_tp, dict) else None
+            reqs = (
+                parsed.host_model_completions_total.get((host_id, model_id), 0)
+                if parsed is not None
+                else 0
+            )
+            tph = throughput_raw.get("tasks_per_hour") if isinstance(throughput_raw, dict) else None
+            has_tph = isinstance(tph, int | float) and tph > 0
+            if state == "unloaded" and not (in_flight or recent_failures or reqs or has_tph):
+                continue
+            visible.append(
+                _ModelRow(
+                    model_id=model_id,
+                    state=state,
+                    healthy=healthy,
+                    in_flight=in_flight,
+                    max_concurrent=_model_slots_for_host(host, model_id, entry),
+                    recent_failures=recent_failures,
+                    throughput=throughput_raw,
+                )
+            )
+
+        if not visible:
+            return []
+        if len(visible) == 1 and visible[0].state == "loaded" and visible[0].healthy:
+            return []
+        return visible
+
+    model_limits = host.get("model_limits")
+    if isinstance(model_limits, dict):
+        limit_rows: list[_ModelRow] = []
+        for model_id in model_limits:
+            if not isinstance(model_id, str) or not model_id:
+                continue
+            slots = _model_slot_limit(model_limits, model_id)
+            if slots is None:
+                continue
+            fallback_tp = model_throughput.get(model_id)
+            limit_rows.append(
+                _ModelRow(
+                    model_id=model_id,
+                    state=None,
+                    healthy=True,
+                    in_flight=_int_value(in_flight_by_model.get(model_id)),
+                    max_concurrent=slots,
+                    recent_failures=0,
+                    throughput=fallback_tp if isinstance(fallback_tp, dict) else None,
+                )
+            )
+        if len(limit_rows) >= 2:
+            return limit_rows
+    return []
+
+
 def _load_label(host: dict[str, object]) -> Text:
     in_flight = host["in_flight"]
-    max_concurrent = _effective_max_concurrent(host)
+    max_concurrent = _node_effective_slots(host)
     if isinstance(in_flight, int) and isinstance(max_concurrent, int) and max_concurrent > 0:
         ratio = in_flight / max_concurrent
         percent = Text(f"{round(ratio * 100)}%", style=bar_style(ratio))
@@ -156,11 +303,70 @@ def _load_label(host: dict[str, object]) -> Text:
     )
 
 
+def _model_load_label(row: _ModelRow, host_status: object, *, is_last: bool) -> Text:
+    prefix = Text("  └─ " if is_last else "  ├─ ", style="dim")
+    name_style = "bold green" if row.state == "loaded" and row.healthy else ""
+    counter_status = (
+        "online"
+        if host_status == "online" and row.healthy and row.state in (None, "loaded")
+        else "offline"
+    )
+    if row.max_concurrent > 0:
+        ratio = row.in_flight / row.max_concurrent
+        percent = Text(f"{round(ratio * 100)}%", style=bar_style(ratio))
+    else:
+        percent = Text("n/a")
+    return Text.assemble(
+        prefix,
+        Text(row.model_id, style=name_style),
+        " · ",
+        _styled_load_counter(counter_status, row.in_flight, row.max_concurrent),
+        " · ",
+        percent,
+    )
+
+
 def _styled_failure_count(recent_failures: object) -> Text:
     count = recent_failures if isinstance(recent_failures, int) else 0
     if count == 0:
         return Text("0", style="dim")
     return Text(str(count), style="bold red")
+
+
+def _styled_node_failures(node_failures: object, model_rows: list[_ModelRow]) -> Text:
+    node_count = node_failures if isinstance(node_failures, int) else 0
+    model_sum = sum(row.recent_failures for row in model_rows)
+    total = node_count + model_sum
+    if total == 0:
+        return Text("0", style="dim")
+    if model_rows and node_count > 0:
+        return Text.assemble((str(total), "bold red"), " ", (f"({node_count} node)", "dim"))
+    return Text(str(total), style="bold red")
+
+
+def _styled_model_row_status(row: _ModelRow, *, is_last: bool, host_status: object) -> Text:
+    prefix = Text("└─ " if is_last else "├─ ", style="dim")
+    if row.state is None:
+        name = Text(row.model_id)
+    elif row.state == "failed" or not row.healthy:
+        label = "failed" if row.state == "failed" else f"{row.state}/unhealthy"
+        name = Text(f"{row.model_id} ({label})", style="bold red")
+    elif row.state == "loaded":
+        name = Text(row.model_id, style="bold green")
+    elif row.state == "loading":
+        name = Text(f"{row.model_id} (loading)", style="bold yellow")
+    elif row.state == "sleeping":
+        name = Text(f"{row.model_id} (sleeping)", style="cyan")
+    else:
+        name = Text(f"{row.model_id} ({row.state})", style="dim")
+
+    counter_status = (
+        "online"
+        if host_status == "online" and row.healthy and row.state in (None, "loaded")
+        else "offline"
+    )
+    counter = _styled_load_counter(counter_status, row.in_flight, row.max_concurrent)
+    return Text.assemble(prefix, name, " ", counter)
 
 
 def _format_tasks_per_hour(throughput: object, key: str) -> str:
@@ -178,11 +384,6 @@ _MODEL_STATE_ORDER = {
     "unknown": 4,
     "unloaded": 5,
 }
-_MODEL_LIMIT_STYLE = "bold #5fd7ff"
-
-
-def _format_slot_limit(slots: int) -> str:
-    return "1 slot" if slots == 1 else f"{slots} slots"
 
 
 def _model_slot_limit(model_limits: object, model_id: str) -> int | None:
@@ -195,76 +396,6 @@ def _model_slot_limit(model_limits: object, model_id: str) -> int | None:
     if isinstance(slots, int) and not isinstance(slots, bool):
         return slots
     return None
-
-
-def _styled_model_line(
-    model_id: str,
-    *,
-    state: str | None = None,
-    healthy: object = True,
-    slots: int | None = None,
-) -> Text:
-    parts: list[Text | str] = []
-    if state is None:
-        parts.append(model_id)
-    elif state == "failed" or healthy is False:
-        label = "failed" if state == "failed" else f"{state}/unhealthy"
-        parts.append(Text(f"{model_id} ({label})", style="bold red"))
-    elif state == "loaded":
-        parts.append(Text(f"{model_id} (loaded)", style="bold green"))
-    elif state == "loading":
-        parts.append(Text(f"{model_id} (loading)", style="bold yellow"))
-    elif state == "sleeping":
-        parts.append(Text(f"{model_id} (sleeping)", style="cyan"))
-    else:
-        parts.append(Text(f"{model_id} ({state})", style="dim"))
-
-    if slots is not None:
-        parts.append(" ")
-        parts.append(Text(f"[{_format_slot_limit(slots)}]", style=_MODEL_LIMIT_STYLE))
-    return Text.assemble(*parts)
-
-
-def _styled_models(models: object, model_limits: object = None) -> Text:
-    entries = (
-        [entry for entry in models if isinstance(entry, dict) and entry.get("id")]
-        if isinstance(models, list)
-        else []
-    )
-    if not entries:
-        if isinstance(model_limits, dict):
-            limit_lines: list[Text] = []
-            for model_id in model_limits:
-                if not isinstance(model_id, str) or not model_id:
-                    continue
-                slots = _model_slot_limit(model_limits, model_id)
-                if slots is None:
-                    continue
-                limit_lines.append(_styled_model_line(model_id, slots=slots))
-            if limit_lines:
-                return Text("\n").join(limit_lines)
-        return Text("—", style="dim")
-
-    def _sort_key(entry: dict[str, object]) -> tuple[int, str]:
-        state = str(entry.get("state") or "unknown")
-        healthy = entry.get("healthy", True)
-        rank = (
-            3
-            if healthy is False and state not in ("loaded", "loading", "sleeping")
-            else _MODEL_STATE_ORDER.get(state, 4)
-        )
-        return (rank, str(entry["id"]))
-
-    lines = [
-        _styled_model_line(
-            str(entry["id"]),
-            state=str(entry.get("state") or "unknown"),
-            healthy=entry.get("healthy", True),
-            slots=_model_slot_limit(model_limits, str(entry["id"])),
-        )
-        for entry in sorted(entries, key=_sort_key)
-    ]
-    return Text("\n").join(lines)
 
 
 # Session-only sort columns, cycled with "s"; None in the cycle is the persisted manual order.
@@ -776,6 +907,7 @@ class DashboardApp(App[None]):
         ("o", "clear_sort", "Manual order"),
         ("u", "move_node_up", "Move up"),
         ("d", "move_node_down", "Move down"),
+        ("m", "toggle_model_charts", "Model charts"),
     ]
     CSS = """
     DataTable, #load-sparklines {
@@ -798,7 +930,11 @@ class DashboardApp(App[None]):
         height: 4;
         margin: 0 1;
     }
-    .node-load-group {
+    .model-load-chart {
+        height: 2;
+        margin: 0 1 0 4;
+    }
+    .node-load-group, .model-load-group {
         height: auto;
     }
     """
@@ -814,15 +950,23 @@ class DashboardApp(App[None]):
         self._interval_s = interval_s
         self._clock = clock or (lambda: datetime.now(UTC))
         self._load_history: dict[str, list[float]] = {}
+        self._model_load_history: dict[str, list[float]] = {}
         self._sparkline_ids: dict[str, str] = {}
         self._label_ids: dict[str, str] = {}
         self._node_group_ids: dict[str, str] = {}
+        self._model_group_ids: dict[tuple[str, str], str] = {}
+        self._model_sparkline_ids: dict[tuple[str, str], str] = {}
+        self._model_label_ids: dict[tuple[str, str], str] = {}
+        self._show_model_charts = True
         self._poll_in_progress = False
         self._node_row_order: list[str] = []
+        self._row_to_host_id: list[str] = []
+        self._host_summary_row_index: dict[str, int] = {}
         self._sort_column: str | None = None
         self._sort_descending = False
         self._nodes_by_id: dict[str, dict[str, object]] = {}
         self._last_completions_total: dict[str, int] = {}
+        self._last_model_completions_total: dict[str, int] = {}
         self._last_completions_total_at: datetime | None = None
 
     def compose(self) -> ComposeResult:
@@ -850,7 +994,6 @@ class DashboardApp(App[None]):
             "avg_lat_ms",
             "prompt_tok",
             "compl_tok",
-            "models",
         )
         nodes_table.border_title = "Nodes"
 
@@ -900,15 +1043,19 @@ class DashboardApp(App[None]):
         text = Text(message, style="bold red") if message else Text("")
         self.query_one("#banner", Static).update(text)
 
+    def _selected_host_id(self) -> str | None:
+        table = self.query_one("#nodes-table", DataTable)
+        if table.row_count and 0 <= table.cursor_row < len(self._row_to_host_id):
+            return self._row_to_host_id[table.cursor_row]
+        return None
+
     def _render_nodes(self, nodes: dict[str, object], metrics_text: str, now: datetime) -> None:
         table = self.query_one("#nodes-table", DataTable)
-        selected_host_id = (
-            self._node_row_order[table.cursor_row]
-            if table.row_count and table.cursor_row < len(self._node_row_order)
-            else None
-        )
+        selected_host_id = self._selected_host_id()
         table.clear()
         self._node_row_order = []
+        self._row_to_host_id = []
+        self._host_summary_row_index = {}
         self._nodes_by_id = {}
         parsed = parse_metrics_text(metrics_text)
         completions_rate_per_s = compute_token_rates(
@@ -917,7 +1064,18 @@ class DashboardApp(App[None]):
             current=parsed.host_completions_total,
             now=now,
         )
+        model_totals_keyed = {
+            f"{hid}\x00{mid}": total
+            for (hid, mid), total in parsed.host_model_completions_total.items()
+        }
+        model_rates_per_s = compute_token_rates(
+            previous=self._last_model_completions_total,
+            previous_at=self._last_completions_total_at,
+            current=model_totals_keyed,
+            now=now,
+        )
         self._last_completions_total = dict(parsed.host_completions_total)
+        self._last_model_completions_total = model_totals_keyed
         self._last_completions_total_at = now
 
         hosts = cast("list[dict[str, object]]", nodes.get("nodes", []))
@@ -925,15 +1083,17 @@ class DashboardApp(App[None]):
             host_id = cast(str, host["host_id"])
             health = cast("dict[str, object]", host.get("health") or {})
             rate_per_s = completions_rate_per_s.get(host_id)
+            model_rows = _node_model_rows(host, parsed)
+            self._host_summary_row_index[host_id] = len(self._row_to_host_id)
             table.add_row(
                 host_id,
                 _styled_node_status(
                     host["status"],
                     host["in_flight"],
-                    _effective_max_concurrent(host),
+                    _node_effective_slots(host),
                     host.get("lease"),
                 ),
-                _styled_failure_count(health.get("recent_failures")),
+                _styled_node_failures(health.get("recent_failures"), model_rows),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour"),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour_per_slot"),
                 host["backend_type"],
@@ -951,14 +1111,44 @@ class DashboardApp(App[None]):
                     parsed.host_completion_tokens_min.get(host_id),
                     parsed.host_completion_tokens_max.get(host_id),
                 ),
-                _styled_models(host.get("models"), host.get("model_limits")),
-                height=None,
             )
             self._node_row_order.append(host_id)
+            self._row_to_host_id.append(host_id)
             self._nodes_by_id[host_id] = host
 
-        if selected_host_id in self._node_row_order:
-            table.move_cursor(row=self._node_row_order.index(selected_host_id))
+            for idx, mrow in enumerate(model_rows):
+                key = (host_id, mrow.model_id)
+                m_rate = model_rates_per_s.get(f"{host_id}\x00{mrow.model_id}")
+                table.add_row(
+                    "",
+                    _styled_model_row_status(
+                        mrow,
+                        is_last=idx == len(model_rows) - 1,
+                        host_status=host["status"],
+                    ),
+                    _styled_failure_count(mrow.recent_failures),
+                    _format_tasks_per_hour(mrow.throughput, "tasks_per_hour"),
+                    _format_tasks_per_hour(mrow.throughput, "tasks_per_hour_per_slot"),
+                    "",
+                    "",
+                    str(parsed.host_model_completions_total.get(key, 0)),
+                    "—" if m_rate is None else f"{m_rate * 60:.1f}/min",
+                    _format_avg_metric(parsed.host_model_latency_ms_avg.get(key)),
+                    _format_avg_min_max(
+                        parsed.host_model_prompt_tokens_avg.get(key),
+                        parsed.host_model_prompt_tokens_min.get(key),
+                        parsed.host_model_prompt_tokens_max.get(key),
+                    ),
+                    _format_avg_min_max(
+                        parsed.host_model_completion_tokens_avg.get(key),
+                        parsed.host_model_completion_tokens_min.get(key),
+                        parsed.host_model_completion_tokens_max.get(key),
+                    ),
+                )
+                self._row_to_host_id.append(host_id)
+
+        if selected_host_id in self._host_summary_row_index:
+            table.move_cursor(row=self._host_summary_row_index[selected_host_id])
         self._update_nodes_title()
 
     def _display_order(
@@ -1030,12 +1220,19 @@ class DashboardApp(App[None]):
     async def action_move_node_down(self) -> None:
         await self._move_selected_node(1)
 
+    async def action_toggle_model_charts(self) -> None:
+        self._show_model_charts = not self._show_model_charts
+        await self._rerender()
+
     async def _move_selected_node(self, step: int) -> None:
         table = self.query_one("#nodes-table", DataTable)
         # Moving only means something in the manual order; a column sort is a throwaway view.
         if self._sort_column is not None or table.row_count == 0:
             return
-        index = table.cursor_row
+        selected_host_id = self._selected_host_id()
+        if selected_host_id is None or selected_host_id not in self._node_row_order:
+            return
+        index = self._node_row_order.index(selected_host_id)
         target = index + step
         if not 0 <= target < len(self._node_row_order):
             return
@@ -1051,16 +1248,14 @@ class DashboardApp(App[None]):
         except DiagnosticsClientError as exc:
             self._show_banner(_BANNER_MESSAGES.get(exc.kind, exc.kind))
             return
-        # Seed the cursor so _render_nodes keeps it on the moved node.
-        self._node_row_order = order
-        table.move_cursor(row=target)
         await self.poll()
+        if selected_host_id in self._host_summary_row_index:
+            table.move_cursor(row=self._host_summary_row_index[selected_host_id])
 
     def action_edit_node(self) -> None:
-        table = self.query_one("#nodes-table", DataTable)
-        if table.row_count == 0:
+        host_id = self._selected_host_id()
+        if host_id is None:
             return
-        host_id = self._node_row_order[table.cursor_row]
         node = self._nodes_by_id[host_id]
 
         async def handle_result(fields: dict[str, object] | None) -> None:
@@ -1089,10 +1284,9 @@ class DashboardApp(App[None]):
         self.push_screen(NodeFormScreen(mode="register", host_id="", node={}), handle_result)
 
     def action_remove_node(self) -> None:
-        table = self.query_one("#nodes-table", DataTable)
-        if table.row_count == 0:
+        host_id = self._selected_host_id()
+        if host_id is None:
             return
-        host_id = self._node_row_order[table.cursor_row]
 
         async def handle_result(confirmed: bool | None) -> None:
             if not confirmed:
@@ -1114,26 +1308,62 @@ class DashboardApp(App[None]):
 
     async def _render_load_sparklines(self, nodes: dict[str, object]) -> None:
         ratios: dict[str, float] = {}
+        model_ratios: dict[str, float] = {}
+        active_models_by_host: dict[str, list[_ModelRow]] = {}
         hosts: dict[str, dict[str, object]] = {}
         for host in cast("list[dict[str, object]]", nodes.get("nodes", [])):
             host_id = cast(str, host["host_id"])
             hosts[host_id] = host
-            max_concurrent = cast(int, _effective_max_concurrent(host)) or 1
+            max_concurrent = cast(int, _node_effective_slots(host)) or 1
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
 
+            if self._show_model_charts:
+                model_rows = _node_model_rows(host)
+                active_rows = [
+                    row
+                    for row in model_rows
+                    if row.healthy and (row.state in (None, "loaded") or row.in_flight > 0)
+                ]
+            else:
+                active_rows = []
+            active_models_by_host[host_id] = active_rows
+            for row in active_rows:
+                m_key = f"{host_id}\x00{row.model_id}"
+                m_max = row.max_concurrent or 1
+                model_ratios[m_key] = row.in_flight / m_max
+
         self._load_history = update_load_history(self._load_history, ratios)
+        self._model_load_history = update_load_history(self._model_load_history, model_ratios)
 
         container = self.query_one("#load-sparklines", Vertical)
         for stale_host_id in [hid for hid in self._node_group_ids if hid not in ratios]:
             stale_group_id = self._node_group_ids.pop(stale_host_id)
             self._sparkline_ids.pop(stale_host_id, None)
             self._label_ids.pop(stale_host_id, None)
+            for key in [k for k in self._model_group_ids if k[0] == stale_host_id]:
+                self._model_group_ids.pop(key, None)
+                self._model_sparkline_ids.pop(key, None)
+                self._model_label_ids.pop(key, None)
             await self.query_one(f"#{stale_group_id}").remove()
+
+        active_model_keys = {
+            (host_id, row.model_id)
+            for host_id, rows in active_models_by_host.items()
+            for row in rows
+        }
+        for stale_key in [k for k in self._model_group_ids if k not in active_model_keys]:
+            stale_model_group_id = self._model_group_ids.pop(stale_key)
+            self._model_sparkline_ids.pop(stale_key, None)
+            self._model_label_ids.pop(stale_key, None)
+            await self.query_one(f"#{stale_model_group_id}").remove()
 
         used_ids = (
             set(self._node_group_ids.values())
             | set(self._sparkline_ids.values())
             | set(self._label_ids.values())
+            | set(self._model_group_ids.values())
+            | set(self._model_sparkline_ids.values())
+            | set(self._model_label_ids.values())
         )
         for host_id in ratios:
             if host_id not in self._node_group_ids:
@@ -1157,6 +1387,33 @@ class DashboardApp(App[None]):
             self.query_one(f"#{self._sparkline_ids[host_id]}", LoadChart).data = self._load_history[
                 host_id
             ]
+
+            group_widget = self.query_one(f"#{self._node_group_ids[host_id]}", Vertical)
+            active_rows = active_models_by_host[host_id]
+            for idx, row in enumerate(active_rows):
+                m_tuple = (host_id, row.model_id)
+                is_last = idx == len(active_rows) - 1
+                m_label = _model_load_label(row, hosts[host_id]["status"], is_last=is_last)
+                if m_tuple not in self._model_group_ids:
+                    composite = f"{host_id}_{row.model_id}"
+                    m_group_id = _sparkline_widget_id(composite, "mgroup", used_ids)
+                    m_label_id = _sparkline_widget_id(composite, "mlabel", used_ids)
+                    m_load_id = _sparkline_widget_id(composite, "mload", used_ids)
+                    self._model_group_ids[m_tuple] = m_group_id
+                    self._model_label_ids[m_tuple] = m_label_id
+                    self._model_sparkline_ids[m_tuple] = m_load_id
+                    await group_widget.mount(
+                        Vertical(
+                            Label(m_label, id=m_label_id, classes="model-load-label"),
+                            LoadChart(id=m_load_id, classes="model-load-chart"),
+                            id=m_group_id,
+                            classes="model-load-group",
+                        )
+                    )
+                self.query_one(f"#{self._model_label_ids[m_tuple]}", Label).update(m_label)
+                self.query_one(
+                    f"#{self._model_sparkline_ids[m_tuple]}", LoadChart
+                ).data = self._model_load_history[f"{host_id}\x00{row.model_id}"]
 
         # Keep the groups in the same order as the Nodes table rows.
         displayed = [hid for hid in self._node_row_order if hid in self._node_group_ids]

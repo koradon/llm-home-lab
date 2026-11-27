@@ -21,6 +21,14 @@ class MetricsRegistry:
         self._host_completion_tokens_total: dict[str, int] = defaultdict(int)
         self._host_completion_tokens_min: dict[str, int] = {}
         self._host_completion_tokens_max: dict[str, int] = {}
+        self._host_model_completions_total: dict[tuple[str, str], int] = defaultdict(int)
+        self._host_model_latency_ms_total: dict[tuple[str, str], float] = defaultdict(float)
+        self._host_model_prompt_tokens_total: dict[tuple[str, str], int] = defaultdict(int)
+        self._host_model_prompt_tokens_min: dict[tuple[str, str], int] = {}
+        self._host_model_prompt_tokens_max: dict[tuple[str, str], int] = {}
+        self._host_model_completion_tokens_total: dict[tuple[str, str], int] = defaultdict(int)
+        self._host_model_completion_tokens_min: dict[tuple[str, str], int] = {}
+        self._host_model_completion_tokens_max: dict[tuple[str, str], int] = {}
 
     def record_request(
         self, endpoint: str, status_code: int, latency_ms: float, at: datetime
@@ -45,6 +53,7 @@ class MetricsRegistry:
         prompt_tokens: int,
         completion_tokens: int,
         at: datetime,
+        model: str | None = None,
     ) -> None:
         self._host_completions_total[host_id] += 1
         self._host_latency_ms_total[host_id] += latency_ms
@@ -62,6 +71,26 @@ class MetricsRegistry:
         self._host_completion_tokens_max[host_id] = max(
             self._host_completion_tokens_max.get(host_id, completion_tokens), completion_tokens
         )
+        if model:
+            key = (host_id, model)
+            self._host_model_completions_total[key] += 1
+            self._host_model_latency_ms_total[key] += latency_ms
+            self._host_model_prompt_tokens_total[key] += prompt_tokens
+            self._host_model_prompt_tokens_min[key] = min(
+                self._host_model_prompt_tokens_min.get(key, prompt_tokens), prompt_tokens
+            )
+            self._host_model_prompt_tokens_max[key] = max(
+                self._host_model_prompt_tokens_max.get(key, prompt_tokens), prompt_tokens
+            )
+            self._host_model_completion_tokens_total[key] += completion_tokens
+            self._host_model_completion_tokens_min[key] = min(
+                self._host_model_completion_tokens_min.get(key, completion_tokens),
+                completion_tokens,
+            )
+            self._host_model_completion_tokens_max[key] = max(
+                self._host_model_completion_tokens_max.get(key, completion_tokens),
+                completion_tokens,
+            )
 
     def _evict(self, samples: deque, at: datetime, timestamp_index: int) -> None:
         while samples and at - samples[0][timestamp_index] > self._window:
@@ -108,6 +137,20 @@ class MetricsRegistry:
             for host_id, total in self._host_completions_total.items()
         }
 
+        host_model_completion_stats = {
+            key: HostCompletionStats(
+                completions_total=total,
+                avg_latency_ms=self._host_model_latency_ms_total[key] / total,
+                prompt_tokens_avg=self._host_model_prompt_tokens_total[key] / total,
+                prompt_tokens_min=self._host_model_prompt_tokens_min[key],
+                prompt_tokens_max=self._host_model_prompt_tokens_max[key],
+                completion_tokens_avg=self._host_model_completion_tokens_total[key] / total,
+                completion_tokens_min=self._host_model_completion_tokens_min[key],
+                completion_tokens_max=self._host_model_completion_tokens_max[key],
+            )
+            for key, total in self._host_model_completions_total.items()
+        }
+
         return SliSnapshot(
             availability=availability,
             p95_latency_ms=p95_latency_ms,
@@ -116,6 +159,7 @@ class MetricsRegistry:
             queue_depth=scheduling_queue.depth(),
             token_usage_total=dict(self._token_usage_total),
             host_completion_stats=host_completion_stats,
+            host_model_completion_stats=host_model_completion_stats,
         )
 
     def render_prometheus(
@@ -238,6 +282,88 @@ class MetricsRegistry:
                 f'llm_home_lab_host_completion_tokens_max{{host_id="{host_id}"}} '
                 f"{stats.completion_tokens_max}"
                 for host_id, stats in snapshot.host_completion_stats.items()
+            ]
+
+        if snapshot.host_model_completion_stats:
+            lines += [
+                "# HELP llm_home_lab_host_model_completions_total Cumulative count of healthy "
+                "completions served, per host and model.",
+                "# TYPE llm_home_lab_host_model_completions_total counter",
+            ]
+            lines += [
+                f'llm_home_lab_host_model_completions_total{{host_id="{host_id}",model="{model}"}} '
+                f"{stats.completions_total}"
+                for (host_id, model), stats in snapshot.host_model_completion_stats.items()
+            ]
+            lines += [
+                "# HELP llm_home_lab_host_model_latency_ms_avg Average backend-call latency in "
+                "milliseconds over all healthy completions, per host and model.",
+                "# TYPE llm_home_lab_host_model_latency_ms_avg gauge",
+            ]
+            lines += [
+                f'llm_home_lab_host_model_latency_ms_avg{{host_id="{host_id}",model="{model}"}} '
+                f"{stats.avg_latency_ms}"
+                for (host_id, model), stats in snapshot.host_model_completion_stats.items()
+            ]
+            lines += [
+                "# HELP llm_home_lab_host_model_prompt_tokens_avg Average prompt tokens per "
+                "healthy completion, per host and model.",
+                "# TYPE llm_home_lab_host_model_prompt_tokens_avg gauge",
+            ]
+            lines += [
+                f'llm_home_lab_host_model_prompt_tokens_avg{{host_id="{host_id}",model="{model}"}} '
+                f"{stats.prompt_tokens_avg}"
+                for (host_id, model), stats in snapshot.host_model_completion_stats.items()
+            ]
+            lines += [
+                "# HELP llm_home_lab_host_model_prompt_tokens_min Minimum prompt tokens observed "
+                "in a single healthy completion, per host and model.",
+                "# TYPE llm_home_lab_host_model_prompt_tokens_min gauge",
+            ]
+            lines += [
+                f'llm_home_lab_host_model_prompt_tokens_min{{host_id="{host_id}",model="{model}"}} '
+                f"{stats.prompt_tokens_min}"
+                for (host_id, model), stats in snapshot.host_model_completion_stats.items()
+            ]
+            lines += [
+                "# HELP llm_home_lab_host_model_prompt_tokens_max Maximum prompt tokens observed "
+                "in a single healthy completion, per host and model.",
+                "# TYPE llm_home_lab_host_model_prompt_tokens_max gauge",
+            ]
+            lines += [
+                f'llm_home_lab_host_model_prompt_tokens_max{{host_id="{host_id}",model="{model}"}} '
+                f"{stats.prompt_tokens_max}"
+                for (host_id, model), stats in snapshot.host_model_completion_stats.items()
+            ]
+            lines += [
+                "# HELP llm_home_lab_host_model_completion_tokens_avg Average completion tokens "
+                "per healthy completion, per host and model.",
+                "# TYPE llm_home_lab_host_model_completion_tokens_avg gauge",
+            ]
+            lines += [
+                "llm_home_lab_host_model_completion_tokens_avg"
+                f'{{host_id="{host_id}",model="{model}"}} {stats.completion_tokens_avg}'
+                for (host_id, model), stats in snapshot.host_model_completion_stats.items()
+            ]
+            lines += [
+                "# HELP llm_home_lab_host_model_completion_tokens_min Minimum completion tokens "
+                "observed in a single healthy completion, per host and model.",
+                "# TYPE llm_home_lab_host_model_completion_tokens_min gauge",
+            ]
+            lines += [
+                "llm_home_lab_host_model_completion_tokens_min"
+                f'{{host_id="{host_id}",model="{model}"}} {stats.completion_tokens_min}'
+                for (host_id, model), stats in snapshot.host_model_completion_stats.items()
+            ]
+            lines += [
+                "# HELP llm_home_lab_host_model_completion_tokens_max Maximum completion tokens "
+                "observed in a single healthy completion, per host and model.",
+                "# TYPE llm_home_lab_host_model_completion_tokens_max gauge",
+            ]
+            lines += [
+                "llm_home_lab_host_model_completion_tokens_max"
+                f'{{host_id="{host_id}",model="{model}"}} {stats.completion_tokens_max}'
+                for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
 
         if snapshot.token_usage_total:

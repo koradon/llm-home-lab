@@ -30,6 +30,7 @@ class HostRegistry:
             in_flight=existing.in_flight if existing is not None else 0,
             last_seen=at,
             registration_id=existing.registration_id if existing is not None else object(),
+            in_flight_by_model=(dict(existing.in_flight_by_model) if existing is not None else {}),
         )
         self._store.upsert(host_id, capabilities, capacity, at)
 
@@ -47,13 +48,27 @@ class HostRegistry:
     def acquire_slot(self, host_id: str) -> None:
         self._hosts[host_id].in_flight += 1
 
+    def acquire_slot_for_model(self, host_id: str, model: str | None = None) -> None:
+        self.acquire_slot(host_id)
+        if model:
+            host = self._hosts[host_id]
+            host.in_flight_by_model[model] = host.in_flight_by_model.get(model, 0) + 1
+
     def release_slot(self, host_id: str) -> None:
         self._hosts[host_id].in_flight -= 1
 
-    def release_owned_slot(self, host_id: str, registration_id: object) -> None:
+    def release_owned_slot(
+        self, host_id: str, registration_id: object, model: str | None = None
+    ) -> None:
         host = self._hosts.get(host_id)
         if host is not None and host.registration_id is registration_id:
             self.release_slot(host_id)
+            if model:
+                remaining = host.in_flight_by_model.get(model, 0) - 1
+                if remaining > 0:
+                    host.in_flight_by_model[model] = remaining
+                else:
+                    host.in_flight_by_model.pop(model, None)
 
     def heartbeat(self, host_id: str, at: datetime) -> None:
         if host_id not in self._hosts:

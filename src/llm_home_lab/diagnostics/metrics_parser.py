@@ -39,6 +39,36 @@ _HOST_COMPLETION_METRIC_PATTERNS = [
     ]
 ]
 
+_HOST_MODEL_COMPLETION_METRIC_PATTERNS = [
+    (
+        re.compile(rf'^{metric_name}\{{host_id="([^"]+)",model="([^"]+)"\}}\s+(\S+)$'),
+        field_name,
+        parser,
+    )
+    for metric_name, field_name, parser in [
+        ("llm_home_lab_host_model_completions_total", "host_model_completions_total", _as_int),
+        ("llm_home_lab_host_model_latency_ms_avg", "host_model_latency_ms_avg", _as_float),
+        ("llm_home_lab_host_model_prompt_tokens_avg", "host_model_prompt_tokens_avg", _as_float),
+        ("llm_home_lab_host_model_prompt_tokens_min", "host_model_prompt_tokens_min", _as_int),
+        ("llm_home_lab_host_model_prompt_tokens_max", "host_model_prompt_tokens_max", _as_int),
+        (
+            "llm_home_lab_host_model_completion_tokens_avg",
+            "host_model_completion_tokens_avg",
+            _as_float,
+        ),
+        (
+            "llm_home_lab_host_model_completion_tokens_min",
+            "host_model_completion_tokens_min",
+            _as_int,
+        ),
+        (
+            "llm_home_lab_host_model_completion_tokens_max",
+            "host_model_completion_tokens_max",
+            _as_int,
+        ),
+    ]
+]
+
 
 def parse_metrics_text(body: str) -> ParsedMetrics:
     parsed = ParsedMetrics()
@@ -60,11 +90,23 @@ def parse_metrics_text(body: str) -> ParsedMetrics:
                 parsed.token_usage_total[host_id] = value
             continue
 
+        matched = False
         for pattern, field_name, parser in _HOST_COMPLETION_METRIC_PATTERNS:
             if match := pattern.match(line):
                 metric_host_id, parsed_value = match.group(1), parser(match.group(2))
                 if parsed_value is not None:
                     getattr(parsed, field_name)[metric_host_id] = parsed_value
+                matched = True
+                break
+        if matched:
+            continue
+
+        for pattern, field_name, parser in _HOST_MODEL_COMPLETION_METRIC_PATTERNS:
+            if match := pattern.match(line):
+                metric_host_id, metric_model = match.group(1), match.group(2)
+                parsed_value = parser(match.group(3))
+                if parsed_value is not None:
+                    getattr(parsed, field_name)[(metric_host_id, metric_model)] = parsed_value
                 break
 
     return parsed

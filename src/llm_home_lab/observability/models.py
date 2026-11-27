@@ -25,6 +25,9 @@ class SliSnapshot:
     queue_depth: int = 0
     token_usage_total: dict[str, int] = field(default_factory=dict)
     host_completion_stats: dict[str, HostCompletionStats] = field(default_factory=dict)
+    host_model_completion_stats: dict[tuple[str, str], HostCompletionStats] = field(
+        default_factory=dict
+    )
 
 
 class AlertSeverity(StrEnum):

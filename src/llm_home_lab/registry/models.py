@@ -58,6 +58,7 @@ class HostInfo:
     in_flight: int
     last_seen: datetime
     registration_id: object = field(default_factory=object, repr=False, compare=False)
+    in_flight_by_model: dict[str, int] = field(default_factory=dict)
 
     def _resolved_model_limits(self, model: str | None = None) -> ModelLimits | None:
         limits = self.capabilities.model_limits
