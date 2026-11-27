@@ -15,5 +15,7 @@ def update_load_history(
     length = max((len(points) for points in history.values()), default=0)
     for host_id in history.keys() | current_ratios.keys():
         points = history.get(host_id, [None] * length)
-        updated[host_id] = [*points, current_ratios.get(host_id)][-max_points:]
+        points = [*points, current_ratios.get(host_id)][-max_points:]
+        if any(point is not None for point in points):
+            updated[host_id] = points
     return updated
