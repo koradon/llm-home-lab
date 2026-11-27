@@ -283,7 +283,7 @@ def create_app(
         }
 
     def _serialize_node_models(host: HostInfo, at: datetime) -> list[dict[str, object]] | None:
-        if host.capabilities.swap_mode != "router":
+        if host.capabilities.swap_mode != "router" or host.host_id not in router_models:
             return None
         seen: set[str] = set()
         items: list[dict[str, object]] = []

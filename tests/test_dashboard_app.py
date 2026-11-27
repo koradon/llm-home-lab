@@ -524,7 +524,7 @@ async def test_throughput_columns_show_tasks_per_hour_and_per_slot():
         nodes={
             "nodes": [
                 {
-                    **_node("host-a", in_flight=0),
+                    **_node("host-a", in_flight=0, max_concurrent_requests=8),
                     "throughput": {
                         "window_s": 3600.0,
                         "tasks_per_hour": 24.0,
@@ -551,7 +551,7 @@ async def test_throughput_per_slot_shows_na_when_the_slot_count_is_unknown():
         nodes={
             "nodes": [
                 {
-                    **_node("host-a", in_flight=0),
+                    **_node("host-a", in_flight=0, max_concurrent_requests=0),
                     "throughput": {
                         "window_s": 3600.0,
                         "tasks_per_hour": 0.0,
@@ -1614,6 +1614,7 @@ async def test_nodes_table_replaces_models_column_with_child_rows_and_sums_addit
     assert summary[0] == "mini-1"
     assert summary[1].plain == "online 4/10"
     assert summary[5] == "llamaserver"
+    assert summary[4] == "18.0"
     assert child_euro[0] == ""
     assert child_gemma[0] == ""
     assert child_euro[5] == ""
@@ -2125,3 +2126,78 @@ async def test_router_capacity_counts_only_healthy_loaded_models():
         assert str(app.query_one("#label-failed", Label).render()) == "failed · 0/0 · n/a"
         assert list(app.query_one("#load-loading", Sparkline).data) == [0.5]
         assert list(app.query_one("#load-failed", Sparkline).data) == [0.0]
+
+
+async def test_router_model_charts_follow_activity_and_remove_idle_models():
+    node = {
+        **_node("router"),
+        "models": [
+            {"id": "ready", "state": "loaded"},
+            {"id": "pending", "state": "loading"},
+            {"id": "sleeping", "state": "sleeping"},
+            {"id": "broken", "state": "failed", "healthy": False, "in_flight": 1},
+            {
+                "id": "traffic",
+                "state": "failed",
+                "healthy": False,
+                "throughput": {"tasks_per_hour": 2},
+            },
+            {"id": "idle-failed", "state": "failed", "healthy": False},
+        ],
+    }
+    client = _FakeClient(nodes={"nodes": [node]})
+    app = DashboardApp(client=client, interval_s=100.0)
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        assert {
+            str(label.render()).split(" · ")[0].strip(" ├└─")
+            for label in app.query(".model-load-label")
+        } == {"ready", "broken", "traffic"}
+        node["models"][3]["in_flight"] = 0
+        node["models"][4]["throughput"]["tasks_per_hour"] = 0
+        node["models"][1]["in_flight"] = 1
+        await app.poll()
+        assert {
+            str(label.render()).split(" · ")[0].strip(" ├└─")
+            for label in app.query(".model-load-label")
+        } == {"ready", "pending"}
+
+
+async def test_empty_router_state_capacity_and_unavailable_fallback():
+    empty = {
+        **_node("empty", max_concurrent_requests=8),
+        "models": [],
+        "throughput": {"tasks_per_hour": 10},
+    }
+    unavailable = {
+        **_node("unavailable", max_concurrent_requests=8),
+        "models": None,
+        "throughput": {"tasks_per_hour": 16},
+    }
+    app = DashboardApp(client=_FakeClient(nodes={"nodes": [empty, unavailable]}), interval_s=100.0)
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        assert table.get_row_at(0)[1].plain == "online 0/0"
+        assert table.get_row_at(0)[4] == "n/a"
+        assert table.get_row_at(1)[1].plain == "online 0/8"
+        assert table.get_row_at(1)[4] == "2.0"
+        assert str(app.query_one("#label-empty", Label).render()) == "empty · 0/0 · n/a"
+
+
+async def test_selected_model_survives_refresh_and_falls_back_when_removed():
+    node = {
+        **_node("router"),
+        "models": [{"id": "a", "state": "loaded"}, {"id": "b", "state": "loaded"}],
+    }
+    app = DashboardApp(client=_FakeClient(nodes={"nodes": [node]}), interval_s=100.0)
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        table.move_cursor(row=2)
+        node["models"][1]["state"] = "loading"
+        await app.poll()
+        assert table.get_row_at(table.cursor_row)[1].plain.startswith("└─ b")
+        node["models"].pop()
+        await app.poll()
+        assert table.cursor_row == 0

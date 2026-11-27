@@ -172,7 +172,7 @@ class _ModelRow:
 
 def _node_effective_slots(host: dict[str, object]) -> object:
     models = host.get("models")
-    if isinstance(models, list) and models:
+    if isinstance(models, list):
         entries = [entry for entry in models if isinstance(entry, dict) and entry.get("id")]
         loaded_healthy = [
             entry
@@ -180,10 +180,7 @@ def _node_effective_slots(host: dict[str, object]) -> object:
             if str(entry.get("state") or "unknown") == "loaded"
             and entry.get("healthy", True) is not False
         ]
-        if entries:
-            return sum(
-                _model_slots_for_host(host, str(entry["id"]), entry) for entry in loaded_healthy
-            )
+        return sum(_model_slots_for_host(host, str(entry["id"]), entry) for entry in loaded_healthy)
     return _effective_max_concurrent(host)
 
 
@@ -202,7 +199,7 @@ def _node_model_rows(
         if isinstance(models, list)
         else []
     )
-    if entries:
+    if isinstance(models, list):
 
         def _sort_key(entry: dict[str, object]) -> tuple[int, str]:
             state = str(entry.get("state") or "unknown")
@@ -274,6 +271,20 @@ def _node_model_rows(
         if len(limit_rows) >= 2:
             return limit_rows
     return []
+
+
+def _chart_model_rows(host: dict[str, object]) -> list[_ModelRow]:
+    rows = _node_model_rows(host)
+
+    def active(row: _ModelRow) -> bool:
+        traffic = row.throughput.get("tasks_per_hour") if row.throughput else None
+        return (
+            row.state in (None, "loaded")
+            or row.in_flight > 0
+            or (isinstance(traffic, int | float) and traffic > 0)
+        )
+
+    return [row for row in rows if active(row)]
 
 
 def _load_label(host: dict[str, object]) -> Text:
@@ -951,6 +962,7 @@ class DashboardApp(App[None]):
         self._poll_in_progress = False
         self._node_row_order: list[str] = []
         self._row_to_host_id: list[str] = []
+        self._row_to_model_id: list[str | None] = []
         self._host_summary_row_index: dict[str, int] = {}
         self._sort_column: str | None = None
         self._sort_descending = False
@@ -1042,9 +1054,16 @@ class DashboardApp(App[None]):
     def _render_nodes(self, nodes: dict[str, object], metrics_text: str, now: datetime) -> None:
         table = self.query_one("#nodes-table", DataTable)
         selected_host_id = self._selected_host_id()
+        selected_model_id = (
+            self._row_to_model_id[table.cursor_row]
+            if selected_host_id is not None and table.cursor_row < len(self._row_to_model_id)
+            else None
+        )
+        selected_row = None
         table.clear()
         self._node_row_order = []
         self._row_to_host_id = []
+        self._row_to_model_id = []
         self._host_summary_row_index = {}
         self._nodes_by_id = {}
         parsed = parse_metrics_text(metrics_text)
@@ -1075,17 +1094,25 @@ class DashboardApp(App[None]):
             rate_per_s = completions_rate_per_s.get(host_id)
             model_rows = _node_model_rows(host, parsed)
             self._host_summary_row_index[host_id] = len(self._row_to_host_id)
+            slots = _node_effective_slots(host)
+            throughput = host.get("throughput")
+            tasks = throughput.get("tasks_per_hour") if isinstance(throughput, dict) else None
+            per_slot = (
+                tasks / slots
+                if isinstance(tasks, int | float) and isinstance(slots, int) and slots > 0
+                else None
+            )
             table.add_row(
                 host_id,
                 _styled_node_status(
                     host["status"],
                     host["in_flight"],
-                    _node_effective_slots(host),
+                    slots,
                     host.get("lease"),
                 ),
                 _styled_node_failures(health.get("recent_failures"), model_rows),
                 _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour"),
-                _format_tasks_per_hour(host.get("throughput"), "tasks_per_hour_per_slot"),
+                _format_tasks_per_hour({"value": per_slot}, "value"),
                 host["backend_type"],
                 host["last_seen"],
                 str(parsed.host_completions_total.get(host_id, 0)),
@@ -1104,6 +1131,7 @@ class DashboardApp(App[None]):
             )
             self._node_row_order.append(host_id)
             self._row_to_host_id.append(host_id)
+            self._row_to_model_id.append(None)
             self._nodes_by_id[host_id] = host
 
             for idx, mrow in enumerate(model_rows):
@@ -1135,10 +1163,17 @@ class DashboardApp(App[None]):
                         parsed.host_model_completion_tokens_max.get(key),
                     ),
                 )
+                if (host_id, mrow.model_id) == (selected_host_id, selected_model_id):
+                    selected_row = len(self._row_to_host_id)
                 self._row_to_host_id.append(host_id)
+                self._row_to_model_id.append(mrow.model_id)
 
         if selected_host_id in self._host_summary_row_index:
-            table.move_cursor(row=self._host_summary_row_index[selected_host_id])
+            table.move_cursor(
+                row=selected_row
+                if selected_row is not None
+                else self._host_summary_row_index[selected_host_id]
+            )
         self._update_nodes_title()
 
     def _display_order(
@@ -1308,12 +1343,7 @@ class DashboardApp(App[None]):
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
 
             if self._show_model_charts:
-                model_rows = _node_model_rows(host)
-                active_rows = [
-                    row
-                    for row in model_rows
-                    if row.healthy and (row.state in (None, "loaded") or row.in_flight > 0)
-                ]
+                active_rows = _chart_model_rows(host)
             else:
                 active_rows = []
             active_models_by_host[host_id] = active_rows

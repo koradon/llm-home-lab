@@ -2405,3 +2405,44 @@ def test_proactive_probe_lease_during_complete_does_not_settle():
     assert health_monitor.has_model_trial("mini-1", "gemma") is False
     assert health_monitor.is_model_healthy("mini-1", "gemma", clock()) is False
     assert health_monitor.may_admit_model("mini-1", "gemma", clock()) is True
+
+
+def test_router_node_exposes_unavailable_and_empty_model_listings():
+    class EmptyRouterBackend:
+        backend_id = "empty-router"
+        health_timeout = 5.0
+
+        async def check_health(self) -> BackendHealth:
+            return BackendHealth(healthy=True, detail="ok")
+
+        async def list_model_states(self, *, raise_on_timeout: bool = False):
+            return []
+
+    backend = EmptyRouterBackend()
+    policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
+    app = create_app(
+        registry=HostRegistry(new_registry_db_path()),
+        router=RoutingEngine(policy),
+        health_monitor=HealthMonitor(),
+        scheduling_queue=SchedulingQueue(),
+        backend_factories={"fake": lambda caps: backend},
+        metrics_registry=MetricsRegistry(),
+        alert_evaluator=AlertEvaluator([]),
+        key_store=_permissive_key_store(),
+        external_load_probe=inert_external_load_probe(),
+    )
+    client = TestClient(app, headers=AUTH_HEADERS)
+    client.post(
+        "/v1/nodes/register",
+        json={
+            "host_id": "empty-router",
+            "backend_type": "fake",
+            "context_window": 8192,
+            "base_url": "http://empty.local:8081",
+            "max_concurrent_requests": 8,
+            "swap_mode": "router",
+        },
+    )
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] is None
+    client.get("/health/ready")
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] == []
