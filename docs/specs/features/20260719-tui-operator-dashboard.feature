@@ -77,7 +77,7 @@ Feature: TUI operator dashboard
     Given a router node has models "eurollm" (loaded) with a 4-slot limit and "gemma" (unloaded) with no override
     And a non-router node has no model limits
     When the dashboard refreshes
-    Then the router node's models cell shows "eurollm (loaded) [4 slots], gemma (unloaded)" with the slot badge distinctly coloured
+    Then the router node's models cell renders one model per line ("eurollm (loaded) [4 slots]" and "gemma (unloaded)") with auto-sized row height and the slot badge distinctly coloured
     And the non-router node's models cell still shows "—"
 
   Scenario: The operator views and edits per-model limits in the node form

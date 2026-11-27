@@ -448,8 +448,9 @@ as the orchestrator. The Nodes panel is a full registration UI, not just a viewe
 click "+ New Node" to register a new node, select a row and press `e` to edit its parameters in
 place, or press `x` to deregister it (after a confirmation dialog). The form includes
 `model_limits` (model / max slots / context window), `model_sizes_gb`, and `model_aliases` as
-repeatable rows; the `models` column also shows per-model slot-limit badges when overrides are
-set. For sorting and changing the saved node order, see the
+repeatable rows; the `models` column renders one model per line (with auto-sized row height) and
+shows per-model slot-limit badges when overrides are set. For sorting and changing the saved node
+order, see the
 [node order controls](docs/specs/20260719-tui-operator-dashboard.md#behavior).
 A node reserved for a real-LLM check shows `reserved` (or `expiring`) with the holder and the
 hard ceiling, in a colour that is not the online or offline colour. A reserved node that is

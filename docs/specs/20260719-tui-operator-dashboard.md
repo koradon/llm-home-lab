@@ -43,11 +43,12 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   two panels:
   - **Nodes** — `host_id`, `status`, `errors`, `tasks/h`, `tasks/h/slot`, `backend_type`, `last_seen`,
     completion metrics, and `models`, one row per host from `list_nodes()`. The `models` column
-    displays color-coded router model states (`loaded`, `loading`, `sleeping`, `failed`, `unloaded`)
-    for router-mode nodes, plus a distinctly coloured slot-limit badge (`[N slots]` / `[1 slot]`)
-    whenever `model_limits` sets a per-model `max_concurrent_requests` override (and the same
-    per-model slot badges for non-router nodes that define per-model slot limits); non-router nodes
-    without limits display `—`, and router models without overrides remain unchanged. A toolbar
+    renders one model per line (with auto-sized row height) showing color-coded router model states
+    (`loaded`, `loading`, `sleeping`, `failed`, `unloaded`) for router-mode nodes, plus a distinctly
+    coloured slot-limit badge (`[N slots]` / `[1 slot]`) whenever `model_limits` sets a per-model
+    `max_concurrent_requests` override (and the same one-per-line per-model slot badges for
+    non-router nodes that define per-model slot limits); non-router nodes without limits display
+    `—`, and router models without overrides remain unchanged. A toolbar
     above the table (`+ New Node` / `✕ Remove Node` buttons, plus `n`/`x`/`e` keybindings) opens
     `NodeFormScreen` to register a new node, edit the row currently selected via cursor, or
     deregister it after a confirm dialog. The form uses a compact multi-column layout sized to the

@@ -1519,17 +1519,21 @@ async def test_dashboard_models_column_shows_router_model_states_and_dash_for_no
         labels = [str(column.label) for column in table.ordered_columns]
         router_models_cell = table.get_row_at(0)[12]
         static_models_cell = table.get_row_at(1)[12]
+        router_row_height = table.rows[table.coordinate_to_cell_key((0, 0))[0]].height
+        static_row_height = table.rows[table.coordinate_to_cell_key((1, 0))[0]].height
 
     assert labels[-1] == "models"
     assert router_models_cell.plain == (
-        "hy-mt2 (loaded), eurollm (loading), broken (failed), tgemma (unloaded)"
+        "hy-mt2 (loaded)\neurollm (loading)\nbroken (failed)\ntgemma (unloaded)"
     )
+    assert router_row_height == 4
     styles = _span_styles(router_models_cell)
     assert styles["hy-mt2 (loaded)"] == "bold green"
     assert styles["eurollm (loading)"] == "bold yellow"
     assert styles["broken (failed)"] == "bold red"
     assert styles["tgemma (unloaded)"] == "dim"
     assert static_models_cell.plain == "—"
+    assert static_row_height == 1
 
 
 async def test_dashboard_models_column_shows_per_model_slot_limits_with_colour(monkeypatch):
@@ -1541,12 +1545,14 @@ async def test_dashboard_models_column_shows_per_model_slot_limits_with_colour(m
         "models": [
             {"id": "eurollm-22b", "state": "loaded", "healthy": True, "recent_failures": 0},
             {"id": "hy-mt2", "state": "loading", "healthy": True, "recent_failures": 0},
+            {"id": "qwen-14b", "state": "sleeping", "healthy": True, "recent_failures": 0},
             {"id": "gemma-e4b", "state": "unloaded", "healthy": True, "recent_failures": 0},
             {"id": "ctx-only", "state": "unloaded", "healthy": True, "recent_failures": 0},
         ],
         "model_limits": {
             "eurollm-22b": {"max_concurrent_requests": 4, "context_window": 16384},
             "hy-mt2": {"max_concurrent_requests": 1},
+            "qwen-14b": {"max_concurrent_requests": 6},
             "ctx-only": {"context_window": 32768},
         },
     }
@@ -1561,7 +1567,10 @@ async def test_dashboard_models_column_shows_per_model_slot_limits_with_colour(m
     }
     static_with_limits = {
         **_node("mac-1", in_flight=0, max_concurrent_requests=8),
-        "model_limits": {"eurollm-22b": {"max_concurrent_requests": 4}},
+        "model_limits": {
+            "eurollm-22b": {"max_concurrent_requests": 4},
+            "hy-mt2": {"max_concurrent_requests": 6},
+        },
     }
     static_no_limits = _node("cachy-1", in_flight=0, max_concurrent_requests=8)
     client = _FakeClient(
@@ -1580,23 +1589,34 @@ async def test_dashboard_models_column_shows_per_model_slot_limits_with_colour(m
         cell_router_plain = table.get_row_at(1)[12]
         cell_static_limits = table.get_row_at(2)[12]
         cell_static_plain = table.get_row_at(3)[12]
+        row_heights = [
+            table.rows[table.coordinate_to_cell_key((row, 0))[0]].height for row in range(4)
+        ]
         svg = app.export_screenshot()
 
     assert cell_router_limits.plain == (
-        "eurollm-22b (loaded) [4 slots], hy-mt2 (loading) [1 slot], "
-        "ctx-only (unloaded), gemma-e4b (unloaded)"
+        "eurollm-22b (loaded) [4 slots]\n"
+        "hy-mt2 (loading) [1 slot]\n"
+        "qwen-14b (sleeping) [6 slots]\n"
+        "ctx-only (unloaded)\n"
+        "gemma-e4b (unloaded)"
     )
     styles = _span_styles(cell_router_limits)
     assert styles["eurollm-22b (loaded)"] == "bold green"
     assert styles["[4 slots]"] == "bold #5fd7ff"
     assert styles["hy-mt2 (loading)"] == "bold yellow"
     assert styles["[1 slot]"] == "bold #5fd7ff"
+    assert styles["qwen-14b (sleeping)"] == "cyan"
+    assert styles["[6 slots]"] == "bold #5fd7ff"
     assert styles["gemma-e4b (unloaded)"] == "dim"
 
     assert cell_router_plain.plain == "gemma-e4b (loaded)"
-    assert cell_static_limits.plain == "eurollm-22b [4 slots]"
-    assert _span_styles(cell_static_limits)["[4 slots]"] == "bold #5fd7ff"
+    assert cell_static_limits.plain == "eurollm-22b [4 slots]\nhy-mt2 [6 slots]"
+    static_styles = _span_styles(cell_static_limits)
+    assert static_styles["[4 slots]"] == "bold #5fd7ff"
+    assert static_styles["[6 slots]"] == "bold #5fd7ff"
     assert cell_static_plain.plain == "—"
+    assert row_heights == [5, 1, 2, 1]
     assert "#5fd7ff" in svg.lower()
 
 

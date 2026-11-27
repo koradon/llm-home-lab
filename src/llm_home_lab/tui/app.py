@@ -197,6 +197,34 @@ def _model_slot_limit(model_limits: object, model_id: str) -> int | None:
     return None
 
 
+def _styled_model_line(
+    model_id: str,
+    *,
+    state: str | None = None,
+    healthy: object = True,
+    slots: int | None = None,
+) -> Text:
+    parts: list[Text | str] = []
+    if state is None:
+        parts.append(model_id)
+    elif state == "failed" or healthy is False:
+        label = "failed" if state == "failed" else f"{state}/unhealthy"
+        parts.append(Text(f"{model_id} ({label})", style="bold red"))
+    elif state == "loaded":
+        parts.append(Text(f"{model_id} (loaded)", style="bold green"))
+    elif state == "loading":
+        parts.append(Text(f"{model_id} (loading)", style="bold yellow"))
+    elif state == "sleeping":
+        parts.append(Text(f"{model_id} (sleeping)", style="cyan"))
+    else:
+        parts.append(Text(f"{model_id} ({state})", style="dim"))
+
+    if slots is not None:
+        parts.append(" ")
+        parts.append(Text(f"[{_format_slot_limit(slots)}]", style=_MODEL_LIMIT_STYLE))
+    return Text.assemble(*parts)
+
+
 def _styled_models(models: object, model_limits: object = None) -> Text:
     entries = (
         [entry for entry in models if isinstance(entry, dict) and entry.get("id")]
@@ -205,20 +233,16 @@ def _styled_models(models: object, model_limits: object = None) -> Text:
     )
     if not entries:
         if isinstance(model_limits, dict):
-            limit_parts: list[Text | str] = []
+            limit_lines: list[Text] = []
             for model_id in model_limits:
                 if not isinstance(model_id, str) or not model_id:
                     continue
                 slots = _model_slot_limit(model_limits, model_id)
                 if slots is None:
                     continue
-                if limit_parts:
-                    limit_parts.append(", ")
-                limit_parts.append(model_id)
-                limit_parts.append(" ")
-                limit_parts.append(Text(f"[{_format_slot_limit(slots)}]", style=_MODEL_LIMIT_STYLE))
-            if limit_parts:
-                return Text.assemble(*limit_parts)
+                limit_lines.append(_styled_model_line(model_id, slots=slots))
+            if limit_lines:
+                return Text("\n").join(limit_lines)
         return Text("—", style="dim")
 
     def _sort_key(entry: dict[str, object]) -> tuple[int, str]:
@@ -231,29 +255,16 @@ def _styled_models(models: object, model_limits: object = None) -> Text:
         )
         return (rank, str(entry["id"]))
 
-    parts: list[Text | str] = []
-    for index, entry in enumerate(sorted(entries, key=_sort_key)):
-        if index:
-            parts.append(", ")
-        model_id = str(entry["id"])
-        state = str(entry.get("state") or "unknown")
-        healthy = entry.get("healthy", True)
-        if state == "failed" or healthy is False:
-            label = "failed" if state == "failed" else f"{state}/unhealthy"
-            parts.append(Text(f"{model_id} ({label})", style="bold red"))
-        elif state == "loaded":
-            parts.append(Text(f"{model_id} (loaded)", style="bold green"))
-        elif state == "loading":
-            parts.append(Text(f"{model_id} (loading)", style="bold yellow"))
-        elif state == "sleeping":
-            parts.append(Text(f"{model_id} (sleeping)", style="cyan"))
-        else:
-            parts.append(Text(f"{model_id} ({state})", style="dim"))
-        slots = _model_slot_limit(model_limits, model_id)
-        if slots is not None:
-            parts.append(" ")
-            parts.append(Text(f"[{_format_slot_limit(slots)}]", style=_MODEL_LIMIT_STYLE))
-    return Text.assemble(*parts)
+    lines = [
+        _styled_model_line(
+            str(entry["id"]),
+            state=str(entry.get("state") or "unknown"),
+            healthy=entry.get("healthy", True),
+            slots=_model_slot_limit(model_limits, str(entry["id"])),
+        )
+        for entry in sorted(entries, key=_sort_key)
+    ]
+    return Text("\n").join(lines)
 
 
 # Session-only sort columns, cycled with "s"; None in the cycle is the persisted manual order.
@@ -941,6 +952,7 @@ class DashboardApp(App[None]):
                     parsed.host_completion_tokens_max.get(host_id),
                 ),
                 _styled_models(host.get("models"), host.get("model_limits")),
+                height=None,
             )
             self._node_row_order.append(host_id)
             self._nodes_by_id[host_id] = host
