@@ -974,7 +974,7 @@ def test_patching_swap_mode_switches_node_between_router_and_none():
 
     assert to_router.status_code == 200
     assert client.get("/v1/nodes").json()["nodes"][0]["swap_mode"] == "router"
-    assert client.get("/v1/nodes").json()["nodes"][0]["models"] == []
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] is None
 
     to_none = client.patch("/v1/nodes/mini-1", json={"swap_mode": "none"})
 
