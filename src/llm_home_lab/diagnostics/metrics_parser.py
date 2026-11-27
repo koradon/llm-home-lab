@@ -19,14 +19,24 @@ def _as_float(value: str) -> float | None:
     return None if math.isnan(result) else result
 
 
+def _unescape_label(value: str) -> str:
+    return re.sub(r'\\([\\"n])', lambda match: {"n": "\n", "\\": "\\", '"': '"'}[match[1]], value)
+
+
 _QUEUE_DEPTH_RE = re.compile(r"^llm_home_lab_queue_depth\s+(\S+)$")
-_TOKEN_USAGE_RE = re.compile(r'^llm_home_lab_token_usage_total\{host_id="([^"]+)"\}\s+(\S+)$')
+_TOKEN_USAGE_RE = re.compile(
+    r'^llm_home_lab_token_usage_total\{host_id="((?:[^"\\]|\\[\\"n])*)"\}\s+(\S+)$'
+)
 _P95_LATENCY_RE = re.compile(r"^llm_home_lab_request_latency_p95_ms\s+(\S+)$")
 
 # (metric name, ParsedMetrics field, value parser) for the per-host completion metrics —
 # all share the same `name{host_id="..."} value` shape, so one loop handles all of them.
 _HOST_COMPLETION_METRIC_PATTERNS = [
-    (re.compile(rf'^{metric_name}\{{host_id="([^"]+)"\}}\s+(\S+)$'), field_name, parser)
+    (
+        re.compile(rf'^{metric_name}\{{host_id="((?:[^"\\]|\\[\\"n])*)"\}}\s+(\S+)$'),
+        field_name,
+        parser,
+    )
     for metric_name, field_name, parser in [
         ("llm_home_lab_host_completions_total", "host_completions_total", _as_int),
         ("llm_home_lab_host_latency_ms_avg", "host_latency_ms_avg", _as_float),
@@ -41,7 +51,9 @@ _HOST_COMPLETION_METRIC_PATTERNS = [
 
 _HOST_MODEL_COMPLETION_METRIC_PATTERNS = [
     (
-        re.compile(rf'^{metric_name}\{{host_id="([^"]+)",model="([^"]+)"\}}\s+(\S+)$'),
+        re.compile(
+            rf'^{metric_name}\{{host_id="((?:[^"\\]|\\[\\"n])*)",model="((?:[^"\\]|\\[\\"n])*)"\}}\s+(\S+)$'
+        ),
         field_name,
         parser,
     )
@@ -85,7 +97,7 @@ def parse_metrics_text(body: str) -> ParsedMetrics:
             continue
 
         if match := _TOKEN_USAGE_RE.match(line):
-            host_id, value = match.group(1), _as_int(match.group(2))
+            host_id, value = _unescape_label(match.group(1)), _as_int(match.group(2))
             if value is not None:
                 parsed.token_usage_total[host_id] = value
             continue
@@ -93,7 +105,10 @@ def parse_metrics_text(body: str) -> ParsedMetrics:
         matched = False
         for pattern, field_name, parser in _HOST_COMPLETION_METRIC_PATTERNS:
             if match := pattern.match(line):
-                metric_host_id, parsed_value = match.group(1), parser(match.group(2))
+                metric_host_id, parsed_value = (
+                    _unescape_label(match.group(1)),
+                    parser(match.group(2)),
+                )
                 if parsed_value is not None:
                     getattr(parsed, field_name)[metric_host_id] = parsed_value
                 matched = True
@@ -103,7 +118,10 @@ def parse_metrics_text(body: str) -> ParsedMetrics:
 
         for pattern, field_name, parser in _HOST_MODEL_COMPLETION_METRIC_PATTERNS:
             if match := pattern.match(line):
-                metric_host_id, metric_model = match.group(1), match.group(2)
+                metric_host_id, metric_model = (
+                    _unescape_label(match.group(1)),
+                    _unescape_label(match.group(2)),
+                )
                 parsed_value = parser(match.group(3))
                 if parsed_value is not None:
                     getattr(parsed, field_name)[(metric_host_id, metric_model)] = parsed_value

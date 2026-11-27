@@ -2201,3 +2201,34 @@ async def test_selected_model_survives_refresh_and_falls_back_when_removed():
         node["models"].pop()
         await app.poll()
         assert table.cursor_row == 0
+
+
+async def test_non_router_breakdown_includes_all_observed_models_and_charts():
+    node = {
+        **_node("host", in_flight=3, max_concurrent_requests=8),
+        "model_limits": {"a": {"max_concurrent_requests": 2}, "b": {"max_concurrent_requests": 3}},
+        "in_flight_by_model": {"a": 1, "b": 1, "c": 1},
+        "model_throughput": {"c": {"tasks_per_hour": 1}},
+    }
+    metrics = (
+        'llm_home_lab_host_completions_total{host_id="host"} 6\n'
+        'llm_home_lab_host_model_completions_total{host_id="host",model="a"} 1\n'
+        'llm_home_lab_host_model_completions_total{host_id="host",model="b"} 2\n'
+        'llm_home_lab_host_model_completions_total{host_id="host",model="c"} 3\n'
+    )
+    app = DashboardApp(
+        client=_FakeClient(nodes={"nodes": [node]}, metrics_text=metrics), interval_s=100.0
+    )
+    async with app.run_test(size=(160, 40)):
+        await app.poll()
+        table = app.query_one("#nodes-table", DataTable)
+        rows = [table.get_row_at(i) for i in range(table.row_count)]
+        assert len(rows) == 4
+        assert rows[3][1].plain == "└─ c 1/8"
+        assert sum(int(row[7]) for row in rows[1:]) == int(rows[0][7]) == 6
+        assert str(app.query_one("#mlabel-host_c", Label).render()) == "  └─ c · 1/8 · 12%"
+        node["in_flight_by_model"].pop("c")
+        node["model_throughput"].pop("c")
+        await app.poll()
+        assert table.row_count == 4
+        assert str(app.query_one("#mlabel-host_c", Label).render()) == "  └─ c · 0/8 · 0%"

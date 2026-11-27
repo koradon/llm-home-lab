@@ -235,8 +235,10 @@ def create_app(
             del external_loads[stale_id]
         for stale_id in set(router_models) - live_ids:
             del router_models[stale_id]
+        router_models_available.intersection_update(live_ids)
 
     router_models: dict[str, list[RouterModelState]] = {}
+    router_models_available: set[str] = set()
 
     def _router_model_map(host_id: str) -> dict[str, RouterModelState]:
         return {entry.id: entry for entry in router_models.get(host_id, ())}
@@ -269,8 +271,10 @@ def create_app(
 
     def _sync_router_models(host: HostInfo, states: list[RouterModelState] | None) -> None:
         if states is None:
-            return
-        router_models[host.host_id] = states
+            router_models_available.discard(host.host_id)
+        else:
+            router_models[host.host_id] = states
+            router_models_available.add(host.host_id)
 
     def _model_throughput_dict(host: HostInfo, model_id: str, at: datetime) -> dict[str, object]:
         slots = host.effective_max_concurrent_requests(model_id)
@@ -283,7 +287,7 @@ def create_app(
         }
 
     def _serialize_node_models(host: HostInfo, at: datetime) -> list[dict[str, object]] | None:
-        if host.capabilities.swap_mode != "router" or host.host_id not in router_models:
+        if host.capabilities.swap_mode != "router" or host.host_id not in router_models_available:
             return None
         seen: set[str] = set()
         items: list[dict[str, object]] = []
@@ -385,14 +389,15 @@ def create_app(
                         else:
                             states = await list_states(raise_on_timeout=True)
                     except (TimeoutError, BackendTimeoutError):
+                        _sync_router_models(host, None)
                         if require_known:
                             health_logger.warning(
                                 "Model inventory timed out for host %s", host.host_id
                             )
                             return None, False
                     else:
+                        _sync_router_models(host, states)
                         if states is not None:
-                            _sync_router_models(host, states)
                             loaded = [
                                 entry.id
                                 for entry in states
@@ -645,6 +650,7 @@ def create_app(
                 await _probe_unhealthy_router_models(host, backend, states)
         else:
             router_models.pop(host.host_id, None)
+            router_models_available.discard(host.host_id)
             external_loads[host.host_id] = await external_load_probe.probe(
                 host.host_id, host.capabilities.base_url, now
             )
@@ -869,6 +875,7 @@ def create_app(
         )
         if payload.swap_mode != "router":
             router_models.pop(payload.host_id, None)
+            router_models_available.discard(payload.host_id)
         return {"status": "registered"}
 
     @app.patch("/v1/nodes/{host_id:path}")
@@ -886,6 +893,7 @@ def create_app(
         registry.register(host_id, capabilities, capacity, at=datetime.now(UTC))
         if capabilities.swap_mode != "router":
             router_models.pop(host_id, None)
+            router_models_available.discard(host_id)
         return {"status": "updated"}
 
     @app.post("/v1/nodes/{host_id:path}/heartbeat")

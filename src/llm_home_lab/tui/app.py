@@ -250,9 +250,24 @@ def _node_model_rows(
         return visible
 
     model_limits = host.get("model_limits")
-    if isinstance(model_limits, dict):
+    if (
+        isinstance(model_limits, dict)
+        and len(model_limits) >= 2
+        and host.get("swap_mode") != "router"
+    ):
+        model_ids = dict.fromkeys(model_limits)
+        model_ids.update(dict.fromkeys(in_flight_by_model))
+        model_ids.update(dict.fromkeys(model_throughput))
+        if parsed is not None:
+            model_ids.update(
+                dict.fromkeys(
+                    model_id
+                    for metric_host, model_id in parsed.host_model_completions_total
+                    if metric_host == host_id
+                )
+            )
         limit_rows: list[_ModelRow] = []
-        for model_id in model_limits:
+        for model_id in model_ids:
             if not isinstance(model_id, str) or not model_id:
                 continue
             slots = _model_slots_for_host(host, model_id)
@@ -268,13 +283,12 @@ def _node_model_rows(
                     throughput=fallback_tp if isinstance(fallback_tp, dict) else None,
                 )
             )
-        if len(limit_rows) >= 2:
-            return limit_rows
+        return limit_rows
     return []
 
 
-def _chart_model_rows(host: dict[str, object]) -> list[_ModelRow]:
-    rows = _node_model_rows(host)
+def _chart_model_rows(host: dict[str, object], parsed: ParsedMetrics) -> list[_ModelRow]:
+    rows = _node_model_rows(host, parsed)
 
     def active(row: _ModelRow) -> bool:
         traffic = row.throughput.get("tasks_per_hour") if row.throughput else None
@@ -1034,7 +1048,7 @@ class DashboardApp(App[None]):
             nodes_dict = cast("dict[str, object]", nodes)
             metrics_text_str = cast(str, metrics_text)
             self._render_nodes(nodes_dict, metrics_text_str, now)
-            await self._render_load_sparklines(nodes_dict)
+            await self._render_load_sparklines(nodes_dict, parse_metrics_text(metrics_text_str))
         except Exception:
             logger.exception("dashboard render failed for this poll cycle")
             self._show_banner("dashboard render error, retrying")
@@ -1331,7 +1345,9 @@ class DashboardApp(App[None]):
         elif event.button.id == "remove-node-button":
             self.action_remove_node()
 
-    async def _render_load_sparklines(self, nodes: dict[str, object]) -> None:
+    async def _render_load_sparklines(
+        self, nodes: dict[str, object], parsed: ParsedMetrics
+    ) -> None:
         ratios: dict[str, float] = {}
         model_ratios: dict[str, float] = {}
         active_models_by_host: dict[str, list[_ModelRow]] = {}
@@ -1343,7 +1359,7 @@ class DashboardApp(App[None]):
             ratios[host_id] = cast(int, host["in_flight"]) / max_concurrent
 
             if self._show_model_charts:
-                active_rows = _chart_model_rows(host)
+                active_rows = _chart_model_rows(host, parsed)
             else:
                 active_rows = []
             active_models_by_host[host_id] = active_rows

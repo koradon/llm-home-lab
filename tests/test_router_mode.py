@@ -2415,8 +2415,10 @@ def test_router_node_exposes_unavailable_and_empty_model_listings():
         async def check_health(self) -> BackendHealth:
             return BackendHealth(healthy=True, detail="ok")
 
+        states = []
+
         async def list_model_states(self, *, raise_on_timeout: bool = False):
-            return []
+            return self.states
 
     backend = EmptyRouterBackend()
     policy = RoutingPolicy(rules=[PolicyRule(name="flat", score_fn=lambda c, ctx: 0.0)])
@@ -2444,5 +2446,15 @@ def test_router_node_exposes_unavailable_and_empty_model_listings():
         },
     )
     assert client.get("/v1/nodes").json()["nodes"][0]["models"] is None
+    client.get("/health/ready")
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] == []
+
+    backend.states = [RouterModelState(id="ready", state="loaded")]
+    client.get("/health/ready")
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"][0]["id"] == "ready"
+    backend.states = None
+    client.get("/health/ready")
+    assert client.get("/v1/nodes").json()["nodes"][0]["models"] is None
+    backend.states = []
     client.get("/health/ready")
     assert client.get("/v1/nodes").json()["nodes"][0]["models"] == []

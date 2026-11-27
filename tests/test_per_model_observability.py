@@ -69,3 +69,26 @@ def test_metrics_registry_emits_and_parser_reads_additive_per_model_series(tmp_p
     assert parsed.host_model_prompt_tokens_min[("mini-1", "gemma-e4b")] == 200
     assert parsed.host_model_prompt_tokens_max[("mini-1", "gemma-e4b")] == 300
     assert parsed.host_model_completion_tokens_avg[("mini-1", "eurollm-22b")] == 120.0
+
+
+def test_prometheus_labels_round_trip_escaped_host_and_model_values(tmp_path):
+    registry = HostRegistry(str(tmp_path / "registry.db"))
+    metrics = MetricsRegistry()
+    host = 'host\\"\nname'
+    model = 'model\\"\nname'
+    metrics.record_host_completion(host, 400.0, 200, 50, T0, model=model)
+    metrics.record_token_usage(host, 200, 50, T0)
+    parsed = parse_metrics_text(metrics.render_prometheus(T0, registry, SchedulingQueue()))
+    assert parsed.token_usage_total[host] == 250
+    assert parsed.host_completions_total[host] == 1
+    for field, value in (
+        ("host_model_completions_total", 1),
+        ("host_model_latency_ms_avg", 400),
+        ("host_model_prompt_tokens_avg", 200),
+        ("host_model_prompt_tokens_min", 200),
+        ("host_model_prompt_tokens_max", 200),
+        ("host_model_completion_tokens_avg", 50),
+        ("host_model_completion_tokens_min", 50),
+        ("host_model_completion_tokens_max", 50),
+    ):
+        assert getattr(parsed, field)[(host, model)] == value

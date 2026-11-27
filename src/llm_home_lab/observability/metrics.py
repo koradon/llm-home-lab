@@ -7,6 +7,10 @@ from llm_home_lab.registry.registry import HostRegistry
 from llm_home_lab.scheduling.queue import SchedulingQueue
 
 
+def _escape_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 class MetricsRegistry:
     def __init__(self, window: timedelta = timedelta(minutes=5)) -> None:
         self._window = window
@@ -192,7 +196,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_saturation_ratio gauge",
             ]
             lines += [
-                f'llm_home_lab_host_saturation_ratio{{host_id="{host_id}"}} {ratio}'
+                f'llm_home_lab_host_saturation_ratio{{host_id="{_escape_label(host_id)}"}} {ratio}'
                 for host_id, ratio in snapshot.host_saturation.items()
             ]
 
@@ -210,7 +214,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_completions_total counter",
             ]
             lines += [
-                f'llm_home_lab_host_completions_total{{host_id="{host_id}"}} '
+                f'llm_home_lab_host_completions_total{{host_id="{_escape_label(host_id)}"}} '
                 f"{stats.completions_total}"
                 for host_id, stats in snapshot.host_completion_stats.items()
             ]
@@ -220,7 +224,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_latency_ms_avg gauge",
             ]
             lines += [
-                f'llm_home_lab_host_latency_ms_avg{{host_id="{host_id}"}} {stats.avg_latency_ms}'
+                f'llm_home_lab_host_latency_ms_avg{{host_id="{_escape_label(host_id)}"}} {stats.avg_latency_ms}'
                 for host_id, stats in snapshot.host_completion_stats.items()
             ]
             lines += [
@@ -229,7 +233,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_prompt_tokens_avg gauge",
             ]
             lines += [
-                f'llm_home_lab_host_prompt_tokens_avg{{host_id="{host_id}"}} '
+                f'llm_home_lab_host_prompt_tokens_avg{{host_id="{_escape_label(host_id)}"}} '
                 f"{stats.prompt_tokens_avg}"
                 for host_id, stats in snapshot.host_completion_stats.items()
             ]
@@ -239,7 +243,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_prompt_tokens_min gauge",
             ]
             lines += [
-                f'llm_home_lab_host_prompt_tokens_min{{host_id="{host_id}"}} '
+                f'llm_home_lab_host_prompt_tokens_min{{host_id="{_escape_label(host_id)}"}} '
                 f"{stats.prompt_tokens_min}"
                 for host_id, stats in snapshot.host_completion_stats.items()
             ]
@@ -249,7 +253,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_prompt_tokens_max gauge",
             ]
             lines += [
-                f'llm_home_lab_host_prompt_tokens_max{{host_id="{host_id}"}} '
+                f'llm_home_lab_host_prompt_tokens_max{{host_id="{_escape_label(host_id)}"}} '
                 f"{stats.prompt_tokens_max}"
                 for host_id, stats in snapshot.host_completion_stats.items()
             ]
@@ -259,7 +263,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_completion_tokens_avg gauge",
             ]
             lines += [
-                f'llm_home_lab_host_completion_tokens_avg{{host_id="{host_id}"}} '
+                f'llm_home_lab_host_completion_tokens_avg{{host_id="{_escape_label(host_id)}"}} '
                 f"{stats.completion_tokens_avg}"
                 for host_id, stats in snapshot.host_completion_stats.items()
             ]
@@ -269,7 +273,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_completion_tokens_min gauge",
             ]
             lines += [
-                f'llm_home_lab_host_completion_tokens_min{{host_id="{host_id}"}} '
+                f'llm_home_lab_host_completion_tokens_min{{host_id="{_escape_label(host_id)}"}} '
                 f"{stats.completion_tokens_min}"
                 for host_id, stats in snapshot.host_completion_stats.items()
             ]
@@ -279,7 +283,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_completion_tokens_max gauge",
             ]
             lines += [
-                f'llm_home_lab_host_completion_tokens_max{{host_id="{host_id}"}} '
+                f'llm_home_lab_host_completion_tokens_max{{host_id="{_escape_label(host_id)}"}} '
                 f"{stats.completion_tokens_max}"
                 for host_id, stats in snapshot.host_completion_stats.items()
             ]
@@ -291,7 +295,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_model_completions_total counter",
             ]
             lines += [
-                f'llm_home_lab_host_model_completions_total{{host_id="{host_id}",model="{model}"}} '
+                f'llm_home_lab_host_model_completions_total{{host_id="{_escape_label(host_id)}",model="{_escape_label(model)}"}} '
                 f"{stats.completions_total}"
                 for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
@@ -301,7 +305,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_model_latency_ms_avg gauge",
             ]
             lines += [
-                f'llm_home_lab_host_model_latency_ms_avg{{host_id="{host_id}",model="{model}"}} '
+                f'llm_home_lab_host_model_latency_ms_avg{{host_id="{_escape_label(host_id)}",model="{_escape_label(model)}"}} '
                 f"{stats.avg_latency_ms}"
                 for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
@@ -311,7 +315,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_model_prompt_tokens_avg gauge",
             ]
             lines += [
-                f'llm_home_lab_host_model_prompt_tokens_avg{{host_id="{host_id}",model="{model}"}} '
+                f'llm_home_lab_host_model_prompt_tokens_avg{{host_id="{_escape_label(host_id)}",model="{_escape_label(model)}"}} '
                 f"{stats.prompt_tokens_avg}"
                 for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
@@ -321,7 +325,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_model_prompt_tokens_min gauge",
             ]
             lines += [
-                f'llm_home_lab_host_model_prompt_tokens_min{{host_id="{host_id}",model="{model}"}} '
+                f'llm_home_lab_host_model_prompt_tokens_min{{host_id="{_escape_label(host_id)}",model="{_escape_label(model)}"}} '
                 f"{stats.prompt_tokens_min}"
                 for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
@@ -331,7 +335,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_host_model_prompt_tokens_max gauge",
             ]
             lines += [
-                f'llm_home_lab_host_model_prompt_tokens_max{{host_id="{host_id}",model="{model}"}} '
+                f'llm_home_lab_host_model_prompt_tokens_max{{host_id="{_escape_label(host_id)}",model="{_escape_label(model)}"}} '
                 f"{stats.prompt_tokens_max}"
                 for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
@@ -342,7 +346,7 @@ class MetricsRegistry:
             ]
             lines += [
                 "llm_home_lab_host_model_completion_tokens_avg"
-                f'{{host_id="{host_id}",model="{model}"}} {stats.completion_tokens_avg}'
+                f'{{host_id="{_escape_label(host_id)}",model="{_escape_label(model)}"}} {stats.completion_tokens_avg}'
                 for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
             lines += [
@@ -352,7 +356,7 @@ class MetricsRegistry:
             ]
             lines += [
                 "llm_home_lab_host_model_completion_tokens_min"
-                f'{{host_id="{host_id}",model="{model}"}} {stats.completion_tokens_min}'
+                f'{{host_id="{_escape_label(host_id)}",model="{_escape_label(model)}"}} {stats.completion_tokens_min}'
                 for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
             lines += [
@@ -362,7 +366,7 @@ class MetricsRegistry:
             ]
             lines += [
                 "llm_home_lab_host_model_completion_tokens_max"
-                f'{{host_id="{host_id}",model="{model}"}} {stats.completion_tokens_max}'
+                f'{{host_id="{_escape_label(host_id)}",model="{_escape_label(model)}"}} {stats.completion_tokens_max}'
                 for (host_id, model), stats in snapshot.host_model_completion_stats.items()
             ]
 
@@ -373,7 +377,7 @@ class MetricsRegistry:
                 "# TYPE llm_home_lab_token_usage_total counter",
             ]
             lines += [
-                f'llm_home_lab_token_usage_total{{host_id="{host_id}"}} {total}'
+                f'llm_home_lab_token_usage_total{{host_id="{_escape_label(host_id)}"}} {total}'
                 for host_id, total in snapshot.token_usage_total.items()
             ]
 
