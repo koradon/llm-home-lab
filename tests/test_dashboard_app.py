@@ -2242,3 +2242,65 @@ async def test_non_router_breakdown_includes_all_observed_models_and_charts():
         await app.poll()
         assert table.row_count == 4
         assert str(app.query_one("#mlabel-host_c", Label).render()) == "  └─ c · 0/8 · 0%"
+
+
+async def test_model_charts_share_poll_columns_and_colour_with_node(monkeypatch):
+    _enable_screenshot_colour(monkeypatch)
+    client = _FakeClient()
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        for tick in range(6):
+            models = []
+            for name, active in (("late", tick >= 2), ("gap", tick != 3)):
+                if active:
+                    models.append(
+                        {
+                            "id": name,
+                            "state": "loaded",
+                            "healthy": True,
+                            "recent_failures": 0,
+                            "in_flight": 1,
+                            "max_concurrent_requests": 1,
+                        }
+                    )
+            client._nodes = {
+                "nodes": [
+                    {
+                        **_node("host-a", in_flight=1, max_concurrent_requests=2),
+                        "backend_type": "llamaserver",
+                        "swap_mode": "router",
+                        "models": models,
+                    }
+                ]
+            }
+            await _poll_n(app, pilot, 1)
+
+        node = app.query_one("#load-host-a", Sparkline)
+        charts = {
+            key[1]: app.query_one(f"#{widget_id}", Sparkline)
+            for key, widget_id in app._model_sparkline_ids.items()
+        }
+        late, gap = charts["late"], charts["gap"]
+        svg = app.export_screenshot()
+
+        assert node.region.x == late.region.x == gap.region.x
+        assert node.size.width == late.size.width == gap.size.width
+        assert list(late.data) == [None, None, 1.0, 1.0, 1.0, 1.0]
+        assert list(gap.data) == [1.0, 1.0, 1.0, None, 1.0, 1.0]
+        assert late.render().plain.splitlines()[-1] == "  ████"
+        assert gap.render().plain.splitlines()[-1] == "███ ██"
+        assert GREEN.color.get_truecolor().hex in svg
+        assert ORANGE.color.get_truecolor().hex in svg
+
+
+async def test_load_chart_distinguishes_missing_from_idle():
+    client = _FakeClient(nodes={"nodes": [_node("host-a")]})
+    app = DashboardApp(client=client, interval_s=100.0)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await _poll_n(app, pilot, 1)
+        chart = app.query_one("#load-host-a", Sparkline)
+        chart.data = [None, 0.0]
+
+        assert chart.render().plain.splitlines()[-1] == " ▁"

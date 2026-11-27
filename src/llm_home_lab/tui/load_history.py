@@ -7,12 +7,13 @@ DEFAULT_MAX_POINTS = 1000
 
 
 def update_load_history(
-    history: dict[str, list[float]],
+    history: dict[str, list[float | None]],
     current_ratios: dict[str, float],
     max_points: int = DEFAULT_MAX_POINTS,
-) -> dict[str, list[float]]:
-    updated: dict[str, list[float]] = {}
-    for host_id, ratio in current_ratios.items():
-        points = [*history.get(host_id, []), ratio]
-        updated[host_id] = points[-max_points:]
+) -> dict[str, list[float | None]]:
+    updated: dict[str, list[float | None]] = {}
+    length = max((len(points) for points in history.values()), default=0)
+    for host_id in history.keys() | current_ratios.keys():
+        points = history.get(host_id, [None] * length)
+        updated[host_id] = [*points, current_ratios.get(host_id)][-max_points:]
     return updated

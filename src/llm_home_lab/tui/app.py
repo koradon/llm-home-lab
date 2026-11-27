@@ -877,7 +877,6 @@ class DashboardApp(App[None]):
     }
     .model-load-chart {
         height: 2;
-        margin: 0 1 0 4;
     }
     .node-load-group, .model-load-group {
         height: auto;
@@ -894,8 +893,8 @@ class DashboardApp(App[None]):
         self._client = client
         self._interval_s = interval_s
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._load_history: dict[str, list[float]] = {}
-        self._model_load_history: dict[str, list[float]] = {}
+        self._load_history: dict[str, list[float | None]] = {}
+        self._model_load_history: dict[str, list[float | None]] = {}
         self._sparkline_ids: dict[str, str] = {}
         self._label_ids: dict[str, str] = {}
         self._node_group_ids: dict[str, str] = {}
@@ -1298,8 +1297,11 @@ class DashboardApp(App[None]):
                 m_max = row.max_concurrent or 1
                 model_ratios[m_key] = row.in_flight / m_max
 
-        self._load_history = update_load_history(self._load_history, ratios)
-        self._model_load_history = update_load_history(self._model_load_history, model_ratios)
+        history = update_load_history(
+            {**self._load_history, **self._model_load_history}, {**ratios, **model_ratios}
+        )
+        self._load_history = {key: points for key, points in history.items() if "\x00" not in key}
+        self._model_load_history = {key: points for key, points in history.items() if "\x00" in key}
 
         container = self.query_one("#load-sparklines", Vertical)
         for stale_host_id in [hid for hid in self._node_group_ids if hid not in ratios]:
@@ -1350,9 +1352,9 @@ class DashboardApp(App[None]):
             self.query_one(f"#{self._label_ids[host_id]}", Label).update(
                 _load_label(hosts[host_id])
             )
-            self.query_one(f"#{self._sparkline_ids[host_id]}", LoadChart).data = self._load_history[
-                host_id
-            ]
+            self.query_one(f"#{self._sparkline_ids[host_id]}", LoadChart).data = cast(
+                "list[float]", self._load_history[host_id]
+            )
 
             group_widget = self.query_one(f"#{self._node_group_ids[host_id]}", Vertical)
             active_rows = active_models_by_host[host_id]
@@ -1377,9 +1379,9 @@ class DashboardApp(App[None]):
                         )
                     )
                 self.query_one(f"#{self._model_label_ids[m_tuple]}", Label).update(m_label)
-                self.query_one(
-                    f"#{self._model_sparkline_ids[m_tuple]}", LoadChart
-                ).data = self._model_load_history[f"{host_id}\x00{row.model_id}"]
+                self.query_one(f"#{self._model_sparkline_ids[m_tuple]}", LoadChart).data = cast(
+                    "list[float]", self._model_load_history[f"{host_id}\x00{row.model_id}"]
+                )
 
         # Keep the groups in the same order as the Nodes table rows.
         displayed = [hid for hid in self._node_row_order if hid in self._node_group_ids]

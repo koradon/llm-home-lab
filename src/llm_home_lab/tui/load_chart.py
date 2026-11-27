@@ -44,12 +44,15 @@ class LoadChart(Sparkline):
         if not samples or height <= 0:
             return Text()
 
-        levels = [bar_level(ratio, height) for ratio in samples]
-        styles = [bar_style(ratio) for ratio in samples]
+        levels = [bar_level(ratio, height) if ratio is not None else None for ratio in samples]
+        styles = [bar_style(ratio) if ratio is not None else None for ratio in samples]
 
         text = Text(no_wrap=True)
         for row in reversed(range(height)):
             for level, style in zip(levels, styles, strict=True):
+                if level is None:
+                    text.append(" ")
+                    continue
                 filled = min(max(level - row * LEVELS_PER_ROW, 0), LEVELS_PER_ROW)
                 if row == 0 and level == 0:
                     text.append("▁", BASELINE)

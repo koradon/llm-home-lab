@@ -74,7 +74,7 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
   - **Node Load** — one four-row block-bar chart per node, one column per poll sample, charting
     `in_flight / effective_max_concurrent_requests`, under a label `<host> · <in_flight>/<max> · <percent>%`
     (rounded; `n/a` when the maximum is 0 or unknown) whose counter uses the status-cell colours.
-    For multi-row nodes, compact two-row indented per-model sub-charts (`in_flight / model_slots`)
+    For multi-row nodes, compact two-row per-model sub-charts with indented labels (`in_flight / model_slots`)
     appear underneath the node's chart for active models (toggled with `m`). Full utilization is
     the desired lab state. There is no own/external split or external-load column in Nodes.
   - The `status` cell carries the load counter after the styled status word, e.g. `online 8/8` or
@@ -100,7 +100,10 @@ its own, matching the "TUI first, no new backend surface" appetite recorded in
 configuration setting. A steady 1.0 fills the chart's height; 0.0 is empty apart from a dim
 one-cell baseline, so an idle or offline node still shows a chart. Equal histories render
 identically, and a dip from 1.0 to 0.875 remains a small drop rather than spanning the full
-chart height. There is one column per poll sample; the newest samples fill the chart width.
+chart height. There is one column per poll sample; the newest samples fill the chart width. Node and model
+charts share the same horizontal position and poll axis. Missing samples are blank, distinct from
+the idle baseline, including before a model first appears and during gaps in its activity.
+[Colour screenshot of aligned node and model charts](assets/node-load-phase.png).
 
 **Reserved nodes.** When `GET /v1/nodes` includes a lease, the status cell shows who holds the
 node and the hard ceiling, in a colour that is not the online or offline colour. See
