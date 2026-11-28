@@ -13,12 +13,12 @@ def test_next_observation_appends_to_existing_history():
     assert history == {"host-a": [0.5, 0.8]}
 
 
-def test_a_host_no_longer_present_is_dropped_from_the_history():
+def test_missing_and_late_series_share_the_poll_axis():
     history = update_load_history(
-        history={"host-a": [0.5], "host-b": [0.1]}, current_ratios={"host-a": 0.6}
+        history={"host-a": [0.5], "host-b": [0.1]}, current_ratios={"host-a": 0.6, "host-c": 0.9}
     )
 
-    assert history == {"host-a": [0.5, 0.6]}
+    assert history == {"host-a": [0.5, 0.6], "host-b": [0.1, None], "host-c": [None, 0.9]}
 
 
 def test_history_is_truncated_to_max_points():
@@ -27,6 +27,23 @@ def test_history_is_truncated_to_max_points():
     )
 
     assert history == {"host-a": [0.2, 0.3, 0.4]}
+
+
+def test_retired_node_and_model_series_expire_after_their_last_observation():
+    history = {"host-a": [0.0], "host-a\x00model": [0.5], "host-b": [0.2]}
+
+    history = update_load_history(history, {"host-b": 0.3}, max_points=2)
+    assert history == {
+        "host-a": [0.0, None],
+        "host-a\x00model": [0.5, None],
+        "host-b": [0.2, 0.3],
+    }
+
+    history = update_load_history(history, {"host-b": 0.4}, max_points=2)
+    assert history == {"host-b": [0.3, 0.4]}
+
+    history = update_load_history(history, {"host-b": 0.5, "host-a\x00model": 0.0}, max_points=2)
+    assert history == {"host-b": [0.4, 0.5], "host-a\x00model": [None, 0.0]}
 
 
 def test_a_brief_spike_survives_a_long_observability_session():
